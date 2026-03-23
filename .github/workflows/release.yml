@@ -1,0 +1,238 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            swift_target: arm64-apple-macosx
+          - arch: x86_64
+            swift_target: x86_64-apple-macosx
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Code Signing ────────────────────────────────────────────
+
+      - name: Import Apple Code Signing Certificate
+        continue-on-error: true
+        uses: Apple-Actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Verify Certificate
+        run: |
+          if security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+            echo "APPLE_CERT_IMPORTED=true" >> $GITHUB_ENV
+            echo "✓ Developer ID certificate found"
+          else
+            echo "APPLE_CERT_IMPORTED=false" >> $GITHUB_ENV
+            echo "⚠ No Developer ID certificate — will use ad-hoc signing"
+          fi
+
+      # ── Build MCP Server (Swift CLI) ────────────────────────────
+
+      - name: Build MCPSafari CLI
+        run: |
+          cd MCPServer
+          swift build -c release --arch ${{ matrix.arch }}
+
+      - name: Sign CLI binary
+        run: |
+          BINARY="MCPServer/.build/release/MCPSafari"
+          if [ "$APPLE_CERT_IMPORTED" = "true" ]; then
+            codesign --force --verify --verbose \
+              --timestamp --options runtime \
+              --sign "${{ secrets.APPLE_DEVELOPER_ID }}" \
+              "$BINARY"
+            echo "✓ CLI signed with Developer ID"
+          else
+            codesign -s - --force "$BINARY"
+            echo "⚠ CLI ad-hoc signed"
+          fi
+
+      # ── Build Safari Extension (Xcode) ──────────────────────────
+
+      - name: Build Safari Extension
+        run: |
+          cd MCPSafari
+          xcodebuild -project MCPSafari.xcodeproj \
+            -scheme "MCPSafari" \
+            -configuration Release \
+            -arch ${{ matrix.arch }} \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="${{ secrets.APPLE_DEVELOPER_ID }}" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            CODE_SIGN_STYLE="Manual" \
+            build
+
+      - name: Sign and notarize app
+        if: env.APPLE_CERT_IMPORTED == 'true'
+        run: |
+          APP_PATH=$(find MCPSafari/build -name "MCPSafari.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "⚠ No .app bundle found"
+            exit 0
+          fi
+
+          # Deep sign
+          codesign --deep --force --verify --verbose \
+            --timestamp --options runtime \
+            --sign "${{ secrets.APPLE_DEVELOPER_ID }}" \
+            "$APP_PATH"
+
+          # Create ZIP for notarization
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "MCPSafari-notarize.zip"
+
+          # Notarize
+          xcrun notarytool submit "MCPSafari-notarize.zip" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --password "${{ secrets.APPLE_ID_PASSWORD }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait \
+            --timeout 30m
+
+          # Staple
+          xcrun stapler staple "$APP_PATH"
+          echo "✓ App signed, notarized, and stapled"
+
+      # ── Package Artifacts ───────────────────────────────────────
+
+      - name: Package artifacts
+        run: |
+          mkdir -p artifacts
+
+          # CLI binary
+          CLI_NAME="MCPSafari-${{ matrix.arch }}-apple-darwin"
+          cp MCPServer/.build/release/MCPSafari "artifacts/$CLI_NAME"
+          chmod +x "artifacts/$CLI_NAME"
+          shasum -a 256 "artifacts/$CLI_NAME" | awk '{print $1 "  '"$CLI_NAME"'"}' > "artifacts/$CLI_NAME.sha256"
+
+          # Safari Extension app
+          APP_PATH=$(find MCPSafari/build -name "MCPSafari.app" -type d | head -n 1)
+          if [ -n "$APP_PATH" ]; then
+            APP_ARCHIVE="MCPSafari-${{ matrix.arch }}.tar.gz"
+            tar -czf "artifacts/$APP_ARCHIVE" -C "$(dirname "$APP_PATH")" "MCPSafari.app"
+            shasum -a 256 "artifacts/$APP_ARCHIVE" | awk '{print $1 "  '"$APP_ARCHIVE"'"}' > "artifacts/$APP_ARCHIVE.sha256"
+          fi
+
+          echo "Artifacts:"
+          ls -lh artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Create Universal Binary + Release ─────────────────────────
+
+  release:
+    name: Create Release
+    runs-on: macos-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create universal CLI binary
+        run: |
+          mkdir -p final-release
+
+          # Create universal (fat) binary from arch-specific builds
+          ARM64_BIN=$(find release-artifacts/arm64 -name "MCPSafari-*" -not -name "*.sha256" | head -1)
+          X86_BIN=$(find release-artifacts/x86_64 -name "MCPSafari-*" -not -name "*.sha256" | head -1)
+
+          if [ -n "$ARM64_BIN" ] && [ -n "$X86_BIN" ]; then
+            lipo -create "$ARM64_BIN" "$X86_BIN" -output "final-release/MCPSafari-universal-apple-darwin"
+            chmod +x "final-release/MCPSafari-universal-apple-darwin"
+            shasum -a 256 "final-release/MCPSafari-universal-apple-darwin" > "final-release/MCPSafari-universal-apple-darwin.sha256"
+            echo "✓ Created universal binary"
+          fi
+
+          # Copy arch-specific binaries and app bundles
+          find release-artifacts -type f \( -name "MCPSafari-*" -o -name "MCPSafari-*" \) -exec cp {} final-release/ \;
+
+          # Generate combined checksums
+          cd final-release
+          shasum -a 256 * 2>/dev/null | grep -v ".sha256" > SHA256SUMS || true
+
+          echo "Release contents:"
+          ls -lh
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: 'MCPSafari ${{ steps.version.outputs.version }}'
+          body: |
+            ## MCPSafari ${{ steps.version.outputs.version }}
+
+            Safari browser automation via the Model Context Protocol.
+
+            ### Installation
+
+            **MCP Server (CLI):**
+            ```bash
+            # Download universal binary (works on Intel + Apple Silicon)
+            curl -L https://github.com/Epistates/MCPSafari/releases/download/${{ steps.version.outputs.version }}/MCPSafari-universal-apple-darwin -o ~/.local/bin/MCPSafari
+            chmod +x ~/.local/bin/MCPSafari
+            ```
+
+            **Safari Extension:**
+            Download `MCPSafari-arm64.tar.gz` (Apple Silicon) or `MCPSafari-x86_64.tar.gz` (Intel), extract, and move to Applications.
+
+            **Configure Claude Code:**
+            ```json
+            {
+              "mcpServers": {
+                "safari-mcp": {
+                  "command": "~/.local/bin/MCPSafari"
+                }
+              }
+            }
+            ```
+          files: |
+            final-release/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

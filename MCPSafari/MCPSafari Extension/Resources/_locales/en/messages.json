@@ -1,0 +1,10 @@
+{
+    "extension_name": {
+        "message": "MCPSafari Extension",
+        "description": "The display name for the extension."
+    },
+    "extension_description": {
+        "message": "Safari browser automation via the Model Context Protocol. Enables AI agents to control Safari tabs, navigate pages, interact with elements, take screenshots, and more.",
+        "description": "Description of what the extension does."
+    }
+}

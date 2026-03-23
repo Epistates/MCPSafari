@@ -1,0 +1,23 @@
+# Strategy & planning docs (not for public repos)
+.strategy/
+
+# Build artifacts
+MCPServer/.build/
+*.o
+*.d
+*.swp
+
+# Xcode
+MCPSafari/MCPSafari.xcodeproj/xcuserdata/
+MCPSafari/MCPSafari.xcodeproj/project.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# MCP config (contains local paths)
+.mcp.json
+
+# Claude
+.claude/

@@ -1,0 +1,83 @@
+:root {
+    color-scheme: light dark;
+}
+
+body {
+    width: 200px;
+    padding: 12px;
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-size: 13px;
+}
+
+.header {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 10px;
+    text-align: center;
+}
+
+.status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.connected .dot {
+    background: #34c759;
+}
+
+.connecting .dot {
+    background: #ff9f0a;
+    animation: pulse 1s ease-in-out infinite;
+}
+
+.disconnected .dot {
+    background: #ff3b30;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.ws-url {
+    font-size: 11px;
+    color: #888;
+    margin: 4px 0 10px;
+    word-break: break-all;
+}
+
+.btn {
+    width: 100%;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 6px;
+    background: #007aff;
+    color: white;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.btn:hover {
+    background: #0056b3;
+}
+
+.btn:active {
+    background: #004494;
+}
+
+@media (prefers-color-scheme: dark) {
+    .ws-url {
+        color: #999;
+    }
+}
