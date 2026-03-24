@@ -1,3 +1,5 @@
+![MCPSafari](https://raw.githubusercontent.com/Epistates/MCPSafari/main/public/MCPSafari.mp4)
+
 # MCPSafari: Native Safari MCP Server for AI Agents
 ![Stars](https://img.shields.io/github/stars/Epistates/MCPSafari)
 ![MCP](https://img.shields.io/badge/MCP-2025-blue)
@@ -55,9 +57,19 @@ The MCP server communicates with clients over **stdio** and bridges tool calls t
 
 ## Installation
 
+### Homebrew (recommended)
+
+Installs the MCP server binary **and** the Safari extension app in one step:
+
+```bash
+brew install epistates/tap/mcp-safari
+```
+
+After install, enable the extension in **Safari > Settings > Extensions > MCPSafari Extension**.
+
 ### From Release
 
-Download the latest release from [GitHub Releases](https://github.com/Epistates/MCPSafari/releases):
+Download from [GitHub Releases](https://github.com/Epistates/MCPSafari/releases):
 
 | Asset | Description |
 |-------|-------------|
@@ -69,9 +81,9 @@ Download the latest release from [GitHub Releases](https://github.com/Epistates/
 
 ```bash
 # Example: Apple Silicon Mac
-curl -L -o MCPSafari https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-arm64-apple-darwin
-chmod +x MCPSafari
-mv MCPSafari ~/.local/bin/
+curl -L -o mcp-safari https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-arm64-apple-darwin
+chmod +x mcp-safari
+mv mcp-safari ~/.local/bin/
 
 # Download and install the Safari extension
 curl -L -o MCPSafari-arm64.tar.gz https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-arm64.tar.gz
@@ -84,23 +96,17 @@ Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extens
 ### From Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/Epistates/MCPSafari.git
 cd MCPSafari
 
 # Build the MCP server
 cd MCPServer
 swift build -c release
+# Binary is at .build/release/MCPSafari
 
-# The binary is at .build/release/MCPSafari
-```
-
-### Install the Safari Extension
-
-```bash
-# Build and open the host app (registers the extension with Safari)
-cd MCPSafari
-xcodebuild -project MCPSafari.xcodeproj -scheme MCPSafari -configuration Debug build
+# Build and open the Safari extension
+cd ../MCPSafari
+xcodebuild -project MCPSafari.xcodeproj -scheme MCPSafari build
 open ~/Library/Developer/Xcode/DerivedData/MCPSafari-*/Build/Products/Debug/MCPSafari.app
 ```
 
@@ -116,8 +122,7 @@ Add to your MCP settings (`.claude/settings.json` or project-level):
 {
   "mcpServers": {
     "mcp-safari": {
-      "command": "/path/to/MCPSafari",
-      "args": []
+      "command": "mcp-safari"
     }
   }
 }
@@ -131,16 +136,15 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "mcp-safari": {
-      "command": "/path/to/MCPSafari",
-      "args": []
+      "command": "mcp-safari"
     }
   }
 }
 ```
 
-### Other MCP Clients
+### Cursor / Windsurf / Other MCP Clients
 
-Any client that supports the MCP stdio transport can connect. Point it at the `MCPSafari` binary.
+Any client that supports the MCP stdio transport can connect. Point it at `mcp-safari` (or the full path if not in `$PATH`).
 
 ### CLI Options
 
@@ -347,7 +351,7 @@ Use `--port` to pick a different port:
 {
   "mcpServers": {
     "mcp-safari": {
-      "command": "/path/to/MCPSafari",
+      "command": "mcp-safari",
       "args": ["--port", "9090"]
     }
   }
