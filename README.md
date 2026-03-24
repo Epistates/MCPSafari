@@ -1,4 +1,4 @@
-![MCPSafari](https://raw.githubusercontent.com/Epistates/MCPSafari/main/public/MCPSafari.mp4)
+![MCPSafari](https://github.com/user-attachments/assets/96566f48-a7b7-468b-bf96-8ca5c5c86da7)
 
 # MCPSafari: Native Safari MCP Server for AI Agents
 ![Stars](https://img.shields.io/github/stars/Epistates/MCPSafari)
