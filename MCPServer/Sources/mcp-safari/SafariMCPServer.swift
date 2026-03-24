@@ -13,7 +13,7 @@ actor SafariMCPServer {
         self.logger = logger
         self.bridge = try WebSocketBridge(port: port, logger: logger)
         self.server = Server(
-            name: "safari-mcp",
+            name: "mcp-safari",
             version: "0.1.0",
             title: "Safari MCP Server",
             instructions: """

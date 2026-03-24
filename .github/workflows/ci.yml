@@ -25,10 +25,26 @@ jobs:
           cd MCPServer
           swift build -c release
 
-          # Verify the binary responds to MCP initialize
-          RESPONSE=$(printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}\n' | timeout 5 .build/release/MCPSafari --port 0 2>/dev/null | head -1)
+          # Create a named pipe for communication
+          mkfifo /tmp/mcp-stdin
 
-          if echo "$RESPONSE" | grep -q '"safari-mcp"'; then
+          # Start the server in the background reading from the pipe
+          .build/release/MCPSafari --port 0 < /tmp/mcp-stdin > /tmp/mcp-stdout 2>/dev/null &
+          SERVER_PID=$!
+
+          # Send initialize request (keep pipe open with exec)
+          exec 3>/tmp/mcp-stdin
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}' >&3
+
+          # Wait for response
+          sleep 3
+          exec 3>&-
+
+          RESPONSE=$(cat /tmp/mcp-stdout 2>/dev/null | head -1)
+          kill $SERVER_PID 2>/dev/null || true
+          rm -f /tmp/mcp-stdin /tmp/mcp-stdout
+
+          if echo "$RESPONSE" | grep -q '"mcp-safari"'; then
             echo "✓ MCP handshake successful"
           else
             echo "✗ MCP handshake failed"

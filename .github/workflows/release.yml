@@ -225,7 +225,7 @@ jobs:
             ```json
             {
               "mcpServers": {
-                "safari-mcp": {
+                "mcp-safari": {
                   "command": "~/.local/bin/MCPSafari"
                 }
               }

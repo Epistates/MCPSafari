@@ -5,7 +5,7 @@ let port = parsePort()
 let verbose = CommandLine.arguments.contains("--verbose")
 
 // Log to stderr so stdout is reserved for MCP stdio transport
-var logger = Logger(label: "safari-mcp") { label in
+var logger = Logger(label: "mcp-safari") { label in
     StreamLogHandler.standardError(label: label)
 }
 logger.logLevel = verbose ? .debug : .info

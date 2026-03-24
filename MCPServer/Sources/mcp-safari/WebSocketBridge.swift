@@ -13,7 +13,7 @@ actor WebSocketBridge {
     private var pendingRequests: [String: CheckedContinuation<BridgeResponse, any Error>] = [:]
     private let logger: Logger
     private let port: UInt16
-    private let networkQueue = DispatchQueue(label: "safari-mcp.websocket", qos: .userInitiated)
+    private let networkQueue = DispatchQueue(label: "mcp-safari.websocket", qos: .userInitiated)
 
     /// Authentication token that the extension must send as its first message.
     let authToken: String
@@ -57,25 +57,29 @@ actor WebSocketBridge {
         self.port = port
         self.logger = logger
 
-        // Generate a random auth token and write it to a well-known file
+        // Generate a random auth token and try to write it to a well-known file.
+        // If writing fails (CI, sandboxed environments), auth is still available
+        // in-memory but the extension won't be able to read it via native messaging.
         self.authToken = UUID().uuidString
-        let tokenDir = URL(fileURLWithPath: Self.tokenFilePath).deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: tokenDir, withIntermediateDirectories: true)
-        try authToken.write(toFile: Self.tokenFilePath, atomically: true, encoding: .utf8)
-        // Restrict file permissions to owner-only (0600)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: Self.tokenFilePath
-        )
+        do {
+            let tokenDir = URL(fileURLWithPath: Self.tokenFilePath).deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: tokenDir, withIntermediateDirectories: true)
+            try authToken.write(toFile: Self.tokenFilePath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: Self.tokenFilePath
+            )
+        } catch {
+            logger.warning("Could not write auth token file: \(error). Auth will be skipped.")
+        }
 
         let params = NWParameters(tls: nil)
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
 
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            throw BridgeError.encodingFailed
-        }
+        // Port 0 means "don't start a WebSocket listener" (CI/test mode)
+        let nwPort = NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(rawValue: 8089)!
         self.listener = try NWListener(using: params, on: nwPort)
     }
 

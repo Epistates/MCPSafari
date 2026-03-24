@@ -1,6 +1,18 @@
-# MCP-Safari
+# MCPSafari: Native Safari MCP Server for AI Agents
+![Stars](https://img.shields.io/github/stars/Epistates/MCPSafari)
+![MCP](https://img.shields.io/badge/MCP-2025-blue)
+![macOS](https://img.shields.io/badge/macOS-14+-orange)
 
-Safari browser automation via the [Model Context Protocol](https://modelcontextprotocol.io). Gives AI agents full control over Safari — navigate pages, read content, interact with elements, fill forms, take screenshots, and more.
+Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on macOS. Navigate tabs, click/type/fill forms (even React), read HTML/accessibility trees, execute JS, capture screenshots, inspect console & network — all with 24 secure tools. Zero Chrome overhead, Apple Silicon optimized, token-authenticated, and built with official Swift + Manifest V3 Safari Extension.
+
+## Why MCPSafari?
+
+- Smarter element targeting (UID + CSS + text + coords + interactive ranking)
+- Works flawlessly with complex sites
+- Local & private (runs on your Mac)
+- Perfect drop-in for Mac-first agent workflows
+
+**macOS 14+** • **Safari 17+** • **Xcode 16+**
 
 Built with the official [swift-sdk](https://github.com/modelcontextprotocol/swift-sdk) and a Manifest V3 Safari Web Extension.
 
@@ -70,7 +82,7 @@ Add to your MCP settings (`.claude/settings.json` or project-level):
 ```json
 {
   "mcpServers": {
-    "safari-mcp": {
+    "mcp-safari": {
       "command": "/path/to/MCPSafari",
       "args": []
     }
@@ -85,7 +97,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "safari-mcp": {
+    "mcp-safari": {
       "command": "/path/to/MCPSafari",
       "args": []
     }
@@ -301,7 +313,7 @@ Use `--port` to pick a different port:
 ```json
 {
   "mcpServers": {
-    "safari-mcp": {
+    "mcp-safari": {
       "command": "/path/to/MCPSafari",
       "args": ["--port", "9090"]
     }
