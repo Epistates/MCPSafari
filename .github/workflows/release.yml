@@ -169,8 +169,9 @@ jobs:
           mkdir -p final-release
 
           # Create universal (fat) binary from arch-specific builds
-          ARM64_BIN=$(find release-artifacts/arm64 -name "MCPSafari-*" -not -name "*.sha256" | head -1)
-          X86_BIN=$(find release-artifacts/x86_64 -name "MCPSafari-*" -not -name "*.sha256" | head -1)
+          # Match only the bare binary (named MCPSafari-<arch>-apple-darwin, no extension)
+          ARM64_BIN=$(find release-artifacts/arm64 -name "MCPSafari-*-apple-darwin" -not -name "*.sha256" -not -name "*.tar.gz" | head -1)
+          X86_BIN=$(find release-artifacts/x86_64 -name "MCPSafari-*-apple-darwin" -not -name "*.sha256" -not -name "*.tar.gz" | head -1)
 
           if [ -n "$ARM64_BIN" ] && [ -n "$X86_BIN" ]; then
             lipo -create "$ARM64_BIN" "$X86_BIN" -output "final-release/MCPSafari-universal-apple-darwin"
@@ -179,8 +180,8 @@ jobs:
             echo "✓ Created universal binary"
           fi
 
-          # Copy arch-specific binaries and app bundles
-          find release-artifacts -type f \( -name "MCPSafari-*" -o -name "MCPSafari-*" \) -exec cp {} final-release/ \;
+          # Copy all arch-specific artifacts (binaries, tarballs, checksums)
+          find release-artifacts -type f -exec cp {} final-release/ \;
 
           # Generate combined checksums
           cd final-release

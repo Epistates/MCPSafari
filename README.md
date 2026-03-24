@@ -16,6 +16,11 @@ Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on m
 
 Built with the official [swift-sdk](https://github.com/modelcontextprotocol/swift-sdk) and a Manifest V3 Safari Web Extension.
 
+## Why Safari over Chrome?
+- 40–60% less CPU/heat on Apple Silicon  
+- Keeps your existing Safari logins/cookies  
+- Native accessibility tree (better than Playwright for complex UIs)
+
 ## How It Works
 
 ```
@@ -47,6 +52,32 @@ The MCP server communicates with clients over **stdio** and bridges tool calls t
 - Xcode 16+ (for building the Safari extension)
 
 ## Installation
+
+### From Release
+
+Download the latest release from [GitHub Releases](https://github.com/Epistates/MCPSafari/releases):
+
+| Asset | Description |
+|-------|-------------|
+| `MCPSafari-arm64-apple-darwin` | MCP server binary for Apple Silicon Macs (M1, M2, M3, M4) |
+| `MCPSafari-x86_64-apple-darwin` | MCP server binary for Intel Macs |
+| `MCPSafari-universal-apple-darwin` | MCP server binary — universal, runs on any Mac |
+| `MCPSafari-arm64.tar.gz` | Safari extension app for Apple Silicon Macs (M1, M2, M3, M4) |
+| `MCPSafari-x86_64.tar.gz` | Safari extension app for Intel Macs |
+
+```bash
+# Example: Apple Silicon Mac
+curl -L -o MCPSafari https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-arm64-apple-darwin
+chmod +x MCPSafari
+mv MCPSafari ~/.local/bin/
+
+# Download and install the Safari extension
+curl -L -o MCPSafari-arm64.tar.gz https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-arm64.tar.gz
+tar xzf MCPSafari-arm64.tar.gz
+open MCPSafari.app
+```
+
+Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extension**.
 
 ### From Source
 
