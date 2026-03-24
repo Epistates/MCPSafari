@@ -2,6 +2,8 @@
 ![Stars](https://img.shields.io/github/stars/Epistates/MCPSafari)
 ![MCP](https://img.shields.io/badge/MCP-2025-blue)
 ![macOS](https://img.shields.io/badge/macOS-14+-orange)
+![Swift](https://img.shields.io/badge/Swift-6.1+-orange)
+![Xcode](https://img.shields.io/badge/Xcode-16+-orange)
 
 Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on macOS. Navigate tabs, click/type/fill forms (even React), read HTML/accessibility trees, execute JS, capture screenshots, inspect console & network — all with 24 secure tools. Zero Chrome overhead, Apple Silicon optimized, token-authenticated, and built with official Swift + Manifest V3 Safari Extension.
 
