@@ -17,7 +17,7 @@ permissions:
 jobs:
   build:
     name: Build (${{ matrix.arch }})
-    runs-on: macos-latest
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
@@ -95,10 +95,19 @@ jobs:
             exit 0
           fi
 
-          # Deep sign
-          codesign --deep --force --verify --verbose \
+          # Sign the extension appex first (inner-to-outer signing order)
+          APPEX_PATH="$APP_PATH/Contents/PlugIns/MCPSafari Extension.appex"
+          codesign --force --verify --verbose \
             --timestamp --options runtime \
             --sign "${{ secrets.APPLE_DEVELOPER_ID }}" \
+            --entitlements "MCPSafari/MCPSafari Extension/MCPSafari Extension.entitlements" \
+            "$APPEX_PATH"
+
+          # Sign the host app
+          codesign --force --verify --verbose \
+            --timestamp --options runtime \
+            --sign "${{ secrets.APPLE_DEVELOPER_ID }}" \
+            --entitlements "MCPSafari/MCPSafari/MCPSafari.entitlements" \
             "$APP_PATH"
 
           # Create ZIP for notarization
@@ -151,7 +160,7 @@ jobs:
 
   release:
     name: Create Release
-    runs-on: macos-latest
+    runs-on: macos-26
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
 

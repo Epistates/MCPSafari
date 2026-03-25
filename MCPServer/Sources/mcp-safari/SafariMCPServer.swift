@@ -14,15 +14,10 @@ actor SafariMCPServer {
         self.bridge = try WebSocketBridge(port: port, logger: logger)
         self.server = Server(
             name: "mcp-safari",
-            version: "0.1.0",
-            title: "Safari MCP Server",
+            version: "0.2.0",
             instructions: """
-                Safari browser automation server. Controls Safari via a Web Extension bridge.
-                The Safari MCP extension must be enabled in Safari for tools to function.
-                Start by calling tabs_context to see open tabs, then use navigate, screenshot,
-                and other tools to interact with web pages.
-                Use snapshot to get an accessibility tree with element UIDs, then use those UIDs
-                with click, type_text, hover, and other interaction tools.
+                Safari browser automation. Use tabs_context to list tabs, snapshot for element UIDs, \
+                then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state.
                 """,
             capabilities: Server.Capabilities(
                 logging: .init(),
@@ -60,399 +55,311 @@ actor SafariMCPServer {
         }
     }
 
-    // MARK: - Shared Schema Fragments
+    // MARK: - Shared Schema Fragments (terse to minimize token usage)
 
-    private static let tabIdSchema: Value = .object([
-        "type": .string("integer"),
-        "description": .string("Tab ID. Defaults to active tab."),
-    ])
-
-    private static let uidSchema: Value = .object([
-        "type": .string("string"),
-        "description": .string("Element UID from a snapshot. Preferred way to target elements."),
-    ])
-
-    private static let selectorSchema: Value = .object([
-        "type": .string("string"),
-        "description": .string("CSS selector to target an element."),
-    ])
-
-    private static let textSchema: Value = .object([
-        "type": .string("string"),
-        "description": .string("Visible text content to find the element."),
-    ])
-
-    private static let includeSnapshotSchema: Value = .object([
-        "type": .string("boolean"),
-        "description": .string("Return an accessibility snapshot after the action. Useful to see the updated page state."),
-    ])
+    private static let tab: Value = .object(["type": .string("integer"), "description": .string("Tab ID (default: active tab)")])
+    private static let uid: Value = .object(["type": .string("string"), "description": .string("Element UID from snapshot")])
+    private static let sel: Value = .object(["type": .string("string"), "description": .string("CSS selector")])
+    private static let txt: Value = .object(["type": .string("string"), "description": .string("Visible text to match")])
+    private static let snap: Value = .object(["type": .string("boolean"), "description": .string("Return snapshot after action")])
 
     // MARK: - Tool Definitions
 
     private func buildToolDefinitions() -> [Tool] {
         [
-            // ── Tab Management ───────────────────────────────────────
+            // ── Tabs ─────────────────────────────────────────────────
 
             Tool(
                 name: "tabs_context",
-                description: "List all open Safari tabs with their IDs, URLs, and titles. Call this first to understand the browser state before taking actions.",
+                description: "List open tabs with IDs, URLs, titles.",
                 inputSchema: .object(["type": .string("object"), "properties": .object([:])]),
-                annotations: .init(title: "List Tabs", readOnlyHint: true, openWorldHint: false)
+                annotations: .init(readOnlyHint: true, openWorldHint: false)
             ),
             Tool(
                 name: "tabs_create",
-                description: "Open a new tab in Safari. Optionally provide a URL to navigate to.",
+                description: "Open a new tab.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "url": .object(["type": .string("string"), "description": .string("URL to open. If omitted, opens a blank tab.")]),
+                        "url": .object(["type": .string("string"), "description": .string("URL to open")]),
                     ]),
-                ]),
-                annotations: .init(title: "Create Tab", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
             Tool(
                 name: "close_tab",
-                description: "Close a Safari tab by its ID.",
+                description: "Close a tab by ID.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(["tabId": Self.tabIdSchema]),
+                    "properties": .object(["tabId": Self.tab]),
                     "required": .array([.string("tabId")]),
                 ]),
-                annotations: .init(title: "Close Tab", readOnlyHint: false, destructiveHint: true)
+                annotations: .init(readOnlyHint: false, destructiveHint: true)
             ),
-
             Tool(
                 name: "select_tab",
-                description: "Select a tab as the default context for future tool calls. Avoids passing tabId on every call. Also brings the tab to the front.",
+                description: "Pin a tab as default context for future calls.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
-                        "tabId": Self.tabIdSchema,
-                        "bringToFront": .object(["type": .string("boolean"), "description": .string("Whether to focus the tab and its window. Defaults to true.")]),
-                    ]),
+                    "properties": .object(["tabId": Self.tab]),
                     "required": .array([.string("tabId")]),
-                ]),
-                annotations: .init(title: "Select Tab", readOnlyHint: true)
+                ])
             ),
 
             // ── Navigation ───────────────────────────────────────────
 
             Tool(
                 name: "navigate",
-                description: "Navigate a tab to a URL, or go back/forward/reload.",
+                description: "Go to URL or back/forward/reload.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "url": .object(["type": .string("string"), "description": .string("URL to navigate to.")]),
-                        "tabId": Self.tabIdSchema,
-                        "action": .object([
-                            "type": .string("string"),
-                            "enum": .array([.string("goto"), .string("back"), .string("forward"), .string("reload")]),
-                            "description": .string("Navigation action. Defaults to 'goto'."),
-                        ]),
+                        "url": .object(["type": .string("string")]),
+                        "action": .object(["type": .string("string"), "enum": .array([.string("goto"), .string("back"), .string("forward"), .string("reload")])]),
+                        "tabId": Self.tab,
                     ]),
-                ]),
-                annotations: .init(title: "Navigate", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
 
             // ── Page Reading ─────────────────────────────────────────
 
             Tool(
+                name: "snapshot",
+                description: "Accessibility tree with element UIDs for interaction tools. UIDs change between snapshots.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object(["tabId": Self.tab]),
+                ]),
+                annotations: .init(readOnlyHint: true)
+            ),
+            Tool(
                 name: "read_page",
-                description: "Get page content as text, HTML, or accessibility snapshot.",
+                description: "Page content as text, html, or snapshot.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "tabId": Self.tabIdSchema,
-                        "format": .object([
-                            "type": .string("string"),
-                            "enum": .array([.string("text"), .string("html"), .string("snapshot")]),
-                            "description": .string("Output format. Defaults to 'text'."),
-                        ]),
+                        "format": .object(["type": .string("string"), "enum": .array([.string("text"), .string("html"), .string("snapshot")])]),
+                        "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(title: "Read Page", readOnlyHint: true)
+                annotations: .init(readOnlyHint: true)
             ),
-            Tool(
-                name: "get_page_text",
-                description: "Get the visible text content of a page.",
-                inputSchema: .object([
-                    "type": .string("object"),
-                    "properties": .object(["tabId": Self.tabIdSchema]),
-                ]),
-                annotations: .init(title: "Get Page Text", readOnlyHint: true)
-            ),
-            Tool(
-                name: "snapshot",
-                description: "Take an accessibility tree snapshot of the page. Returns a structured tree with element UIDs that can be used with click, type_text, hover, drag, and other interaction tools. Always use the latest snapshot — UIDs may change between snapshots.",
-                inputSchema: .object([
-                    "type": .string("object"),
-                    "properties": .object(["tabId": Self.tabIdSchema]),
-                ]),
-                annotations: .init(title: "Take Snapshot", readOnlyHint: true)
-            ),
-
-            // ── Element Finding ──────────────────────────────────────
-
             Tool(
                 name: "find",
-                description: "Find elements on the page by CSS selector, text content, or ARIA role. Returns matching elements with UIDs.",
+                description: "Find elements by selector, text, or ARIA role. Returns UIDs.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "selector": Self.selectorSchema, "text": Self.textSchema,
-                        "role": .object(["type": .string("string"), "description": .string("ARIA role to filter by (e.g., 'button', 'link', 'textbox').")]),
-                        "tabId": Self.tabIdSchema,
+                        "selector": Self.sel, "text": Self.txt,
+                        "role": .object(["type": .string("string"), "description": .string("ARIA role (button, link, textbox, etc.)")]),
+                        "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(title: "Find Elements", readOnlyHint: true)
+                annotations: .init(readOnlyHint: true)
             ),
 
-            // ── Input / Interaction ──────────────────────────────────
+            // ── Interaction ──────────────────────────────────────────
 
             Tool(
                 name: "click",
-                description: "Click on an element identified by UID (from snapshot), CSS selector, text content, or coordinates.",
+                description: "Click element by UID, selector, text, or x/y coordinates.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "uid": Self.uidSchema, "selector": Self.selectorSchema, "text": Self.textSchema,
-                        "x": .object(["type": .string("number"), "description": .string("X coordinate to click at.")]),
-                        "y": .object(["type": .string("number"), "description": .string("Y coordinate to click at.")]),
-                        "doubleClick": .object(["type": .string("boolean"), "description": .string("Double-click instead of single click.")]),
-                        "includeSnapshot": Self.includeSnapshotSchema, "tabId": Self.tabIdSchema,
+                        "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
+                        "x": .object(["type": .string("number")]),
+                        "y": .object(["type": .string("number")]),
+                        "doubleClick": .object(["type": .string("boolean")]),
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ]),
-                ]),
-                annotations: .init(title: "Click", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
             Tool(
                 name: "type_text",
-                description: "Type text into a focused or specified element (by UID or CSS selector).",
+                description: "Type into element. Supports clearFirst and submitKey (e.g. Enter).",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "text": .object(["type": .string("string"), "description": .string("The text to type.")]),
-                        "uid": Self.uidSchema, "selector": Self.selectorSchema,
-                        "clearFirst": .object(["type": .string("boolean"), "description": .string("Clear existing content before typing.")]),
-                        "submitKey": .object(["type": .string("string"), "description": .string("Key to press after typing (e.g., 'Enter', 'Tab').")]),
-                        "includeSnapshot": Self.includeSnapshotSchema, "tabId": Self.tabIdSchema,
+                        "text": .object(["type": .string("string")]),
+                        "uid": Self.uid, "selector": Self.sel,
+                        "clearFirst": .object(["type": .string("boolean")]),
+                        "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ]),
                     "required": .array([.string("text")]),
-                ]),
-                annotations: .init(title: "Type Text", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
             Tool(
                 name: "form_input",
-                description: "Fill multiple form fields at once. Accepts a map of CSS selectors to values.",
+                description: "Batch fill form fields. React-compatible.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "fields": .object([
                             "type": .string("object"),
-                            "description": .string("Map of CSS selector → value to fill."),
+                            "description": .string("CSS selector → value map"),
                             "additionalProperties": .object(["type": .string("string")]),
                         ]),
-                        "includeSnapshot": Self.includeSnapshotSchema, "tabId": Self.tabIdSchema,
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ]),
                     "required": .array([.string("fields")]),
-                ]),
-                annotations: .init(title: "Fill Form", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
             Tool(
                 name: "select_option",
-                description: "Select an option in a <select> dropdown by UID, selector, value, or label.",
+                description: "Select dropdown option by value or label.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "uid": Self.uidSchema, "selector": Self.selectorSchema,
-                        "value": .object(["type": .string("string"), "description": .string("The option value to select.")]),
-                        "label": .object(["type": .string("string"), "description": .string("The visible label text of the option.")]),
-                        "includeSnapshot": Self.includeSnapshotSchema, "tabId": Self.tabIdSchema,
+                        "uid": Self.uid, "selector": Self.sel,
+                        "value": .object(["type": .string("string")]),
+                        "label": .object(["type": .string("string")]),
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ]),
-                ]),
-                annotations: .init(title: "Select Option", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
             Tool(
                 name: "scroll",
-                description: "Scroll the page or a specific element.",
+                description: "Scroll page or element.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "direction": .object([
-                            "type": .string("string"),
-                            "enum": .array([.string("up"), .string("down"), .string("left"), .string("right")]),
-                            "description": .string("Scroll direction."),
-                        ]),
-                        "amount": .object(["type": .string("integer"), "description": .string("Pixels to scroll. Defaults to one viewport height.")]),
-                        "uid": Self.uidSchema, "selector": Self.selectorSchema, "includeSnapshot": Self.includeSnapshotSchema, "tabId": Self.tabIdSchema,
+                        "direction": .object(["type": .string("string"), "enum": .array([.string("up"), .string("down"), .string("left"), .string("right")])]),
+                        "amount": .object(["type": .string("integer"), "description": .string("Pixels (default: viewport height)")]),
+                        "uid": Self.uid, "selector": Self.sel, "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ]),
                     "required": .array([.string("direction")]),
-                ]),
-                annotations: .init(title: "Scroll", readOnlyHint: false, destructiveHint: false, idempotentHint: false)
+                ])
             ),
             Tool(
                 name: "press_key",
-                description: "Press a key or key combination (e.g., 'Enter', 'Tab', 'Meta+a', 'Control+c').",
+                description: "Press key combo (Enter, Tab, Meta+a, Control+c).",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "key": .object(["type": .string("string"), "description": .string("Key or combination to press.")]),
-                        "includeSnapshot": Self.includeSnapshotSchema, "tabId": Self.tabIdSchema,
+                        "key": .object(["type": .string("string")]),
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ]),
                     "required": .array([.string("key")]),
-                ]),
-                annotations: .init(title: "Press Key", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
             Tool(
                 name: "hover",
-                description: "Hover over an element to trigger hover states, tooltips, or menus.",
+                description: "Hover element to trigger tooltips/menus.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "uid": Self.uidSchema, "selector": Self.selectorSchema, "text": Self.textSchema,
-                        "includeSnapshot": Self.includeSnapshotSchema, "tabId": Self.tabIdSchema,
+                        "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ]),
-                ]),
-                annotations: .init(title: "Hover", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
             Tool(
                 name: "drag",
-                description: "Drag an element and drop it onto another element.",
+                description: "Drag and drop between elements.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "fromUid": .object(["type": .string("string"), "description": .string("UID of the element to drag (from snapshot).")]),
-                        "toUid": .object(["type": .string("string"), "description": .string("UID of the element to drop onto (from snapshot).")]),
-                        "fromSelector": .object(["type": .string("string"), "description": .string("CSS selector of the element to drag.")]),
-                        "toSelector": .object(["type": .string("string"), "description": .string("CSS selector of the element to drop onto.")]),
-                        "includeSnapshot": Self.includeSnapshotSchema, "tabId": Self.tabIdSchema,
+                        "fromUid": .object(["type": .string("string")]),
+                        "toUid": .object(["type": .string("string")]),
+                        "fromSelector": .object(["type": .string("string")]),
+                        "toSelector": .object(["type": .string("string")]),
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ]),
-                ]),
-                annotations: .init(title: "Drag & Drop", readOnlyHint: false, destructiveHint: false)
+                ])
             ),
-
-            // ── Dialogs ──────────────────────────────────────────────
-
             Tool(
                 name: "handle_dialog",
-                description: "Accept or dismiss a browser dialog (alert, confirm, prompt). Use when a page triggers a dialog that blocks interaction.",
+                description: "Accept/dismiss alert, confirm, or prompt dialog.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "action": .object([
-                            "type": .string("string"),
-                            "enum": .array([.string("accept"), .string("dismiss")]),
-                            "description": .string("Whether to accept or dismiss the dialog."),
-                        ]),
-                        "promptText": .object(["type": .string("string"), "description": .string("Text to enter into a prompt dialog before accepting.")]),
-                        "tabId": Self.tabIdSchema,
+                        "action": .object(["type": .string("string"), "enum": .array([.string("accept"), .string("dismiss")])]),
+                        "promptText": .object(["type": .string("string"), "description": .string("Text for prompt dialog")]),
+                        "tabId": Self.tab,
                     ]),
                     "required": .array([.string("action")]),
-                ]),
-                annotations: .init(title: "Handle Dialog", readOnlyHint: false)
+                ])
             ),
 
-            // ── Screenshots ──────────────────────────────────────────
+            // ── Capture ──────────────────────────────────────────────
 
             Tool(
                 name: "screenshot",
-                description: "Capture a screenshot of the visible area of a tab. Returns a PNG image.",
+                description: "Capture visible tab as PNG.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(["tabId": Self.tabIdSchema]),
+                    "properties": .object(["tabId": Self.tab]),
                 ]),
-                annotations: .init(title: "Screenshot", readOnlyHint: true)
+                annotations: .init(readOnlyHint: true)
             ),
-
-            // ── JavaScript ───────────────────────────────────────────
-
             Tool(
                 name: "javascript_tool",
-                description: "Execute JavaScript code in the context of a page. Returns the result of the expression.",
+                description: "Execute JS in page context. Returns result.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "code": .object(["type": .string("string"), "description": .string("JavaScript code to execute.")]),
-                        "tabId": Self.tabIdSchema,
+                        "code": .object(["type": .string("string")]),
+                        "tabId": Self.tab,
                     ]),
                     "required": .array([.string("code")]),
-                ]),
-                annotations: .init(title: "Execute JavaScript", readOnlyHint: false, destructiveHint: false, openWorldHint: true)
+                ])
             ),
-
-            // ── Console ──────────────────────────────────────────────
-
             Tool(
                 name: "read_console",
-                description: "Read captured console messages (log, warn, error, info, debug) from the page.",
+                description: "Read captured console messages.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "tabId": Self.tabIdSchema,
-                        "level": .object([
-                            "type": .string("string"),
-                            "enum": .array([.string("all"), .string("log"), .string("warn"), .string("error"), .string("info"), .string("debug")]),
-                            "description": .string("Filter by log level. Defaults to 'all'."),
-                        ]),
-                        "clear": .object(["type": .string("boolean"), "description": .string("Clear the message buffer after reading.")]),
-                        "pattern": .object(["type": .string("string"), "description": .string("Regex pattern to filter messages.")]),
+                        "level": .object(["type": .string("string"), "enum": .array([.string("all"), .string("log"), .string("warn"), .string("error"), .string("info"), .string("debug")])]),
+                        "clear": .object(["type": .string("boolean")]),
+                        "pattern": .object(["type": .string("string"), "description": .string("Regex filter")]),
+                        "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(title: "Read Console", readOnlyHint: true, openWorldHint: false)
+                annotations: .init(readOnlyHint: true)
             ),
-
-            // ── Network ──────────────────────────────────────────────
-
             Tool(
                 name: "read_network",
-                description: "Read captured network requests from the page. Shows method, URL, status, and timing.",
+                description: "Read captured XHR/fetch requests.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "tabId": Self.tabIdSchema,
-                        "type": .object([
-                            "type": .string("string"),
-                            "enum": .array([.string("all"), .string("xhr"), .string("fetch"), .string("document"), .string("script"), .string("stylesheet"), .string("image")]),
-                            "description": .string("Filter by request type. Defaults to 'all'."),
-                        ]),
-                        "clear": .object(["type": .string("boolean"), "description": .string("Clear the request buffer after reading.")]),
+                        "type": .object(["type": .string("string"), "enum": .array([.string("all"), .string("xhr"), .string("fetch")])]),
+                        "clear": .object(["type": .string("boolean")]),
+                        "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(title: "Read Network", readOnlyHint: true, openWorldHint: false)
+                annotations: .init(readOnlyHint: true)
             ),
 
-            // ── Window ───────────────────────────────────────────────
+            // ── Utility ──────────────────────────────────────────────
 
             Tool(
                 name: "resize_window",
-                description: "Resize the browser window.",
+                description: "Resize browser window.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "width": .object(["type": .string("integer"), "description": .string("Window width in pixels.")]),
-                        "height": .object(["type": .string("integer"), "description": .string("Window height in pixels.")]),
+                        "width": .object(["type": .string("integer")]),
+                        "height": .object(["type": .string("integer")]),
                     ]),
                     "required": .array([.string("width"), .string("height")]),
-                ]),
-                annotations: .init(title: "Resize Window", readOnlyHint: false, destructiveHint: false, idempotentHint: true)
+                ])
             ),
-
-            // ── Wait ─────────────────────────────────────────────────
-
             Tool(
                 name: "wait",
-                description: "Wait for a specified duration or until a condition is met on the page.",
+                description: "Wait for duration, selector, or text to appear.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "seconds": .object(["type": .string("number"), "description": .string("Number of seconds to wait.")]),
-                        "selector": Self.selectorSchema,
-                        "text": Self.textSchema,
-                        "timeout": .object(["type": .string("number"), "description": .string("Maximum seconds to wait for selector/text. Defaults to 10.")]),
-                        "tabId": Self.tabIdSchema,
+                        "seconds": .object(["type": .string("number")]),
+                        "selector": Self.sel,
+                        "text": Self.txt,
+                        "timeout": .object(["type": .string("number"), "description": .string("Max seconds (default: 10)")]),
+                        "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(title: "Wait", readOnlyHint: true)
+                annotations: .init(readOnlyHint: true)
             ),
         ]
     }
@@ -470,7 +377,6 @@ actor SafariMCPServer {
             case "select_tab":      return try await handleSelectTab(args)
             case "navigate":        return try await handleNavigate(args)
             case "read_page":       return try await handleReadPage(args)
-            case "get_page_text":   return try await handleGetPageText(args)
             case "snapshot":        return try await handleSnapshot(args)
             case "find":            return try await handleFind(args)
             case "click":           return try await handleInteraction("click", args)
@@ -577,13 +483,6 @@ actor SafariMCPServer {
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let format = args["format"]?.stringValue { params["format"] = AnyCodable(format) }
         let response = try await bridge.send(action: "read_page", params: params)
-        return textResult(response)
-    }
-
-    private func handleGetPageText(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        let response = try await bridge.send(action: "get_page_text", params: params)
         return textResult(response)
     }
 
