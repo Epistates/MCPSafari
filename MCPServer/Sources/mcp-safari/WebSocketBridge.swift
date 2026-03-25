@@ -4,16 +4,19 @@ import Network
 
 /// WebSocket server that bridges MCP tool calls to the Safari extension.
 ///
-/// Listens on a local port for a single WebSocket connection from the extension's
-/// background.js. Provides a request/response pattern: sends a `BridgeRequest`,
+/// Listens on a local port for a WebSocket connection from the extension's
+/// background.js. Automatically falls back to successive ports if the requested
+/// port is in use. Provides a request/response pattern: sends a `BridgeRequest`,
 /// awaits a correlated `BridgeResponse` by matching IDs.
 actor WebSocketBridge {
-    private let listener: NWListener
+    private var listener: NWListener?
     private var connection: NWConnection?
     private var pendingRequests: [String: CheckedContinuation<BridgeResponse, any Error>] = [:]
     private let logger: Logger
-    private let port: UInt16
+    private let requestedPort: UInt16
+    private(set) var port: UInt16
     private let networkQueue = DispatchQueue(label: "mcp-safari.websocket", qos: .userInitiated)
+    private let wsParams: NWParameters
 
     /// Authentication token that the extension must send as its first message.
     let authToken: String
@@ -53,13 +56,14 @@ actor WebSocketBridge {
 
     var isConnected: Bool { connection != nil }
 
+    private static let maxPortRetries: UInt16 = 10
+
     init(port: UInt16 = 8089, logger: Logger) throws {
+        self.requestedPort = port
         self.port = port
         self.logger = logger
 
         // Generate a random auth token and try to write it to a well-known file.
-        // If writing fails (CI, sandboxed environments), auth is still available
-        // in-memory but the extension won't be able to read it via native messaging.
         self.authToken = UUID().uuidString
         do {
             let tokenDir = URL(fileURLWithPath: Self.tokenFilePath).deletingLastPathComponent()
@@ -77,29 +81,71 @@ actor WebSocketBridge {
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
-
-        // Port 0 means "don't start a WebSocket listener" (CI/test mode)
-        let nwPort = NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(rawValue: 8089)!
-        self.listener = try NWListener(using: params, on: nwPort)
+        self.wsParams = params
     }
 
-    func start() {
-        listener.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            Task { await self.handleListenerState(state) }
+    func start() async {
+        // Try the requested port, then successive ports if in use
+        for offset: UInt16 in 0..<Self.maxPortRetries {
+            let tryPort = requestedPort + offset
+            guard let nwPort = NWEndpoint.Port(rawValue: tryPort) else { continue }
+
+            do {
+                let newListener = try NWListener(using: wsParams, on: nwPort)
+                self.listener = newListener
+                self.port = tryPort
+
+                let success = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                    nonisolated(unsafe) var resumed = false
+
+                    newListener.stateUpdateHandler = { [weak self] state in
+                        guard let self else { return }
+                        switch state {
+                        case .ready:
+                            if !resumed {
+                                resumed = true
+                                cont.resume(returning: true)
+                            }
+                            Task { await self.handleListenerState(state) }
+                        case .failed:
+                            if !resumed {
+                                resumed = true
+                                cont.resume(returning: false)
+                            }
+                            Task { await self.handleListenerState(state) }
+                        default:
+                            Task { await self.handleListenerState(state) }
+                        }
+                    }
+
+                    newListener.newConnectionHandler = { [weak self] newConnection in
+                        guard let self else { return }
+                        Task { await self.handleNewConnection(newConnection) }
+                    }
+
+                    newListener.start(queue: self.networkQueue)
+                }
+
+                if success {
+                    if offset > 0 {
+                        logger.info("Port \(requestedPort) in use — listening on \(tryPort) instead")
+                    }
+                    logger.info("WebSocket server listening on port \(tryPort)")
+                    return
+                } else {
+                    newListener.cancel()
+                    logger.debug("Port \(tryPort) unavailable, trying next")
+                }
+            } catch {
+                logger.debug("Could not create listener on port \(tryPort): \(error)")
+            }
         }
 
-        listener.newConnectionHandler = { [weak self] newConnection in
-            guard let self else { return }
-            Task { await self.handleNewConnection(newConnection) }
-        }
-
-        listener.start(queue: networkQueue)
-        logger.info("WebSocket server starting on port \(port)")
+        logger.error("Could not bind to any port in range \(requestedPort)-\(requestedPort + Self.maxPortRetries - 1)")
     }
 
     func stop() {
-        listener.cancel()
+        listener?.cancel()
         connection?.cancel()
         connection = nil
         // Fail all pending requests
@@ -168,8 +214,6 @@ actor WebSocketBridge {
 
     private func handleListenerState(_ state: NWListener.State) {
         switch state {
-        case .ready:
-            logger.info("WebSocket server listening on port \(port)")
         case .failed(let error):
             logger.error("WebSocket server failed: \(error)")
         case .cancelled:

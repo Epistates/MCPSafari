@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.2] - 2026-03-25
+
+### Port Auto-Fallback
+- Server automatically finds a free port if the requested one is in use (tries up to 10 successive ports)
+- Fixes "Address already in use" crash when multiple MCP clients (e.g., Claude Desktop Chat + Cowork) spawn concurrent server instances
+- Logs the fallback clearly: `Port 8089 in use — listening on 8090 instead`
+
+### Release Artifact Naming
+- Server binaries renamed to `MCPSafari-Server-*` for clarity
+- Extension app bundles renamed to `MCPSafari-Extension-*` for clarity
+
 ## [0.2.1] - 2026-03-25
 
 ### Multi-Connection Support

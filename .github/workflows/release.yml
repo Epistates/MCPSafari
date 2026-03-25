@@ -131,16 +131,16 @@ jobs:
         run: |
           mkdir -p artifacts
 
-          # CLI binary
-          CLI_NAME="MCPSafari-${{ matrix.arch }}-apple-darwin"
+          # MCP Server binary
+          CLI_NAME="MCPSafari-Server-${{ matrix.arch }}-apple-darwin"
           cp MCPServer/.build/release/MCPSafari "artifacts/$CLI_NAME"
           chmod +x "artifacts/$CLI_NAME"
           shasum -a 256 "artifacts/$CLI_NAME" | awk '{print $1 "  '"$CLI_NAME"'"}' > "artifacts/$CLI_NAME.sha256"
 
-          # Safari Extension app
+          # Safari Extension app bundle
           APP_PATH=$(find MCPSafari/build -name "MCPSafari.app" -type d | head -n 1)
           if [ -n "$APP_PATH" ]; then
-            APP_ARCHIVE="MCPSafari-${{ matrix.arch }}.tar.gz"
+            APP_ARCHIVE="MCPSafari-Extension-${{ matrix.arch }}.tar.gz"
             tar -czf "artifacts/$APP_ARCHIVE" -C "$(dirname "$APP_PATH")" "MCPSafari.app"
             shasum -a 256 "artifacts/$APP_ARCHIVE" | awk '{print $1 "  '"$APP_ARCHIVE"'"}' > "artifacts/$APP_ARCHIVE.sha256"
           fi
@@ -177,16 +177,15 @@ jobs:
         run: |
           mkdir -p final-release
 
-          # Create universal (fat) binary from arch-specific builds
-          # Match only the bare binary (named MCPSafari-<arch>-apple-darwin, no extension)
-          ARM64_BIN=$(find release-artifacts/arm64 -name "MCPSafari-*-apple-darwin" -not -name "*.sha256" -not -name "*.tar.gz" | head -1)
-          X86_BIN=$(find release-artifacts/x86_64 -name "MCPSafari-*-apple-darwin" -not -name "*.sha256" -not -name "*.tar.gz" | head -1)
+          # Create universal (fat) server binary from arch-specific builds
+          ARM64_BIN=$(find release-artifacts/arm64 -name "MCPSafari-Server-*-apple-darwin" -not -name "*.sha256" | head -1)
+          X86_BIN=$(find release-artifacts/x86_64 -name "MCPSafari-Server-*-apple-darwin" -not -name "*.sha256" | head -1)
 
           if [ -n "$ARM64_BIN" ] && [ -n "$X86_BIN" ]; then
-            lipo -create "$ARM64_BIN" "$X86_BIN" -output "final-release/MCPSafari-universal-apple-darwin"
-            chmod +x "final-release/MCPSafari-universal-apple-darwin"
-            shasum -a 256 "final-release/MCPSafari-universal-apple-darwin" > "final-release/MCPSafari-universal-apple-darwin.sha256"
-            echo "✓ Created universal binary"
+            lipo -create "$ARM64_BIN" "$X86_BIN" -output "final-release/MCPSafari-Server-universal-apple-darwin"
+            chmod +x "final-release/MCPSafari-Server-universal-apple-darwin"
+            shasum -a 256 "final-release/MCPSafari-Server-universal-apple-darwin" > "final-release/MCPSafari-Server-universal-apple-darwin.sha256"
+            echo "✓ Created universal server binary"
           fi
 
           # Copy all arch-specific artifacts (binaries, tarballs, checksums)

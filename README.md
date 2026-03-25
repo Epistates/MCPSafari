@@ -9,7 +9,7 @@
 ![Swift](https://img.shields.io/badge/Swift-6.1+-orange)
 ![Xcode](https://img.shields.io/badge/Xcode-16+-orange)
 
-Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on macOS. Navigate tabs, click/type/fill forms (even React), read HTML/accessibility trees, execute JS, capture screenshots, inspect console & network — all with 24 secure tools. Zero Chrome overhead, Apple Silicon optimized, token-authenticated, and built with official Swift + Manifest V3 Safari Extension.
+Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on macOS. Navigate tabs, click/type/fill forms (even React), read HTML/accessibility trees, execute JS, capture screenshots, inspect console & network — all with 23 secure tools. Zero Chrome overhead, Apple Silicon optimized, token-authenticated, and built with official Swift + Manifest V3 Safari Extension.
 
 ## Why MCPSafari?
 
@@ -71,26 +71,25 @@ After install, enable the extension in **Safari > Settings > Extensions > MCPSaf
 
 ### From Release
 
-Download from [GitHub Releases](https://github.com/Epistates/MCPSafari/releases):
+If you don't use Homebrew, download both the CLI binary and the extension app from [GitHub Releases](https://github.com/Epistates/MCPSafari/releases):
 
 | Asset | Description |
 |-------|-------------|
-| `MCPSafari-arm64-apple-darwin` | MCP server binary for Apple Silicon Macs (M1, M2, M3, M4) |
-| `MCPSafari-x86_64-apple-darwin` | MCP server binary for Intel Macs |
-| `MCPSafari-universal-apple-darwin` | MCP server binary — universal, runs on any Mac |
-| `MCPSafari-arm64.tar.gz` | Safari extension app for Apple Silicon Macs (M1, M2, M3, M4) |
-| `MCPSafari-x86_64.tar.gz` | Safari extension app for Intel Macs |
+| `MCPSafari-Server-arm64-apple-darwin` | MCP server binary for Apple Silicon (M1, M2, M3, M4) |
+| `MCPSafari-Server-x86_64-apple-darwin` | MCP server binary for Intel Macs |
+| `MCPSafari-Server-universal-apple-darwin` | MCP server binary — universal, runs on any Mac |
+| `MCPSafari-Extension-arm64.tar.gz` | Safari extension app for Apple Silicon (M1, M2, M3, M4) |
+| `MCPSafari-Extension-x86_64.tar.gz` | Safari extension app for Intel Macs |
 
 ```bash
-# Example: Apple Silicon Mac
-curl -L -o mcp-safari https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-arm64-apple-darwin
-chmod +x mcp-safari
-mv mcp-safari ~/.local/bin/
+# Apple Silicon (M1/M2/M3/M4) — use x86_64 for Intel Macs
+curl -L -o /usr/local/bin/mcp-safari https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-Server-arm64-apple-darwin
+chmod +x /usr/local/bin/mcp-safari
 
-# Download and install the Safari extension
-curl -L -o MCPSafari-arm64.tar.gz https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-arm64.tar.gz
-tar xzf MCPSafari-arm64.tar.gz
-open MCPSafari.app
+# Safari extension (must be in /Applications for macOS 26+)
+curl -L https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-Extension-arm64.tar.gz | tar xzf -
+mv MCPSafari.app /Applications/
+open /Applications/MCPSafari.app
 ```
 
 Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extension**.
