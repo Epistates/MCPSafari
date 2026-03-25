@@ -148,6 +148,23 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 Any client that supports the MCP stdio transport can connect. Point it at `mcp-safari` (or the full path if not in `$PATH`).
 
+### Multiple Claude Instances
+
+Each MCP client spawns its own server. To run Claude Code and Claude Desktop simultaneously, use different ports:
+
+```json
+{
+  "mcpServers": {
+    "mcp-safari": {
+      "command": "mcp-safari",
+      "args": ["--port", "8090"]
+    }
+  }
+}
+```
+
+The extension supports multiple simultaneous connections — add additional ports from the extension popup.
+
 ### CLI Options
 
 | Flag | Description |
@@ -155,7 +172,7 @@ Any client that supports the MCP stdio transport can connect. Point it at `mcp-s
 | `--port <n>` / `-p <n>` | WebSocket port (default: `8089`) |
 | `--verbose` | Debug-level logging to stderr |
 
-## Tools (24)
+## Tools (23)
 
 ### Tab Management
 
@@ -177,7 +194,6 @@ Any client that supports the MCP stdio transport can connect. Point it at `mcp-s
 | Tool | Description |
 |------|-------------|
 | `read_page` | Get page content as `text`, `html`, or `snapshot` |
-| `get_page_text` | Get visible text content |
 | `snapshot` | Accessibility tree with element UIDs for interaction |
 | `find` | Find elements by CSS selector, text, or ARIA role |
 
