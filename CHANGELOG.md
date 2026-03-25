@@ -2,17 +2,20 @@
 
 ## [0.2.3] - 2026-03-25
 
-### Auto-Discovery
-- Extension initializes all ports in the scan range (8089-8098) at startup — no probing needed
-- Servers are discovered naturally through the reconnect loop, eliminating probe-induced connection churn
-- Auto-discovered ports cleaned up after 2 minutes of disconnection or 3 failed initial attempts
+### Auto-Discovery (Secure)
+- Extension initializes all ports in the scan range (8089-8098) at startup
+- **Auto-scan ports require auth token** — prevents rogue local processes from hijacking the extension
+- When native messaging delivers the token, auto-discovery works seamlessly
+- When native messaging is unavailable, auto-scan ports are skipped; user must manually add ports (explicit trust)
 - Manual ports persisted in `storage.local` (survives Safari restarts); auto-ports are ephemeral
+- Auto-discovered ports cleaned up after 2 minutes of disconnection or 3 failed initial attempts
 
 ### Bug Fixes
 - Fixed reconnect amplification: guard against `CONNECTING` state prevents duplicate socket creation
 - Fixed pending request drain on `.cancelled` only applying to the active connection (not a replacement)
 - Fixed double JSON parse in WebSocket error handler
 - Auth token mismatch now closes the connection instead of leaving it open
+- Eliminated probe WebSocket churn (init all ports, connect via normal loop)
 - Cleaned up dead code (`TOKEN_FILE_PATH` constant, unused `.btn` CSS)
 - `stop()` now nils the listener reference
 

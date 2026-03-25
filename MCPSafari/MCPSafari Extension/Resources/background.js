@@ -45,13 +45,21 @@ function isAutoScanPort(port) {
 
 function connectToPort(port) {
     const conn = ensurePort(port);
-    // Don't create a new socket if one is already open or connecting
     if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) return;
+
+    // Security: auto-scan ports require auth token to prevent rogue process connections.
+    // Manual ports (user explicitly added) are trusted without auth.
+    if (!conn.manual && isAutoScanPort(port) && !authToken) {
+        return; // Skip — can't verify server identity without auth
+    }
 
     conn.state = "connecting";
     const wsUrl = `ws://localhost:${port}`;
     const socket = new WebSocket(wsUrl);
     conn.ws = socket;
+
+    // Auto-scan ports always require auth; manual ports use auth if available
+    const requireAuth = !conn.manual && isAutoScanPort(port);
     let pendingAuth = !!authToken;
 
     socket.onopen = () => {
@@ -59,10 +67,15 @@ function connectToPort(port) {
         if (authToken) {
             socket.send(JSON.stringify({ auth: authToken }));
             console.log(`[MCPSafari:${port}] Sent auth token`);
-        } else {
+        } else if (!requireAuth) {
+            // Manual port, no auth available — connect directly
             conn.state = "connected";
             conn.attempts = 0;
-            console.log(`[MCPSafari:${port}] Connected (no auth)`);
+            console.log(`[MCPSafari:${port}] Connected (manual, no auth)`);
+        } else {
+            // Should not reach here due to guard above, but be safe
+            console.error(`[MCPSafari:${port}] Auto-scan port requires auth`);
+            socket.close();
         }
     };
 
