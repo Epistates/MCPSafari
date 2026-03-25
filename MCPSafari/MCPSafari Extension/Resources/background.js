@@ -6,56 +6,66 @@
  * and sends BridgeResponse messages back.
  */
 
-const WS_URL = "ws://localhost:8089";
+const DEFAULT_PORT = 8089;
 const RECONNECT_BASE_MS = 1000;
-const RECONNECT_MAX_MS = 30000;
+const RECONNECT_MAX_MS = 5000;
 const TOKEN_FILE_PATH = "~/.config/mcp-safari/token";
 
-let ws = null;
-let reconnectAttempts = 0;
-let connectionState = "disconnected"; // disconnected | connecting | connected
-let selectedTabId = null; // Pinned tab for context (set via select_tab tool)
-let authToken = null; // Read from token file at startup
+// ─── Multi-Connection State ──────────────────────────────────────────
+// Each port gets its own WebSocket connection. Multiple MCP server
+// instances (e.g., Claude Code + Claude Desktop) can connect simultaneously.
+
+/** @type {Map<number, {ws: WebSocket|null, state: string, attempts: number}>} */
+const connections = new Map();
+let selectedTabId = null;
+let authToken = null;
+
+function ensurePort(port) {
+    if (!connections.has(port)) {
+        connections.set(port, { ws: null, state: "disconnected", attempts: 0 });
+    }
+    return connections.get(port);
+}
 
 // ─── WebSocket Connection ────────────────────────────────────────────
 
-function connect() {
-    if (ws && ws.readyState === WebSocket.OPEN) return;
+function connectToPort(port) {
+    const conn = ensurePort(port);
+    if (conn.ws && conn.ws.readyState === WebSocket.OPEN) return;
 
-    connectionState = "connecting";
-    ws = new WebSocket(WS_URL);
-    let pendingAuth = !!authToken; // Only do auth handshake if we have a token
+    conn.state = "connecting";
+    const wsUrl = `ws://localhost:${port}`;
+    const socket = new WebSocket(wsUrl);
+    conn.ws = socket;
+    let pendingAuth = !!authToken;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
         if (authToken) {
-            // Send auth token as the first message
-            ws.send(JSON.stringify({ auth: authToken }));
-            console.log("[MCPSafari] Sent auth token to MCP server");
+            socket.send(JSON.stringify({ auth: authToken }));
+            console.log(`[MCPSafari:${port}] Sent auth token`);
         } else {
-            // No token — skip auth, connect directly
-            connectionState = "connected";
-            reconnectAttempts = 0;
-            console.log("[MCPSafari] Connected to MCP server (no auth)");
+            conn.state = "connected";
+            conn.attempts = 0;
+            console.log(`[MCPSafari:${port}] Connected (no auth)`);
         }
     };
 
-    ws.onmessage = async (event) => {
-        // If we sent an auth token, first message must be the ack
+    socket.onmessage = async (event) => {
         if (pendingAuth) {
             pendingAuth = false;
             try {
                 const msg = JSON.parse(event.data);
                 if (msg.auth === "ok") {
-                    connectionState = "connected";
-                    reconnectAttempts = 0;
-                    console.log("[MCPSafari] Authenticated and connected to MCP server");
+                    conn.state = "connected";
+                    conn.attempts = 0;
+                    console.log(`[MCPSafari:${port}] Authenticated`);
                 } else {
-                    console.error("[MCPSafari] Authentication rejected");
-                    ws.close();
+                    console.error(`[MCPSafari:${port}] Auth rejected`);
+                    socket.close();
                 }
             } catch (err) {
-                console.error("[MCPSafari] Invalid auth response:", err);
-                ws.close();
+                console.error(`[MCPSafari:${port}] Invalid auth response:`, err);
+                socket.close();
             }
             return;
         }
@@ -63,39 +73,55 @@ function connect() {
         try {
             const request = JSON.parse(event.data);
             const response = await handleRequest(request);
-            ws.send(JSON.stringify(response));
+            socket.send(JSON.stringify(response));
         } catch (err) {
-            console.error("[MCPSafari] Error handling message:", err);
+            console.error(`[MCPSafari:${port}] Error:`, err);
             try {
                 const req = JSON.parse(event.data);
-                ws.send(JSON.stringify({
+                socket.send(JSON.stringify({
                     id: req.id,
                     success: false,
                     error: String(err),
                     data: null,
                 }));
-            } catch (_) { /* ignore parse failure */ }
+            } catch (_) { /* ignore */ }
         }
     };
 
-    ws.onclose = () => {
-        connectionState = "disconnected";
-        console.log("[MCPSafari] Disconnected from MCP server");
-        scheduleReconnect();
+    socket.onclose = () => {
+        conn.state = "disconnected";
+        conn.ws = null;
+        console.log(`[MCPSafari:${port}] Disconnected`);
+        scheduleReconnect(port);
     };
 
-    ws.onerror = (err) => {
-        console.error("[MCPSafari] WebSocket error:", err);
+    socket.onerror = (err) => {
+        console.error(`[MCPSafari:${port}] WebSocket error:`, err);
     };
 }
 
-function scheduleReconnect() {
-    const delay = Math.min(
-        RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts),
+function scheduleReconnect(port) {
+    const conn = ensurePort(port);
+    const delayMs = Math.min(
+        RECONNECT_BASE_MS * Math.pow(2, conn.attempts),
         RECONNECT_MAX_MS
     );
-    reconnectAttempts++;
-    setTimeout(connect, delay);
+    conn.attempts++;
+    setTimeout(() => connectToPort(port), delayMs);
+}
+
+function connectAll() {
+    for (const port of connections.keys()) {
+        connectToPort(port);
+    }
+}
+
+function disconnectPort(port) {
+    const conn = connections.get(port);
+    if (conn) {
+        if (conn.ws) conn.ws.close();
+        connections.delete(port);
+    }
 }
 
 // ─── Request Router ──────────────────────────────────────────────────
@@ -282,22 +308,28 @@ function persistSelectedTab(tabId) {
     } catch (_) { /* storage may not be available */ }
 }
 
-async function restoreSelectedTab() {
+async function restoreSessionState() {
     try {
         if (browser.storage && browser.storage.session) {
-            const data = await browser.storage.session.get("selectedTabId");
+            const data = await browser.storage.session.get(["selectedTabId", "wsPorts"]);
+            if (data.wsPorts && Array.isArray(data.wsPorts)) {
+                for (const port of data.wsPorts) {
+                    ensurePort(port);
+                }
+            }
             if (data.selectedTabId != null) {
-                // Verify the tab still exists
                 try {
                     await browser.tabs.get(data.selectedTabId);
                     selectedTabId = data.selectedTabId;
                 } catch {
-                    // Tab was closed
                     await browser.storage.session.remove("selectedTabId");
                 }
             }
         }
     } catch (_) { /* ignore */ }
+
+    // Always ensure the default port exists
+    ensurePort(DEFAULT_PORT);
 }
 
 // ─── Navigation Handler ─────────────────────────────────────────────
@@ -492,29 +524,77 @@ function delay(ms) {
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "getStatus") {
-        sendResponse({ connectionState, wsUrl: WS_URL });
+        // Return status for all connections
+        const ports = [];
+        for (const [port, conn] of connections) {
+            ports.push({ port, state: conn.state });
+        }
+        sendResponse({ ports });
+        return false;
+    }
+    if (message.type === "addPort") {
+        const port = parseInt(message.port, 10);
+        if (port >= 1024 && port <= 65535) {
+            ensurePort(port);
+            connectToPort(port);
+            persistPorts();
+        }
+        sendResponse({ ok: true });
+        return false;
+    }
+    if (message.type === "removePort") {
+        const port = parseInt(message.port, 10);
+        disconnectPort(port);
+        persistPorts();
+        sendResponse({ ok: true });
         return false;
     }
     if (message.type === "reconnect") {
-        if (ws) ws.close();
-        reconnectAttempts = 0;
-        connect();
+        // Reconnect a specific port, or only disconnected ports if no port specified
+        if (message.port) {
+            const port = parseInt(message.port, 10);
+            const conn = connections.get(port);
+            if (conn && conn.ws) conn.ws.close();
+            if (conn) conn.attempts = 0;
+            connectToPort(port);
+        } else {
+            // Only reconnect ports that aren't already connected
+            for (const [port, conn] of connections) {
+                if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+                    conn.attempts = 0;
+                    connectToPort(port);
+                }
+            }
+        }
         sendResponse({ ok: true });
         return false;
     }
     return false;
 });
 
+function persistPorts() {
+    try {
+        if (browser.storage && browser.storage.session) {
+            browser.storage.session.set({ wsPorts: [...connections.keys()] });
+        }
+    } catch (_) { /* ignore */ }
+}
+
 // ─── Service Worker Keepalive ─────────────────────────────────────────
 
 // Service workers get suspended after ~30s of inactivity.
 // Use alarms to periodically wake and ensure WebSocket stays connected.
+// The alarm also resets backoff so the extension quickly reconnects when
+// a new server starts (instead of waiting for a long backoff to expire).
 if (typeof browser.alarms !== "undefined") {
     browser.alarms.create("mcp-keepalive", { periodInMinutes: 0.4 }); // ~24s
     browser.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === "mcp-keepalive") {
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-                connect();
+            for (const [port, conn] of connections) {
+                if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+                    conn.attempts = 0;
+                    connectToPort(port);
+                }
             }
         }
     });
@@ -541,7 +621,7 @@ async function loadAuthToken() {
 
 // ─── Initialize ──────────────────────────────────────────────────────
 
-Promise.all([loadAuthToken(), restoreSelectedTab()]).then(() => {
-    connect();
+Promise.all([loadAuthToken(), restoreSessionState()]).then(() => {
+    connectAll();
     console.log("[MCPSafari] Background script initialized");
 });

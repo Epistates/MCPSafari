@@ -3,7 +3,7 @@
 }
 
 body {
-    width: 200px;
+    width: 240px;
     padding: 12px;
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -17,11 +17,22 @@ body {
     text-align: center;
 }
 
-.status {
+/* ─── Connection rows ─────────────────────────────── */
+
+#connections {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+}
+
+.conn-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 0;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.06);
 }
 
 .dot {
@@ -31,34 +42,84 @@ body {
     flex-shrink: 0;
 }
 
-.connected .dot {
-    background: #34c759;
-}
-
-.connecting .dot {
-    background: #ff9f0a;
-    animation: pulse 1s ease-in-out infinite;
-}
-
-.disconnected .dot {
-    background: #ff3b30;
-}
+.connected .dot { background: #34c759; }
+.connecting .dot { background: #ff9f0a; animation: pulse 1s ease-in-out infinite; }
+.disconnected .dot { background: #ff3b30; }
 
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
 }
 
-.ws-url {
+.conn-port {
+    font-family: "SF Mono", ui-monospace, monospace;
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 44px;
+}
+
+.conn-state {
     font-size: 11px;
     color: #888;
-    margin: 4px 0 10px;
-    word-break: break-all;
+    flex: 1;
 }
+
+.btn-remove {
+    background: none;
+    border: none;
+    color: #ff3b30;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.btn-remove:hover {
+    color: #ff6961;
+}
+
+.empty {
+    text-align: center;
+    color: #888;
+    font-size: 12px;
+    padding: 8px 0;
+}
+
+/* ─── Add row ─────────────────────────────────────── */
+
+.add-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.add-row input {
+    flex: 1;
+    padding: 5px 8px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: "SF Mono", ui-monospace, monospace;
+}
+
+.btn-sm {
+    padding: 5px 10px;
+    border: none;
+    border-radius: 6px;
+    background: #34c759;
+    color: white;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.btn-sm:hover { background: #2da44e; }
+
+/* ─── Buttons ─────────────────────────────────────── */
 
 .btn {
     width: 100%;
-    padding: 6px 12px;
+    padding: 7px 12px;
     border: none;
     border-radius: 6px;
     background: #007aff;
@@ -68,16 +129,16 @@ body {
     font-family: inherit;
 }
 
-.btn:hover {
-    background: #0056b3;
-}
+.btn:hover { background: #0056b3; }
+.btn:active { background: #004494; }
 
-.btn:active {
-    background: #004494;
-}
+/* ─── Dark mode ───────────────────────────────────── */
 
 @media (prefers-color-scheme: dark) {
-    .ws-url {
-        color: #999;
+    .conn-state { color: #999; }
+    .add-row input {
+        background: #1c1c1e;
+        border-color: #444;
+        color: #fff;
     }
 }

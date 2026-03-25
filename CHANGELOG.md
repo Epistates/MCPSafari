@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.2.1] - 2026-03-25
+
+### Multi-Connection Support
+- Extension now supports **multiple simultaneous MCP server connections** — run Claude Code and Claude Desktop (or any number of MCP clients) at the same time, each on its own port
+- Extension popup shows all connections with live status indicators
+- Add/remove ports from the popup UI
+- "Reconnect Disconnected" only retouches broken connections, leaving healthy ones alone
+- Configurable WebSocket port per server instance (`--port <n>`)
+
+### Connection Reliability
+- Server accepts WebSocket connections immediately (fixed deadlock where `awaitFirstMessage` blocked when extension sent no auth token)
+- Auth handshake handled inline in message stream instead of blocking connection setup
+- Reduced max reconnect backoff from 30s to 5s for faster recovery
+- Keepalive alarm resets backoff so extension reconnects quickly when a new server starts
+- Ports persisted across service worker suspensions via `browser.storage.session`
+
+### Token Optimization
+- Tool schemas reduced from ~3,500 to ~2,160 tokens (38% reduction)
+- Terse descriptions and shared schema fragments minimize LLM context usage
+- Removed redundant `get_page_text` tool (use `read_page` with `format: "text"`)
+- Removed `title` from tool annotations (LLMs don't use it)
+- Server instructions condensed to a single line
+
+### Bug Fixes & Security
+- Fixed extension registration on macOS 26 Tahoe — added required `app-sandbox` entitlements
+- Fixed release signing: inner-to-outer with entitlements instead of `--deep` (which stripped them)
+- Fixed `reload` navigation action fall-through (missing `break` in switch)
+- Fixed WebSocket continuation race condition (registration before send)
+- Fixed zombie continuations on connection replacement (drain on `.cancelled`)
+- Fixed `selectOption` returning "undefined" when resolved by UID
+- Fixed `read_page` silently falling through on unknown format
+- Fixed `console-interceptor` clearing all levels when filtering by one
+- Added URL scheme validation (http/https/about/file only)
+- Added regex pattern validation and length cap (200 chars)
+- Added `wait` duration cap (300 seconds max)
+- Added `buildTree` depth limit (30 levels)
+
+### Infrastructure
+- CI and release workflows now run on `macos-26` runners
+- CI skips on docs-only changes (`paths-ignore` for `*.md`, `LICENSE`, `.gitignore`)
+- Homebrew cask installs app to `/Applications` + CLI binary via formula dependency
+- Cask `postflight` auto-opens app to register extension
+
 ## [0.1.0] - 2026-03-23
 
 Initial release of MCPSafari — Safari browser automation via the Model Context Protocol.

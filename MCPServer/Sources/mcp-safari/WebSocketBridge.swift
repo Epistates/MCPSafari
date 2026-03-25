@@ -180,7 +180,14 @@ actor WebSocketBridge {
     }
 
     private func handleNewConnection(_ newConnection: NWConnection) {
-        logger.info("New WebSocket connection")
+        // Accept immediately — replace any existing connection
+        if let existing = connection {
+            logger.info("Replacing existing extension connection")
+            existing.cancel()
+        }
+
+        connection = newConnection
+        logger.info("Safari extension connected")
 
         newConnection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
@@ -189,77 +196,9 @@ actor WebSocketBridge {
 
         newConnection.start(queue: networkQueue)
 
-        // Wait for the first message — may be an auth handshake or a direct request
-        awaitFirstMessage(from: newConnection)
-    }
-
-    /// Receives the first message on a new connection.
-    /// If it's an auth message {"auth":"<token>"}, validates and acks.
-    /// If it's not an auth message (no token mode), accepts directly.
-    private func awaitFirstMessage(from conn: NWConnection) {
-        conn.receiveMessage { [weak self] content, context, _, error in
-            guard let self else { return }
-
-            if let error {
-                self.logger.warning("First message receive error: \(error)")
-                conn.cancel()
-                return
-            }
-
-            guard let data = content else {
-                conn.cancel()
-                return
-            }
-
-            // Check if this is an auth message
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let token = json["auth"] as? String {
-                Task { await self.completeAuthentication(conn: conn, token: token) }
-            } else {
-                // Not an auth message — accept without auth and process as first request
-                Task { await self.acceptConnection(conn: conn, firstMessage: data) }
-            }
-        }
-    }
-
-    private func completeAuthentication(conn: NWConnection, token: String) {
-        guard token == authToken else {
-            logger.warning("Connection rejected: invalid auth token")
-            conn.cancel()
-            return
-        }
-
-        // Auth passed — replace existing connection
-        if let existing = connection {
-            logger.info("Replacing existing extension connection")
-            existing.cancel()
-        }
-
-        connection = conn
-        logger.info("Safari extension authenticated and connected")
-
-        // Send auth acknowledgment
-        let ack = #"{"auth":"ok"}"#
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
-        let context = NWConnection.ContentContext(identifier: "ws-auth", metadata: [metadata])
-        conn.send(content: ack.data(using: .utf8), contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
-
-        receiveMessages(from: conn)
-    }
-
-    /// Accept a connection without auth and process the first message as data.
-    private func acceptConnection(conn: NWConnection, firstMessage: Data) {
-        if let existing = connection {
-            logger.info("Replacing existing extension connection")
-            existing.cancel()
-        }
-
-        connection = conn
-        logger.info("Safari extension connected (no auth)")
-
-        // Process the first message as a regular bridge response
-        handleTextMessage(firstMessage)
-        receiveMessages(from: conn)
+        // Start receiving messages immediately.
+        // If the first message is an auth handshake, handle it inline.
+        receiveMessages(from: newConnection)
     }
 
     private func handleConnectionState(_ state: NWConnection.State, connection conn: NWConnection) {
@@ -328,6 +267,22 @@ actor WebSocketBridge {
     }
 
     private func handleTextMessage(_ data: Data) {
+        // Check for auth handshake message: {"auth":"<token>"}
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let token = json["auth"] as? String {
+            if token == authToken {
+                logger.info("Safari extension authenticated")
+                // Send auth acknowledgment
+                let ack = #"{"auth":"ok"}"#
+                let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+                let context = NWConnection.ContentContext(identifier: "ws-auth", metadata: [metadata])
+                connection?.send(content: ack.data(using: .utf8), contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
+            } else {
+                logger.warning("Auth token mismatch — ignoring (connection stays open)")
+            }
+            return
+        }
+
         do {
             let response = try JSONDecoder().decode(BridgeResponse.self, from: data)
             logger.debug("Received bridge response: [\(response.id)] success=\(response.success)")

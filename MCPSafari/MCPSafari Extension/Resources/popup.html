@@ -7,11 +7,11 @@
 </head>
 <body>
     <div class="header">MCPSafari</div>
-    <div id="status" class="status disconnected">
-        <span id="status-dot" class="dot"></span>
-        <span id="status-text">Checking...</span>
+    <div id="connections"></div>
+    <div class="add-row">
+        <input id="port-input" type="number" min="1024" max="65535" placeholder="Port" />
+        <button id="add-btn" class="btn-sm">Add</button>
     </div>
-    <div id="ws-url" class="ws-url"></div>
-    <button id="reconnect-btn" class="btn">Reconnect</button>
+    <button id="reconnect-all-btn" class="btn">Reconnect Disconnected</button>
 </body>
 </html>
