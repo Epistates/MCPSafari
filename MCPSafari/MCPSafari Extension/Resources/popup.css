@@ -64,19 +64,34 @@ body {
     flex: 1;
 }
 
-.btn-remove {
-    background: none;
-    border: none;
-    color: #ff3b30;
-    font-size: 16px;
-    cursor: pointer;
-    padding: 0 4px;
-    line-height: 1;
+.auto-badge {
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(128, 128, 128, 0.15);
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
 }
 
-.btn-remove:hover {
-    color: #ff6961;
+.btn-icon {
+    background: none;
+    border: none;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 0.15s;
 }
+
+.btn-icon:hover {
+    opacity: 1;
+}
+
+.btn-reconnect { color: #007aff; }
+.btn-remove { color: #ff3b30; }
 
 .empty {
     text-align: center;
@@ -114,23 +129,6 @@ body {
 }
 
 .btn-sm:hover { background: #2da44e; }
-
-/* ─── Buttons ─────────────────────────────────────── */
-
-.btn {
-    width: 100%;
-    padding: 7px 12px;
-    border: none;
-    border-radius: 6px;
-    background: #007aff;
-    color: white;
-    font-size: 13px;
-    cursor: pointer;
-    font-family: inherit;
-}
-
-.btn:hover { background: #0056b3; }
-.btn:active { background: #004494; }
 
 /* ─── Dark mode ───────────────────────────────────── */
 

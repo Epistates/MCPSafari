@@ -149,20 +149,20 @@ Any client that supports the MCP stdio transport can connect. Point it at `mcp-s
 
 ### Multiple Claude Instances
 
-Each MCP client spawns its own server. To run Claude Code and Claude Desktop simultaneously, use different ports:
+Multiple MCP clients work automatically. The server auto-finds a free port if the default (8089) is in use, and the extension auto-discovers all servers in the 8089-8098 range. No configuration needed — just start multiple clients and they each get their own connection.
+
+For ports outside the default range, add them manually in the extension popup or specify explicitly:
 
 ```json
 {
   "mcpServers": {
     "mcp-safari": {
       "command": "mcp-safari",
-      "args": ["--port", "8090"]
+      "args": ["--port", "9090"]
     }
   }
 }
 ```
-
-The extension supports multiple simultaneous connections — add additional ports from the extension popup.
 
 ### CLI Options
 

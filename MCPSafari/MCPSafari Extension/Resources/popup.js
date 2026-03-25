@@ -7,20 +7,39 @@ function renderConnections(ports) {
         return;
     }
 
-    for (const { port, state } of ports) {
+    // Sort: connected first, then by port number
+    ports.sort((a, b) => {
+        if (a.state === "connected" && b.state !== "connected") return -1;
+        if (b.state === "connected" && a.state !== "connected") return 1;
+        return a.port - b.port;
+    });
+
+    for (const { port, state, manual } of ports) {
         const row = document.createElement("div");
         row.className = `conn-row ${state}`;
+
+        const label = manual ? "" : '<span class="auto-badge">auto</span>';
 
         row.innerHTML = `
             <span class="dot"></span>
             <span class="conn-port">${port}</span>
+            ${label}
             <span class="conn-state">${state}</span>
-            <button class="btn-remove" data-port="${port}">&times;</button>
+            <button class="btn-icon btn-reconnect" data-port="${port}" title="Reconnect">&#x21bb;</button>
+            <button class="btn-icon btn-remove" data-port="${port}" title="Remove">&times;</button>
         `;
         container.appendChild(row);
     }
 
-    // Bind remove buttons
+    container.querySelectorAll(".btn-reconnect").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const port = parseInt(btn.dataset.port, 10);
+            await browser.runtime.sendMessage({ type: "reconnect", port });
+            await new Promise((r) => setTimeout(r, 1000));
+            refresh();
+        });
+    });
+
     container.querySelectorAll(".btn-remove").forEach((btn) => {
         btn.addEventListener("click", async () => {
             const port = parseInt(btn.dataset.port, 10);
@@ -42,7 +61,6 @@ async function refresh() {
 document.addEventListener("DOMContentLoaded", async () => {
     await refresh();
 
-    // Add port
     document.getElementById("add-btn").addEventListener("click", async () => {
         const input = document.getElementById("port-input");
         const port = parseInt(input.value, 10);
@@ -52,12 +70,5 @@ document.addEventListener("DOMContentLoaded", async () => {
             await new Promise((r) => setTimeout(r, 500));
             refresh();
         }
-    });
-
-    // Reconnect all
-    document.getElementById("reconnect-all-btn").addEventListener("click", async () => {
-        await browser.runtime.sendMessage({ type: "reconnect" });
-        await new Promise((r) => setTimeout(r, 1000));
-        refresh();
     });
 });

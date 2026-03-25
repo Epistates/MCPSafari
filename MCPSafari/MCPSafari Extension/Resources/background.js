@@ -7,31 +7,46 @@
  */
 
 const DEFAULT_PORT = 8089;
+const AUTO_SCAN_RANGE = 10; // Ports 8089-8098 are auto-managed
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 5000;
-const TOKEN_FILE_PATH = "~/.config/mcp-safari/token";
+const AUTO_CLEANUP_MS = 120_000;
 
 // ─── Multi-Connection State ──────────────────────────────────────────
-// Each port gets its own WebSocket connection. Multiple MCP server
-// instances (e.g., Claude Code + Claude Desktop) can connect simultaneously.
+// All ports in the scan range (8089-8098) are initialized at startup.
+// The extension tries to connect to each — servers that exist get connected,
+// absent ports stay disconnected and are cleaned up after AUTO_CLEANUP_MS.
+// Manually added ports are persisted in storage.local across restarts.
 
-/** @type {Map<number, {ws: WebSocket|null, state: string, attempts: number}>} */
+/** @type {Map<number, {ws: WebSocket|null, state: string, attempts: number, manual: boolean, lastConnected: number}>} */
 const connections = new Map();
+/** @type {Set<number>} Manually added ports (persisted across restarts) */
+const manualPorts = new Set();
 let selectedTabId = null;
 let authToken = null;
 
-function ensurePort(port) {
+function ensurePort(port, manual = false) {
     if (!connections.has(port)) {
-        connections.set(port, { ws: null, state: "disconnected", attempts: 0 });
+        connections.set(port, { ws: null, state: "disconnected", attempts: 0, manual, lastConnected: 0 });
+    }
+    if (manual) {
+        const conn = connections.get(port);
+        conn.manual = true;
+        manualPorts.add(port);
     }
     return connections.get(port);
+}
+
+function isAutoScanPort(port) {
+    return port >= DEFAULT_PORT && port < DEFAULT_PORT + AUTO_SCAN_RANGE;
 }
 
 // ─── WebSocket Connection ────────────────────────────────────────────
 
 function connectToPort(port) {
     const conn = ensurePort(port);
-    if (conn.ws && conn.ws.readyState === WebSocket.OPEN) return;
+    // Don't create a new socket if one is already open or connecting
+    if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) return;
 
     conn.state = "connecting";
     const wsUrl = `ws://localhost:${port}`;
@@ -40,6 +55,7 @@ function connectToPort(port) {
     let pendingAuth = !!authToken;
 
     socket.onopen = () => {
+        conn.lastConnected = Date.now();
         if (authToken) {
             socket.send(JSON.stringify({ auth: authToken }));
             console.log(`[MCPSafari:${port}] Sent auth token`);
@@ -70,34 +86,32 @@ function connectToPort(port) {
             return;
         }
 
+        let request;
         try {
-            const request = JSON.parse(event.data);
+            request = JSON.parse(event.data);
+        } catch (_) { return; }
+
+        try {
             const response = await handleRequest(request);
             socket.send(JSON.stringify(response));
         } catch (err) {
             console.error(`[MCPSafari:${port}] Error:`, err);
-            try {
-                const req = JSON.parse(event.data);
-                socket.send(JSON.stringify({
-                    id: req.id,
-                    success: false,
-                    error: String(err),
-                    data: null,
-                }));
-            } catch (_) { /* ignore */ }
+            socket.send(JSON.stringify({
+                id: request.id,
+                success: false,
+                error: String(err),
+                data: null,
+            }));
         }
     };
 
     socket.onclose = () => {
         conn.state = "disconnected";
         conn.ws = null;
-        console.log(`[MCPSafari:${port}] Disconnected`);
         scheduleReconnect(port);
     };
 
-    socket.onerror = (err) => {
-        console.error(`[MCPSafari:${port}] WebSocket error:`, err);
-    };
+    socket.onerror = () => { /* logged by onclose */ };
 }
 
 function scheduleReconnect(port) {
@@ -309,14 +323,22 @@ function persistSelectedTab(tabId) {
 }
 
 async function restoreSessionState() {
+    // Restore manually added ports (persists across Safari restarts)
     try {
-        if (browser.storage && browser.storage.session) {
-            const data = await browser.storage.session.get(["selectedTabId", "wsPorts"]);
-            if (data.wsPorts && Array.isArray(data.wsPorts)) {
-                for (const port of data.wsPorts) {
-                    ensurePort(port);
+        if (browser.storage && browser.storage.local) {
+            const data = await browser.storage.local.get("manualPorts");
+            if (data.manualPorts && Array.isArray(data.manualPorts)) {
+                for (const port of data.manualPorts) {
+                    ensurePort(port, true);
                 }
             }
+        }
+    } catch (_) { /* ignore */ }
+
+    // Restore selected tab (session-only — lost on Safari restart)
+    try {
+        if (browser.storage && browser.storage.session) {
+            const data = await browser.storage.session.get("selectedTabId");
             if (data.selectedTabId != null) {
                 try {
                     await browser.tabs.get(data.selectedTabId);
@@ -328,8 +350,12 @@ async function restoreSessionState() {
         }
     } catch (_) { /* ignore */ }
 
-    // Always ensure the default port exists
-    ensurePort(DEFAULT_PORT);
+    // Initialize all ports in the auto-scan range.
+    // connectAll() will attempt each — servers that exist get connected,
+    // absent ports fail silently and are cleaned up by the alarm.
+    for (let offset = 0; offset < AUTO_SCAN_RANGE; offset++) {
+        ensurePort(DEFAULT_PORT + offset);
+    }
 }
 
 // ─── Navigation Handler ─────────────────────────────────────────────
@@ -524,10 +550,9 @@ function delay(ms) {
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "getStatus") {
-        // Return status for all connections
         const ports = [];
         for (const [port, conn] of connections) {
-            ports.push({ port, state: conn.state });
+            ports.push({ port, state: conn.state, manual: conn.manual });
         }
         sendResponse({ ports });
         return false;
@@ -535,9 +560,9 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "addPort") {
         const port = parseInt(message.port, 10);
         if (port >= 1024 && port <= 65535) {
-            ensurePort(port);
+            ensurePort(port, true); // manual = true
             connectToPort(port);
-            persistPorts();
+            persistManualPorts();
         }
         sendResponse({ ok: true });
         return false;
@@ -545,7 +570,8 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "removePort") {
         const port = parseInt(message.port, 10);
         disconnectPort(port);
-        persistPorts();
+        manualPorts.delete(port);
+        persistManualPorts();
         sendResponse({ ok: true });
         return false;
     }
@@ -572,10 +598,10 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
 });
 
-function persistPorts() {
+function persistManualPorts() {
     try {
-        if (browser.storage && browser.storage.session) {
-            browser.storage.session.set({ wsPorts: [...connections.keys()] });
+        if (browser.storage && browser.storage.local) {
+            browser.storage.local.set({ manualPorts: [...manualPorts] });
         }
     } catch (_) { /* ignore */ }
 }
@@ -590,10 +616,27 @@ if (typeof browser.alarms !== "undefined") {
     browser.alarms.create("mcp-keepalive", { periodInMinutes: 0.4 }); // ~24s
     browser.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === "mcp-keepalive") {
+            // Try to connect disconnected ports (reset backoff for quick recovery)
             for (const [port, conn] of connections) {
                 if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
                     conn.attempts = 0;
                     connectToPort(port);
+                }
+            }
+
+            // Clean up auto-scan ports that have never connected or have been
+            // disconnected for longer than AUTO_CLEANUP_MS
+            const now = Date.now();
+            for (const [port, conn] of connections) {
+                if (conn.manual) continue;
+                if (!isAutoScanPort(port)) continue;
+                if (conn.state === "connected") continue;
+                if (conn.lastConnected === 0 && conn.attempts > 3) {
+                    // Never connected — remove after a few failed attempts
+                    connections.delete(port);
+                } else if (conn.lastConnected > 0 && (now - conn.lastConnected) > AUTO_CLEANUP_MS) {
+                    // Was connected but server has been gone for 2+ minutes
+                    connections.delete(port);
                 }
             }
         }

@@ -146,9 +146,9 @@ actor WebSocketBridge {
 
     func stop() {
         listener?.cancel()
+        listener = nil
         connection?.cancel()
         connection = nil
-        // Fail all pending requests
         for (_, continuation) in pendingRequests {
             continuation.resume(throwing: BridgeError.notConnected)
         }
@@ -263,13 +263,13 @@ actor WebSocketBridge {
             logger.info("Extension connection closed")
             if connection === conn {
                 connection = nil
+                // Only drain pending requests if this was the active connection.
+                // If a new connection replaced this one, its requests are still valid.
+                for (_, continuation) in pendingRequests {
+                    continuation.resume(throwing: BridgeError.notConnected)
+                }
+                pendingRequests.removeAll()
             }
-            // Drain pending requests so callers fail immediately instead of
-            // waiting for the 30-second timeout.
-            for (_, continuation) in pendingRequests {
-                continuation.resume(throwing: BridgeError.notConnected)
-            }
-            pendingRequests.removeAll()
         default:
             break
         }
@@ -322,7 +322,9 @@ actor WebSocketBridge {
                 let context = NWConnection.ContentContext(identifier: "ws-auth", metadata: [metadata])
                 connection?.send(content: ack.data(using: .utf8), contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
             } else {
-                logger.warning("Auth token mismatch — ignoring (connection stays open)")
+                logger.warning("Auth token mismatch — closing connection")
+                connection?.cancel()
+                connection = nil
             }
             return
         }

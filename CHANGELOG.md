@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.3] - 2026-03-25
+
+### Auto-Discovery
+- Extension initializes all ports in the scan range (8089-8098) at startup — no probing needed
+- Servers are discovered naturally through the reconnect loop, eliminating probe-induced connection churn
+- Auto-discovered ports cleaned up after 2 minutes of disconnection or 3 failed initial attempts
+- Manual ports persisted in `storage.local` (survives Safari restarts); auto-ports are ephemeral
+
+### Bug Fixes
+- Fixed reconnect amplification: guard against `CONNECTING` state prevents duplicate socket creation
+- Fixed pending request drain on `.cancelled` only applying to the active connection (not a replacement)
+- Fixed double JSON parse in WebSocket error handler
+- Auth token mismatch now closes the connection instead of leaving it open
+- Cleaned up dead code (`TOKEN_FILE_PATH` constant, unused `.btn` CSS)
+- `stop()` now nils the listener reference
+
+### UI
+- Per-port reconnect (refresh icon) and remove (X) buttons replace global "Reconnect All"
+- Auto-discovered ports show "auto" badge; manual ports are always removable
+- Connected ports sorted first in the popup
+
 ## [0.2.2] - 2026-03-25
 
 ### Port Auto-Fallback
