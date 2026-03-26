@@ -14,7 +14,7 @@ actor SafariMCPServer {
         self.bridge = try WebSocketBridge(port: port, logger: logger)
         self.server = Server(
             name: "mcp-safari",
-            version: "0.2.3",
+            version: "0.2.4",
             instructions: """
                 Safari browser automation. Use tabs_context to list tabs, snapshot for element UIDs, \
                 then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state.

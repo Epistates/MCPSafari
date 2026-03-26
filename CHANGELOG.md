@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.4] - 2026-03-26
+
+### Security
+- Auto-scan ports (8089-8098) now **require auth token** to connect — prevents rogue local processes from hijacking the extension
+- Without a valid token, auto-discovery is disabled; users must manually add ports (explicit trust)
+- Manual ports (user-added via popup) remain trusted without auth for development convenience
+
+### Homebrew
+- Cask preflight automatically kills stale `mcp-safari` processes and removes old `/Applications/MCPSafari.app` before installing
+- Added `brew upgrade` instructions to README
+
 ## [0.2.3] - 2026-03-25
 
 ### Auto-Discovery (Secure)

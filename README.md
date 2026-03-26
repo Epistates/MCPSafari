@@ -61,10 +61,16 @@ The MCP server communicates with clients over **stdio** and bridges tool calls t
 
 ### Homebrew (recommended)
 
-Installs the MCP server binary **and** the Safari extension app to `/Applications` in one step:
+Installs the MCP server binary **and** the Safari extension app to `/Applications` in one step. Automatically cleans up any previous installation.
 
 ```bash
 brew install --cask epistates/tap/mcp-safari
+```
+
+Upgrading:
+
+```bash
+brew upgrade --cask epistates/tap/mcp-safari
 ```
 
 After install, enable the extension in **Safari > Settings > Extensions > MCPSafari Extension**.
