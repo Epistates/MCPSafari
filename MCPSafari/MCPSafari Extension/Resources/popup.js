@@ -3,7 +3,7 @@ function renderConnections(ports) {
     container.innerHTML = "";
 
     if (!ports || ports.length === 0) {
-        container.innerHTML = '<div class="empty">No connections</div>';
+        container.innerHTML = '<div class="empty">Scanning for servers…</div>';
         return;
     }
 

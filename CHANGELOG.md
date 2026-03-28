@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.5] - 2026-03-28
+
+### Bug Fixes
+- Fixed auto-scan flooding: disconnected auto-scan ports no longer appear in the popup — only connected, manual, or previously-connected ports are shown
+- Fixed reconnect loop that could freeze the browser: alarm handler was resetting `attempts` to 0 for never-connected ports every 24s, preventing cleanup from ever triggering (`attempts > 3` was unreachable)
+- Never-connected auto-scan ports now accumulate failures and get cleaned up after 3 attempts as intended
+- Previously-connected ports still get fast backoff reset for quick recovery when a server restarts
+
+### UI
+- Empty popup state now shows "Scanning for servers..." instead of "No connections" to indicate background discovery is active
+
 ## [0.2.4] - 2026-03-26
 
 ### Security

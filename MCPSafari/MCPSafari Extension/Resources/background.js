@@ -565,6 +565,14 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "getStatus") {
         const ports = [];
         for (const [port, conn] of connections) {
+            // Only surface connections worth showing:
+            // - Currently connected
+            // - Manually added by the user
+            // - Auto-scan ports that have previously connected (server went away)
+            const isVisible = conn.state === "connected"
+                || conn.manual
+                || (isAutoScanPort(port) && conn.lastConnected > 0);
+            if (!isVisible) continue;
             ports.push({ port, state: conn.state, manual: conn.manual });
         }
         sendResponse({ ports });
@@ -629,10 +637,15 @@ if (typeof browser.alarms !== "undefined") {
     browser.alarms.create("mcp-keepalive", { periodInMinutes: 0.4 }); // ~24s
     browser.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === "mcp-keepalive") {
-            // Try to connect disconnected ports (reset backoff for quick recovery)
+            // Try to reconnect disconnected ports.
+            // Only reset backoff for previously-connected ports (quick recovery
+            // when a known server restarts). Never-connected auto-scan ports
+            // keep their attempt count so they get cleaned up below.
             for (const [port, conn] of connections) {
                 if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
-                    conn.attempts = 0;
+                    if (conn.lastConnected > 0 || conn.manual) {
+                        conn.attempts = 0;
+                    }
                     connectToPort(port);
                 }
             }
