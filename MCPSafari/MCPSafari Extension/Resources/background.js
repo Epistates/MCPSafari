@@ -281,6 +281,10 @@ async function handleTabsQuery() {
         url: t.url || "",
         title: t.title || "",
         active: t.active,
+        pinned: t.pinned || false,
+        audible: t.audible || false,
+        muted: t.mutedInfo ? t.mutedInfo.muted : false,
+        status: t.status || "complete",
         windowId: t.windowId,
         index: t.index,
     }));
