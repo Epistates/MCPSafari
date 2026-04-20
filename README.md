@@ -123,7 +123,13 @@ Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extens
 
 ### Claude Code
 
-Add to your MCP settings (`.claude/settings.json` or project-level):
+Register the server with the Claude Code CLI (user scope, available in every project):
+
+```bash
+claude mcp add --scope user mcp-safari mcp-safari
+```
+
+Or, to scope it to a single repo, create `.mcp.json` at the project root:
 
 ```json
 {
@@ -134,6 +140,10 @@ Add to your MCP settings (`.claude/settings.json` or project-level):
   }
 }
 ```
+
+Verify with `claude mcp list` — you should see `mcp-safari — ✓ Connected`.
+
+> **Note:** Claude Code's CLI does not read `mcpServers` from `~/.claude/settings.json` — that's the Claude Desktop format. Pasting the JSON snippet above into `settings.json` is silently ignored (no error, no registration), and the Safari extension will appear stuck at "disconnected" because the server is never spawned. Use `claude mcp add` or `.mcp.json` as shown above.
 
 ### Claude Desktop
 
