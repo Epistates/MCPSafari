@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/epistates-mcpsafari-badge.png)](https://mseep.ai/app/epistates-mcpsafari)
+
 <div align="center">
   <video src="https://github.com/user-attachments/assets/96566f48-a7b7-468b-bf96-8ca5c5c86da7" muted autoplay loop playsinline width="100%"></video>
 </div>
