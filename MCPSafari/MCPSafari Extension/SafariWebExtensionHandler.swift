@@ -31,14 +31,34 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
         var responseBody: [String: Any] = [:]
 
-        // Handle token request from the extension background script
-        if let dict = message as? [String: Any], dict["type"] as? String == "getToken" {
-            let tokenPath = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/mcp-safari/token").path
-            if let token = try? String(contentsOfFile: tokenPath, encoding: .utf8) {
+        // Handle token requests from the extension background script.
+        if let dict = message as? [String: Any],
+           let type = dict["type"] as? String,
+           type == "getToken" || type == "getTokens" {
+            let configDirectory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/mcp-safari")
+            let tokenDirectory = configDirectory.appendingPathComponent("tokens")
+            let legacyTokenPath = configDirectory.appendingPathComponent("token")
+
+            var tokens: [String: String] = [:]
+            if let files = try? FileManager.default.contentsOfDirectory(
+                at: tokenDirectory,
+                includingPropertiesForKeys: nil
+            ) {
+                for file in files {
+                    guard UInt16(file.lastPathComponent) != nil,
+                          let token = try? String(contentsOf: file, encoding: .utf8)
+                    else { continue }
+                    tokens[file.lastPathComponent] = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+
+            if !tokens.isEmpty {
+                responseBody = ["tokens": tokens]
+            } else if let token = try? String(contentsOf: legacyTokenPath, encoding: .utf8) {
                 responseBody = ["token": token.trimmingCharacters(in: .whitespacesAndNewlines)]
             } else {
-                responseBody = ["error": "Token file not found at \(tokenPath)"]
+                responseBody = ["error": "No token files found in \(tokenDirectory.path)"]
             }
         } else {
             responseBody = ["echo": message as Any]

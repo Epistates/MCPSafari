@@ -1,9 +1,10 @@
 /**
  * MCPSafari Dialog Interceptor
  *
- * Patches window.alert, confirm, and prompt to capture dialogs
- * instead of blocking the JS event loop. The MCP handle_dialog tool
- * can then accept or dismiss them.
+ * Patches window.alert, confirm, and prompt to capture dialogs without
+ * replacing synchronous browser APIs with Promises. Confirm and prompt use
+ * a default dismiss policy unless the MCP handle_dialog tool sets a new
+ * policy before the next dialog.
  *
  * Injected at document_start before page scripts run.
  */
@@ -11,46 +12,41 @@
     if (window.__mcpDialogInterceptorLoaded) return;
     window.__mcpDialogInterceptorLoaded = true;
 
-    const pendingDialogs = [];
-    const originalAlert = window.alert.bind(window);
-    const originalConfirm = window.confirm.bind(window);
-    const originalPrompt = window.prompt.bind(window);
-
-    // Track resolve callbacks for pending dialogs so handle_dialog can
-    // unblock them. Each entry: { type, message, defaultValue, resolve }
-    // resolve(result) where result is: undefined (alert), true/false (confirm), string|null (prompt)
+    const capturedDialogs = [];
+    let defaultDialogPolicy = { action: "dismiss", promptText: null };
 
     window.alert = function (message) {
-        return new Promise((resolve) => {
-            pendingDialogs.push({
-                type: "alert",
-                message: String(message ?? ""),
-                defaultValue: null,
-                resolve: () => { resolve(); },
-            });
+        capturedDialogs.push({
+            type: "alert",
+            message: String(message ?? ""),
+            defaultValue: null,
+            result: undefined,
         });
+        return undefined;
     };
 
     window.confirm = function (message) {
-        return new Promise((resolve) => {
-            pendingDialogs.push({
-                type: "confirm",
-                message: String(message ?? ""),
-                defaultValue: null,
-                resolve,
-            });
+        const result = defaultDialogPolicy.action === "accept";
+        capturedDialogs.push({
+            type: "confirm",
+            message: String(message ?? ""),
+            defaultValue: null,
+            result,
         });
+        return result;
     };
 
     window.prompt = function (message, defaultValue) {
-        return new Promise((resolve) => {
-            pendingDialogs.push({
-                type: "prompt",
-                message: String(message ?? ""),
-                defaultValue: defaultValue ?? "",
-                resolve,
-            });
+        const result = defaultDialogPolicy.action === "accept"
+            ? (defaultDialogPolicy.promptText ?? defaultValue ?? "")
+            : null;
+        capturedDialogs.push({
+            type: "prompt",
+            message: String(message ?? ""),
+            defaultValue: defaultValue ?? "",
+            result,
         });
+        return result;
     };
 
     /**
@@ -59,33 +55,23 @@
      * @returns {{ handled: boolean, type?: string, message?: string }}
      */
     window.__mcpHandleDialog = (params) => {
-        if (pendingDialogs.length === 0) {
+        defaultDialogPolicy = {
+            action: params.action || "dismiss",
+            promptText: params.promptText ?? null,
+        };
+
+        if (capturedDialogs.length === 0) {
             return { handled: false };
         }
 
-        const dialog = pendingDialogs.shift();
-        const action = params.action || "dismiss";
-
-        switch (dialog.type) {
-            case "alert":
-                dialog.resolve();
-                break;
-            case "confirm":
-                dialog.resolve(action === "accept");
-                break;
-            case "prompt":
-                if (action === "accept") {
-                    dialog.resolve(params.promptText ?? dialog.defaultValue ?? "");
-                } else {
-                    dialog.resolve(null);
-                }
-                break;
-        }
+        const dialog = capturedDialogs.shift();
 
         return {
             handled: true,
             type: dialog.type,
             message: dialog.message,
+            result: dialog.result,
+            alreadyHandled: true,
         };
     };
 
@@ -93,10 +79,23 @@
      * Returns info about pending dialogs without handling them.
      */
     window.__mcpGetPendingDialogs = () => {
-        return pendingDialogs.map((d) => ({
+        return capturedDialogs.map((d) => ({
             type: d.type,
             message: d.message,
             defaultValue: d.defaultValue,
+            result: d.result,
         }));
     };
+
+    window.addEventListener("message", (event) => {
+        const message = event.data;
+        if (event.source !== window || message?.source !== "MCPSafariContent") return;
+        if (message.type !== "handle_dialog") return;
+
+        window.postMessage({
+            source: "MCPSafariPage",
+            id: message.id,
+            data: window.__mcpHandleDialog(message.params || {}),
+        }, "*");
+    });
 })();

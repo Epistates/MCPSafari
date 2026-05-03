@@ -14,6 +14,7 @@
     let uidCounter = 0;
     const uidMap = new WeakMap();
     const reverseUidMap = new Map();
+    let bridgeRequestCounter = 0;
 
     function getUid(element) {
         if (uidMap.has(element)) return uidMap.get(element);
@@ -26,6 +27,37 @@
     function getElementByUid(uid) {
         const ref = reverseUidMap.get(uid);
         return ref ? ref.deref() : null;
+    }
+
+    function requestMainWorld(type, params = {}, timeoutMs = 3000) {
+        return new Promise((resolve, reject) => {
+            const id = `mcp-${Date.now()}-${++bridgeRequestCounter}`;
+            const timer = setTimeout(() => {
+                window.removeEventListener("message", onMessage);
+                reject(new Error(`${type} interceptor did not respond`));
+            }, timeoutMs);
+
+            function onMessage(event) {
+                const message = event.data;
+                if (event.source !== window || message?.source !== "MCPSafariPage") return;
+                if (message.id !== id) return;
+                clearTimeout(timer);
+                window.removeEventListener("message", onMessage);
+                if (message.error) {
+                    reject(new Error(message.error));
+                } else {
+                    resolve(message.data);
+                }
+            }
+
+            window.addEventListener("message", onMessage);
+            window.postMessage({
+                source: "MCPSafariContent",
+                id,
+                type,
+                params,
+            }, "*");
+        });
     }
 
     // ─── Message Handler ─────────────────────────────────────────────
@@ -737,32 +769,25 @@
 
     // ─── Dialog Handling (delegate to interceptor) ────────────────────
 
-    function handleDialog(params) {
-        if (typeof window.__mcpHandleDialog === "function") {
-            const result = window.__mcpHandleDialog(params);
-            if (result.handled) {
-                return `${params.action === "accept" ? "Accepted" : "Dismissed"} ${result.type} dialog: "${result.message}"`;
-            }
-            return "No pending dialog found";
+    async function handleDialog(params) {
+        const result = await requestMainWorld("handle_dialog", params);
+        if (result.handled) {
+            const action = params.action === "accept" ? "Accepted" : "Dismissed";
+            const suffix = result.alreadyHandled ? " (dialog was already auto-handled)" : "";
+            return `${action} ${result.type} dialog: "${result.message}"${suffix}`;
         }
-        return "Dialog interceptor not loaded";
+        return "No pending dialog found";
     }
 
     // ─── Console Messages (delegate to interceptor) ──────────────────
 
-    function getConsoleMessages(params) {
-        if (typeof window.__mcpGetConsoleMessages === "function") {
-            return window.__mcpGetConsoleMessages(params);
-        }
-        return [];
+    async function getConsoleMessages(params) {
+        return await requestMainWorld("get_console_messages", params);
     }
 
     // ─── Network Requests (delegate to interceptor) ──────────────────
 
-    function getNetworkRequests(params) {
-        if (typeof window.__mcpGetNetworkRequests === "function") {
-            return window.__mcpGetNetworkRequests(params);
-        }
-        return [];
+    async function getNetworkRequests(params) {
+        return await requestMainWorld("get_network_requests", params);
     }
 })();

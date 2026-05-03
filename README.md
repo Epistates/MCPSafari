@@ -6,8 +6,8 @@
 ![Stars](https://img.shields.io/github/stars/Epistates/MCPSafari)
 ![MCP](https://img.shields.io/badge/MCP-2025-blue)
 ![macOS](https://img.shields.io/badge/macOS-14+-orange)
-![Swift](https://img.shields.io/badge/Swift-6.1+-orange)
-![Xcode](https://img.shields.io/badge/Xcode-16+-orange)
+![Swift](https://img.shields.io/badge/Swift-6.3+-orange)
+![Xcode](https://img.shields.io/badge/Xcode-26+-orange)
 
 Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on macOS. Navigate tabs, click/type/fill forms (even React), read HTML/accessibility trees, execute JS, capture screenshots, inspect console & network — all with 23 secure tools. Zero Chrome overhead, Apple Silicon optimized, token-authenticated, and built with official Swift + Manifest V3 Safari Extension.
 
@@ -18,7 +18,7 @@ Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on m
 - Local & private (runs on your Mac)
 - Perfect drop-in for Mac-first agent workflows
 
-**macOS 14+** • **Safari 17+** • **Xcode 16+**
+**macOS 14+** • **Safari 17+** • **Xcode 26+**
 
 Built with the official [swift-sdk](https://github.com/modelcontextprotocol/swift-sdk) and a Manifest V3 Safari Web Extension.
 
@@ -54,8 +54,8 @@ The MCP server communicates with clients over **stdio** and bridges tool calls t
 
 - macOS 14.0 (Sonoma) or later
 - Safari 17+
-- Swift 6.1+ (for building from source)
-- Xcode 16+ (for building the Safari extension)
+- Swift 6.3+ (for building from source)
+- Xcode 26+ (for building the Safari extension)
 
 ## Installation
 
@@ -336,7 +336,7 @@ A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers
 
 ### WebSocket Authentication
 
-The server generates a random UUID token at startup, writes it to `~/.config/mcp-safari/token` (mode `0600`), and requires it as the first WebSocket message. The extension reads the token via native messaging from the host app. Connections without a valid token are accepted in unauthenticated mode for development convenience.
+The server generates a random UUID token at startup, writes it to `~/.config/mcp-safari/tokens/<port>` (mode `0600`), and requires it as the first WebSocket message before any MCP tool traffic is sent. The extension reads the per-port token map via native messaging from the host app, so multiple server instances can authenticate independently. Connections without a valid token are closed.
 
 ### Input Validation
 

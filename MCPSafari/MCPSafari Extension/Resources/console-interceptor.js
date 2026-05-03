@@ -92,4 +92,16 @@
 
         return filtered;
     };
+
+    window.addEventListener("message", (event) => {
+        const message = event.data;
+        if (event.source !== window || message?.source !== "MCPSafariContent") return;
+        if (message.type !== "get_console_messages") return;
+
+        window.postMessage({
+            source: "MCPSafariPage",
+            id: message.id,
+            data: window.__mcpGetConsoleMessages(message.params || {}),
+        }, "*");
+    });
 })();

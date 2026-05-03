@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Build
+- Updated source builds for Swift 6.3 and pinned the MCP Swift SDK to a Swift 6.3-compatible upstream revision.
+
+### Security
+- WebSocket connections must authenticate before becoming the active bridge connection or receiving MCP tool traffic.
+- Auth tokens are now scoped per WebSocket port under `~/.config/mcp-safari/tokens/`, fixing multi-server token races.
+
+### Bug Fixes
+- Fixed fallback port overflow near `65535`.
+- Fixed stale WebSocket connection state from draining or orphaning unrelated pending requests.
+- Console, network, and dialog interceptors now run in the page's main JavaScript world and communicate back to the isolated content script.
+- App and extension bundle versions and deployment targets now match the advertised `0.2.5` / macOS 14+ release.
+
 ## [0.2.5] - 2026-03-28
 
 ### Bug Fixes

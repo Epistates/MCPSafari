@@ -109,4 +109,16 @@
 
         return filtered;
     };
+
+    window.addEventListener("message", (event) => {
+        const message = event.data;
+        if (event.source !== window || message?.source !== "MCPSafariContent") return;
+        if (message.type !== "get_network_requests") return;
+
+        window.postMessage({
+            source: "MCPSafariPage",
+            id: message.id,
+            data: window.__mcpGetNetworkRequests(message.params || {}),
+        }, "*");
+    });
 })();

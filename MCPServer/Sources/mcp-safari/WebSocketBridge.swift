@@ -10,23 +10,41 @@ import Network
 /// awaits a correlated `BridgeResponse` by matching IDs.
 actor WebSocketBridge {
     private var listener: NWListener?
+    /// The authenticated extension connection currently allowed to receive MCP requests.
     private var connection: NWConnection?
-    private var pendingRequests: [String: CheckedContinuation<BridgeResponse, any Error>] = [:]
+    /// A newly accepted connection that has not completed the token handshake yet.
+    private var authenticatingConnection: NWConnection?
+    private struct PendingRequest {
+        let connectionID: ObjectIdentifier
+        let continuation: CheckedContinuation<BridgeResponse, any Error>
+    }
+
+    private var pendingRequests: [String: PendingRequest] = [:]
     private let logger: Logger
     private let requestedPort: UInt16
     private(set) var port: UInt16
     private let networkQueue = DispatchQueue(label: "mcp-safari.websocket", qos: .userInitiated)
-    private let wsParams: NWParameters
 
     /// Authentication token that the extension must send as its first message.
     let authToken: String
-    /// Path where the auth token is written for the extension to read.
-    static let tokenFilePath: String = {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
+    /// Directory where per-port auth tokens are written for the extension to read.
+    static let tokenDirectoryURL: URL = {
+        FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config")
             .appendingPathComponent("mcp-safari")
-        return dir.appendingPathComponent("token").path
+            .appendingPathComponent("tokens")
     }()
+    /// Legacy single-token path kept for older extension builds.
+    static let legacyTokenFilePath: String = {
+        tokenDirectoryURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("token")
+            .path
+    }()
+
+    static func tokenFilePath(for port: UInt16) -> String {
+        tokenDirectoryURL.appendingPathComponent(String(port)).path
+    }
 
     enum BridgeError: Error, CustomStringConvertible {
         case notConnected
@@ -58,40 +76,69 @@ actor WebSocketBridge {
 
     private static let maxPortRetries: UInt16 = 10
 
+    private static func makeWebSocketParameters(for port: NWEndpoint.Port) -> NWParameters {
+        let params = NWParameters(tls: nil)
+        params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: port)
+
+        let wsOptions = NWProtocolWebSocket.Options()
+        wsOptions.autoReplyPing = true
+        params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        return params
+    }
+
     init(port: UInt16 = 8089, logger: Logger) throws {
         self.requestedPort = port
         self.port = port
         self.logger = logger
 
-        // Generate a random auth token and try to write it to a well-known file.
+        // Generate a random auth token. It is written after the listener binds so
+        // the token filename matches the actual fallback port.
         self.authToken = UUID().uuidString
-        do {
-            let tokenDir = URL(fileURLWithPath: Self.tokenFilePath).deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: tokenDir, withIntermediateDirectories: true)
-            try authToken.write(toFile: Self.tokenFilePath, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: Self.tokenFilePath
-            )
-        } catch {
-            logger.warning("Could not write auth token file: \(error). Auth will be skipped.")
-        }
+    }
 
-        let params = NWParameters(tls: nil)
-        let wsOptions = NWProtocolWebSocket.Options()
-        wsOptions.autoReplyPing = true
-        params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
-        self.wsParams = params
+    private func writeAuthTokenFile(for port: UInt16) throws {
+        let fileManager = FileManager.default
+        let configDirectory = Self.tokenDirectoryURL.deletingLastPathComponent()
+
+        try fileManager.createDirectory(at: Self.tokenDirectoryURL, withIntermediateDirectories: true)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: configDirectory.path
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: Self.tokenDirectoryURL.path
+        )
+
+        let tokenFilePath = Self.tokenFilePath(for: port)
+        try authToken.write(toFile: tokenFilePath, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: tokenFilePath
+        )
+
+        // Keep the legacy path populated for older extension builds. Current
+        // builds prefer the per-port token map and avoid this single-token race.
+        try authToken.write(toFile: Self.legacyTokenFilePath, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: Self.legacyTokenFilePath
+        )
     }
 
     func start() async {
         // Try the requested port, then successive ports if in use
-        for offset: UInt16 in 0..<Self.maxPortRetries {
-            let tryPort = requestedPort + offset
+        let lastPort = min(
+            UInt32(UInt16.max),
+            UInt32(requestedPort) + UInt32(Self.maxPortRetries) - 1
+        )
+
+        for tryPortValue in UInt32(requestedPort)...lastPort {
+            let tryPort = UInt16(tryPortValue)
             guard let nwPort = NWEndpoint.Port(rawValue: tryPort) else { continue }
 
             do {
-                let newListener = try NWListener(using: wsParams, on: nwPort)
+                let newListener = try NWListener(using: Self.makeWebSocketParameters(for: nwPort), on: nwPort)
                 self.listener = newListener
                 self.port = tryPort
 
@@ -127,8 +174,13 @@ actor WebSocketBridge {
                 }
 
                 if success {
-                    if offset > 0 {
+                    if tryPort != requestedPort {
                         logger.info("Port \(requestedPort) in use — listening on \(tryPort) instead")
+                    }
+                    do {
+                        try writeAuthTokenFile(for: tryPort)
+                    } catch {
+                        logger.error("Could not write auth token file for port \(tryPort): \(error)")
                     }
                     logger.info("WebSocket server listening on port \(tryPort)")
                     return
@@ -141,18 +193,17 @@ actor WebSocketBridge {
             }
         }
 
-        logger.error("Could not bind to any port in range \(requestedPort)-\(requestedPort + Self.maxPortRetries - 1)")
+        logger.error("Could not bind to any port in range \(requestedPort)-\(lastPort)")
     }
 
     func stop() {
         listener?.cancel()
         listener = nil
+        authenticatingConnection?.cancel()
+        authenticatingConnection = nil
         connection?.cancel()
         connection = nil
-        for (_, continuation) in pendingRequests {
-            continuation.resume(throwing: BridgeError.notConnected)
-        }
-        pendingRequests.removeAll()
+        drainPendingRequests(error: BridgeError.notConnected)
         logger.info("WebSocket server stopped")
     }
 
@@ -161,6 +212,7 @@ actor WebSocketBridge {
         guard let connection else {
             throw BridgeError.notConnected
         }
+        let connectionID = ObjectIdentifier(connection)
 
         let request = BridgeRequest(action: action, params: params)
 
@@ -177,7 +229,10 @@ actor WebSocketBridge {
         // continuation is stored.
         return try await withCheckedThrowingContinuation { (responseContinuation: CheckedContinuation<BridgeResponse, any Error>) in
             // Register synchronously within the actor before sending
-            self.pendingRequests[request.id] = responseContinuation
+            self.pendingRequests[request.id] = PendingRequest(
+                connectionID: connectionID,
+                continuation: responseContinuation
+            )
 
             // Send the WebSocket message
             connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
@@ -207,9 +262,16 @@ actor WebSocketBridge {
     /// Removes a pending request by ID and resumes its continuation with an error,
     /// but only if the continuation is still present (prevents double-resume).
     private func removePendingAndResume(id: String, error: any Error) {
-        if let continuation = pendingRequests.removeValue(forKey: id) {
-            continuation.resume(throwing: error)
+        if let pending = pendingRequests.removeValue(forKey: id) {
+            pending.continuation.resume(throwing: error)
         }
+    }
+
+    private func drainPendingRequests(error: any Error) {
+        for (_, pending) in pendingRequests {
+            pending.continuation.resume(throwing: error)
+        }
+        pendingRequests.removeAll()
     }
 
     private func handleListenerState(_ state: NWListener.State) {
@@ -224,14 +286,16 @@ actor WebSocketBridge {
     }
 
     private func handleNewConnection(_ newConnection: NWConnection) {
-        // Accept immediately — replace any existing connection
-        if let existing = connection {
-            logger.info("Replacing existing extension connection")
+        // Accept the socket, but don't make it active until the token handshake
+        // succeeds. This prevents unauthenticated local clients from receiving
+        // or spoofing MCP tool traffic.
+        if let existing = authenticatingConnection {
+            logger.info("Replacing pending unauthenticated extension connection")
             existing.cancel()
         }
 
-        connection = newConnection
-        logger.info("Safari extension connected")
+        authenticatingConnection = newConnection
+        logger.info("Safari extension connected, awaiting authentication")
 
         newConnection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
@@ -253,22 +317,19 @@ actor WebSocketBridge {
             logger.error("Extension connection failed: \(error)")
             if connection === conn {
                 connection = nil
+                drainPendingRequests(error: BridgeError.notConnected)
             }
-            // Fail all pending requests
-            for (_, continuation) in pendingRequests {
-                continuation.resume(throwing: BridgeError.notConnected)
+            if authenticatingConnection === conn {
+                authenticatingConnection = nil
             }
-            pendingRequests.removeAll()
         case .cancelled:
             logger.info("Extension connection closed")
             if connection === conn {
                 connection = nil
-                // Only drain pending requests if this was the active connection.
-                // If a new connection replaced this one, its requests are still valid.
-                for (_, continuation) in pendingRequests {
-                    continuation.resume(throwing: BridgeError.notConnected)
-                }
-                pendingRequests.removeAll()
+                drainPendingRequests(error: BridgeError.notConnected)
+            }
+            if authenticatingConnection === conn {
+                authenticatingConnection = nil
             }
         default:
             break
@@ -287,7 +348,7 @@ actor WebSocketBridge {
             if let data = content, let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata {
                 switch metadata.opcode {
                 case .text, .binary:
-                    Task { await self.handleTextMessage(data) }
+                    Task { await self.handleTextMessage(data, from: conn) }
                 case .close:
                     self.logger.info("Extension sent close frame")
                     return
@@ -298,7 +359,7 @@ actor WebSocketBridge {
 
             // Continue receiving only if this connection is still current
             Task {
-                let isCurrent = await self.isCurrentConnection(conn)
+                let isCurrent = await self.isKnownConnection(conn)
                 if isCurrent {
                     self.receiveMessages(from: conn)
                 }
@@ -306,25 +367,31 @@ actor WebSocketBridge {
         }
     }
 
-    private func isCurrentConnection(_ conn: NWConnection) -> Bool {
-        connection === conn
+    private func isKnownConnection(_ conn: NWConnection) -> Bool {
+        connection === conn || authenticatingConnection === conn
     }
 
-    private func handleTextMessage(_ data: Data) {
+    private func handleTextMessage(_ data: Data, from conn: NWConnection) {
         // Check for auth handshake message: {"auth":"<token>"}
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let token = json["auth"] as? String {
             if token == authToken {
-                logger.info("Safari extension authenticated")
-                // Send auth acknowledgment
-                let ack = #"{"auth":"ok"}"#
-                let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
-                let context = NWConnection.ContentContext(identifier: "ws-auth", metadata: [metadata])
-                connection?.send(content: ack.data(using: .utf8), contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
+                authenticate(conn)
             } else {
                 logger.warning("Auth token mismatch — closing connection")
-                connection?.cancel()
-                connection = nil
+                conn.cancel()
+                if authenticatingConnection === conn {
+                    authenticatingConnection = nil
+                }
+            }
+            return
+        }
+
+        guard connection === conn else {
+            logger.warning("Closing unauthenticated WebSocket connection that sent non-auth traffic")
+            conn.cancel()
+            if authenticatingConnection === conn {
+                authenticatingConnection = nil
             }
             return
         }
@@ -333,13 +400,42 @@ actor WebSocketBridge {
             let response = try JSONDecoder().decode(BridgeResponse.self, from: data)
             logger.debug("Received bridge response: [\(response.id)] success=\(response.success)")
 
-            if let continuation = pendingRequests.removeValue(forKey: response.id) {
-                continuation.resume(returning: response)
+            if let pending = pendingRequests.removeValue(forKey: response.id) {
+                guard pending.connectionID == ObjectIdentifier(conn) else {
+                    logger.warning("Received response for request ID on a stale connection: \(response.id)")
+                    pending.continuation.resume(throwing: BridgeError.notConnected)
+                    return
+                }
+                pending.continuation.resume(returning: response)
             } else {
                 logger.warning("Received response for unknown request ID: \(response.id)")
             }
         } catch {
             logger.error("Failed to decode bridge response: \(error)")
         }
+    }
+
+    private func authenticate(_ conn: NWConnection) {
+        if let existing = connection, existing !== conn {
+            logger.info("Replacing authenticated extension connection")
+            existing.cancel()
+            drainPendingRequests(error: BridgeError.notConnected)
+        }
+
+        connection = conn
+        if authenticatingConnection === conn {
+            authenticatingConnection = nil
+        }
+
+        logger.info("Safari extension authenticated")
+        let ack = #"{"auth":"ok"}"#
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(identifier: "ws-auth", metadata: [metadata])
+        conn.send(
+            content: ack.data(using: .utf8),
+            contentContext: context,
+            isComplete: true,
+            completion: .contentProcessed { _ in }
+        )
     }
 }

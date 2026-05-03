@@ -12,6 +12,7 @@ MCPSafari/MCPSafari.xcodeproj/xcuserdata/
 MCPSafari/MCPSafari.xcodeproj/project.xcworkspace/xcuserdata/
 DerivedData/
 *.xcuserstate
+xcuserdata/
 
 # macOS
 .DS_Store

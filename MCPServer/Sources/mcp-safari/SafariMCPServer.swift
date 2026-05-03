@@ -47,7 +47,7 @@ actor SafariMCPServer {
         await server.withMethodHandler(CallTool.self) { [weak self] params -> CallTool.Result in
             guard let self else {
                 return CallTool.Result(
-                    content: [Tool.Content.text("Server shutting down")],
+                    content: [Self.textContent("Server shutting down")],
                     isError: true
                 )
             }
@@ -62,6 +62,14 @@ actor SafariMCPServer {
     private static let sel: Value = .object(["type": .string("string"), "description": .string("CSS selector")])
     private static let txt: Value = .object(["type": .string("string"), "description": .string("Visible text to match")])
     private static let snap: Value = .object(["type": .string("boolean"), "description": .string("Return snapshot after action")])
+
+    private static func textContent(_ text: String) -> Tool.Content {
+        .text(text: text, annotations: nil, _meta: nil)
+    }
+
+    private static func imageContent(data: String, mimeType: String) -> Tool.Content {
+        .image(data: data, mimeType: mimeType, annotations: nil, _meta: nil)
+    }
 
     // MARK: - Tool Definitions
 
@@ -396,13 +404,13 @@ actor SafariMCPServer {
             case "wait":            return try await handleWait(args)
             default:
                 return CallTool.Result(
-                    content: [Tool.Content.text("Unknown tool: \(params.name)")],
+                    content: [Self.textContent("Unknown tool: \(params.name)")],
                     isError: true
                 )
             }
         } catch {
             return CallTool.Result(
-                content: [Tool.Content.text("\(error)")],
+                content: [Self.textContent("\(error)")],
                 isError: true
             )
         }
@@ -423,7 +431,7 @@ actor SafariMCPServer {
                   Self.allowedURLSchemes.contains(scheme)
             else {
                 return CallTool.Result(
-                    content: [Tool.Content.text("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")],
+                    content: [Self.textContent("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")],
                     isError: true
                 )
             }
@@ -449,6 +457,9 @@ actor SafariMCPServer {
 
     private static let allowedURLSchemes: Set<String> = ["http", "https", "about", "file"]
     private static let allowedNavActions: Set<String> = ["goto", "back", "forward", "reload"]
+    private static let allowedPageFormats: Set<String> = ["text", "html", "snapshot"]
+    private static let allowedConsoleLevels: Set<String> = ["all", "log", "warn", "error", "info", "debug"]
+    private static let allowedNetworkTypes: Set<String> = ["all", "xhr", "fetch"]
 
     private func handleNavigate(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
@@ -458,7 +469,7 @@ actor SafariMCPServer {
                   Self.allowedURLSchemes.contains(scheme)
             else {
                 return CallTool.Result(
-                    content: [Tool.Content.text("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")],
+                    content: [Self.textContent("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")],
                     isError: true
                 )
             }
@@ -468,7 +479,7 @@ actor SafariMCPServer {
         if let action = args["action"]?.stringValue {
             guard Self.allowedNavActions.contains(action) else {
                 return CallTool.Result(
-                    content: [Tool.Content.text("Invalid navigation action: \(action). Use goto, back, forward, or reload.")],
+                    content: [Self.textContent("Invalid navigation action: \(action). Use goto, back, forward, or reload.")],
                     isError: true
                 )
             }
@@ -481,7 +492,15 @@ actor SafariMCPServer {
     private func handleReadPage(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        if let format = args["format"]?.stringValue { params["format"] = AnyCodable(format) }
+        if let format = args["format"]?.stringValue {
+            guard Self.allowedPageFormats.contains(format) else {
+                return CallTool.Result(
+                    content: [Self.textContent("Invalid page format: \(format). Use text, html, or snapshot.")],
+                    isError: true
+                )
+            }
+            params["format"] = AnyCodable(format)
+        }
         let response = try await bridge.send(action: "read_page", params: params)
         return textResult(response)
     }
@@ -529,8 +548,8 @@ actor SafariMCPServer {
             let actionText = response.data?.stringValue ?? "\(response.data ?? AnyCodable("OK"))"
             let snapText = snapResponse.data?.stringValue ?? "\(snapResponse.data ?? AnyCodable(""))"
             return CallTool.Result(content: [
-                Tool.Content.text(actionText),
-                Tool.Content.text("--- Page Snapshot ---\n\(snapText)"),
+                Self.textContent(actionText),
+                Self.textContent("--- Page Snapshot ---\n\(snapText)"),
             ])
         }
 
@@ -563,9 +582,14 @@ actor SafariMCPServer {
             fieldDict = parsed
         }
 
-        if !fieldDict.isEmpty {
-            params["fields"] = AnyCodable(fieldDict)
+        guard !fieldDict.isEmpty else {
+            return CallTool.Result(
+                content: [Self.textContent("fields must contain at least one CSS selector and value")],
+                isError: true
+            )
         }
+
+        params["fields"] = AnyCodable(fieldDict)
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         let response = try await bridge.send(action: "form_input", params: params)
 
@@ -576,8 +600,8 @@ actor SafariMCPServer {
             let actionText = response.data?.stringValue ?? "OK"
             let snapText = snapResponse.data?.stringValue ?? ""
             return CallTool.Result(content: [
-                Tool.Content.text(actionText),
-                Tool.Content.text("--- Page Snapshot ---\n\(snapText)"),
+                Self.textContent(actionText),
+                Self.textContent("--- Page Snapshot ---\n\(snapText)"),
             ])
         }
 
@@ -591,7 +615,7 @@ actor SafariMCPServer {
 
         if response.success, let imageData = response.data?.stringValue {
             return CallTool.Result(content: [
-                Tool.Content.image(data: imageData, mimeType: "image/png", metadata: nil),
+                Self.imageContent(data: imageData, mimeType: "image/png"),
             ])
         }
         return textResult(response)
@@ -608,19 +632,27 @@ actor SafariMCPServer {
     private func handleReadConsole(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        if let level = args["level"]?.stringValue { params["level"] = AnyCodable(level) }
+        if let level = args["level"]?.stringValue {
+            guard Self.allowedConsoleLevels.contains(level) else {
+                return CallTool.Result(
+                    content: [Self.textContent("Invalid console level: \(level). Use all, log, warn, error, info, or debug.")],
+                    isError: true
+                )
+            }
+            params["level"] = AnyCodable(level)
+        }
         if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
         if let pattern = args["pattern"]?.stringValue {
             guard pattern.count <= 200 else {
                 return CallTool.Result(
-                    content: [Tool.Content.text("Pattern too long (max 200 characters)")],
+                    content: [Self.textContent("Pattern too long (max 200 characters)")],
                     isError: true
                 )
             }
             // Validate it's a valid regex
             guard (try? NSRegularExpression(pattern: pattern)) != nil else {
                 return CallTool.Result(
-                    content: [Tool.Content.text("Invalid regex pattern: \(pattern)")],
+                    content: [Self.textContent("Invalid regex pattern: \(pattern)")],
                     isError: true
                 )
             }
@@ -633,7 +665,15 @@ actor SafariMCPServer {
     private func handleReadNetwork(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        if let type = args["type"]?.stringValue { params["type"] = AnyCodable(type) }
+        if let type = args["type"]?.stringValue {
+            guard Self.allowedNetworkTypes.contains(type) else {
+                return CallTool.Result(
+                    content: [Self.textContent("Invalid network type: \(type). Use all, xhr, or fetch.")],
+                    isError: true
+                )
+            }
+            params["type"] = AnyCodable(type)
+        }
         if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
         let response = try await bridge.send(action: "read_network", params: params)
         return textResult(response)
@@ -653,7 +693,7 @@ actor SafariMCPServer {
         if let seconds = args["seconds"]?.doubleValue, args["selector"] == nil, args["text"] == nil {
             let capped = min(seconds, Self.maxWaitSeconds)
             try await Task.sleep(for: .seconds(capped))
-            return CallTool.Result(content: [Tool.Content.text("Waited \(capped) seconds")])
+            return CallTool.Result(content: [Self.textContent("Waited \(capped) seconds")])
         }
 
         var params: [String: AnyCodable] = [:]
@@ -680,7 +720,7 @@ actor SafariMCPServer {
         }
 
         return CallTool.Result(
-            content: [Tool.Content.text(text)],
+            content: [Self.textContent(text)],
             isError: !response.success
         )
     }

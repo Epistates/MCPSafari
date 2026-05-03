@@ -23,7 +23,8 @@ const connections = new Map();
 /** @type {Set<number>} Manually added ports (persisted across restarts) */
 const manualPorts = new Set();
 let selectedTabId = null;
-let authToken = null;
+let legacyAuthToken = null;
+const authTokensByPort = new Map();
 
 function ensurePort(port, manual = false) {
     if (!connections.has(port)) {
@@ -49,6 +50,7 @@ function connectToPort(port) {
 
     // Security: auto-scan ports require auth token to prevent rogue process connections.
     // Manual ports (user explicitly added) are trusted without auth.
+    const authToken = authTokensByPort.get(port) || legacyAuthToken;
     if (!conn.manual && isAutoScanPort(port) && !authToken) {
         return; // Skip — can't verify server identity without auth
     }
@@ -140,6 +142,14 @@ function scheduleReconnect(port) {
 function connectAll() {
     for (const port of connections.keys()) {
         connectToPort(port);
+    }
+}
+
+function ensurePortsForKnownTokens() {
+    for (const port of authTokensByPort.keys()) {
+        if (isAutoScanPort(port) || manualPorts.has(port)) {
+            ensurePort(port, manualPorts.has(port));
+        }
     }
 }
 
@@ -525,8 +535,12 @@ async function injectContentScripts(tabId) {
                 "dialog-interceptor.js",
                 "console-interceptor.js",
                 "network-interceptor.js",
-                "content.js",
             ],
+            world: "MAIN",
+        });
+        await browser.scripting.executeScript({
+            target: { tabId },
+            files: ["content.js"],
         });
         await delay(100);
     } catch (err) {
@@ -586,7 +600,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const port = parseInt(message.port, 10);
         if (port >= 1024 && port <= 65535) {
             ensurePort(port, true); // manual = true
-            connectToPort(port);
+            loadAuthTokens().finally(() => connectToPort(port));
             persistManualPorts();
         }
         sendResponse({ ok: true });
@@ -607,15 +621,17 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const conn = connections.get(port);
             if (conn && conn.ws) conn.ws.close();
             if (conn) conn.attempts = 0;
-            connectToPort(port);
+            loadAuthTokens().finally(() => connectToPort(port));
         } else {
             // Only reconnect ports that aren't already connected
-            for (const [port, conn] of connections) {
-                if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
-                    conn.attempts = 0;
-                    connectToPort(port);
+            loadAuthTokens().finally(() => {
+                for (const [port, conn] of connections) {
+                    if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+                        conn.attempts = 0;
+                        connectToPort(port);
+                    }
                 }
-            }
+            });
         }
         sendResponse({ ok: true });
         return false;
@@ -641,60 +657,74 @@ if (typeof browser.alarms !== "undefined") {
     browser.alarms.create("mcp-keepalive", { periodInMinutes: 0.4 }); // ~24s
     browser.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === "mcp-keepalive") {
-            // Try to reconnect disconnected ports.
-            // Only reset backoff for previously-connected ports (quick recovery
-            // when a known server restarts). Never-connected auto-scan ports
-            // keep their attempt count so they get cleaned up below.
-            for (const [port, conn] of connections) {
-                if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
-                    if (conn.lastConnected > 0 || conn.manual) {
-                        conn.attempts = 0;
+            loadAuthTokens().finally(() => {
+                // Try to reconnect disconnected ports.
+                // Only reset backoff for previously-connected ports (quick recovery
+                // when a known server restarts). Never-connected auto-scan ports
+                // keep their attempt count so they get cleaned up below.
+                for (const [port, conn] of connections) {
+                    if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+                        if (conn.lastConnected > 0 || conn.manual) {
+                            conn.attempts = 0;
+                        }
+                        connectToPort(port);
                     }
-                    connectToPort(port);
                 }
-            }
 
-            // Clean up auto-scan ports that have never connected or have been
-            // disconnected for longer than AUTO_CLEANUP_MS
-            const now = Date.now();
-            for (const [port, conn] of connections) {
-                if (conn.manual) continue;
-                if (!isAutoScanPort(port)) continue;
-                if (conn.state === "connected") continue;
-                if (conn.lastConnected === 0 && conn.attempts > 3) {
-                    // Never connected — remove after a few failed attempts
-                    connections.delete(port);
-                } else if (conn.lastConnected > 0 && (now - conn.lastConnected) > AUTO_CLEANUP_MS) {
-                    // Was connected but server has been gone for 2+ minutes
-                    connections.delete(port);
+                // Clean up auto-scan ports that have never connected or have been
+                // disconnected for longer than AUTO_CLEANUP_MS
+                const now = Date.now();
+                for (const [port, conn] of connections) {
+                    if (conn.manual) continue;
+                    if (!isAutoScanPort(port)) continue;
+                    if (conn.state === "connected") continue;
+                    if (conn.lastConnected === 0 && conn.attempts > 3) {
+                        // Never connected — remove after a few failed attempts
+                        connections.delete(port);
+                    } else if (conn.lastConnected > 0 && (now - conn.lastConnected) > AUTO_CLEANUP_MS) {
+                        // Was connected but server has been gone for 2+ minutes
+                        connections.delete(port);
+                    }
                 }
-            }
+            });
         }
     });
 }
 
 // ─── Token Loading ──────────────────────────────────────────────────
 
-async function loadAuthToken() {
+async function loadAuthTokens() {
     try {
         const response = await browser.runtime.sendNativeMessage(
             "com.epistates.MCPSafari.Extension",
-            { type: "getToken" }
+            { type: "getTokens" }
         );
-        if (response && response.token) {
-            authToken = response.token;
-            console.log("[MCPSafari] Auth token loaded");
+        if (response && response.tokens) {
+            authTokensByPort.clear();
+            legacyAuthToken = null;
+            for (const [port, token] of Object.entries(response.tokens)) {
+                const parsedPort = parseInt(port, 10);
+                if (parsedPort >= 1024 && parsedPort <= 65535 && token) {
+                    authTokensByPort.set(parsedPort, token);
+                }
+            }
+            ensurePortsForKnownTokens();
+            console.log(`[MCPSafari] Loaded ${authTokensByPort.size} auth token(s)`);
+        } else if (response && response.token) {
+            authTokensByPort.clear();
+            legacyAuthToken = response.token;
+            console.log("[MCPSafari] Legacy auth token loaded");
         } else {
-            console.warn("[MCPSafari] Failed to load auth token:", response?.error || "unknown");
+            console.warn("[MCPSafari] Failed to load auth tokens:", response?.error || "unknown");
         }
     } catch (err) {
-        console.warn("[MCPSafari] Native messaging unavailable for token:", err);
+        console.warn("[MCPSafari] Native messaging unavailable for tokens:", err);
     }
 }
 
 // ─── Initialize ──────────────────────────────────────────────────────
 
-Promise.all([loadAuthToken(), restoreSessionState()]).then(() => {
+Promise.all([loadAuthTokens(), restoreSessionState()]).then(() => {
     connectAll();
     console.log("[MCPSafari] Background script initialized");
 });

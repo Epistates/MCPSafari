@@ -4,7 +4,7 @@
 
     "name": "__MSG_extension_name__",
     "description": "__MSG_extension_description__",
-    "version": "1.0",
+    "version": "0.2.5",
 
     "icons": {
         "48": "images/icon-48.png",
@@ -20,7 +20,13 @@
     },
 
     "content_scripts": [{
-        "js": ["dialog-interceptor.js", "console-interceptor.js", "network-interceptor.js", "content.js"],
+        "js": ["dialog-interceptor.js", "console-interceptor.js", "network-interceptor.js"],
+        "matches": ["<all_urls>"],
+        "run_at": "document_start",
+        "all_frames": false,
+        "world": "MAIN"
+    }, {
+        "js": ["content.js"],
         "matches": ["<all_urls>"],
         "run_at": "document_start",
         "all_frames": false
