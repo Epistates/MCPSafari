@@ -5,6 +5,7 @@
 ## [0.2.6] - 2026-05-04
 ### Build
 - Updated source builds for Swift 6.3 and pinned the MCP Swift SDK to a Swift 6.3-compatible upstream revision.
+- CI and release workflows now explicitly select Xcode 26.4 and fail early if Swift 6.3 is unavailable.
 
 ### Security
 - WebSocket connections must authenticate before becoming the active bridge connection or receiving MCP tool traffic.

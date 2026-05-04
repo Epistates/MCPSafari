@@ -23,6 +23,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select Xcode 26.4
+        run: |
+          set -euo pipefail
+
+          for app in /Applications/Xcode_26.4.app /Applications/Xcode_26.4.0.app /Applications/Xcode.app; do
+            if [ -d "$app/Contents/Developer" ]; then
+              sudo xcode-select -s "$app/Contents/Developer"
+              break
+            fi
+          done
+
+          xcodebuild -version
+          swift --version
+          swift --version | grep -q "Apple Swift version 6.3" || {
+            echo "::error::Swift 6.3 is required to build MCPServer"
+            exit 1
+          }
+
       - name: Build MCP Server
         run: |
           cd MCPServer
