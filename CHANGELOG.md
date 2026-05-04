@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-05-04
 ### Build
 - Updated source builds for Swift 6.3 and pinned the MCP Swift SDK to a Swift 6.3-compatible upstream revision.
 
