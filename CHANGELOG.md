@@ -14,7 +14,7 @@
 - Fixed fallback port overflow near `65535`.
 - Fixed stale WebSocket connection state from draining or orphaning unrelated pending requests.
 - Console, network, and dialog interceptors now run in the page's main JavaScript world and communicate back to the isolated content script.
-- App and extension bundle versions and deployment targets now match the advertised `0.2.5` / macOS 14+ release.
+- App and extension bundle versions and deployment targets now match the advertised `0.2.6` / macOS 14+ release.
 
 ## [0.2.5] - 2026-03-28
 
