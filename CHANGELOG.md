@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- Added optional post-action waits for `navigate` and interaction tools via `waitForSelector`, `waitForText`, and `waitTimeout`.
 
 ## [0.2.6] - 2026-05-04
 ### Build

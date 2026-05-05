@@ -306,6 +306,10 @@ When targeting by `text`, interactive elements (buttons, links, inputs) are rank
 
 Most interaction tools support `includeSnapshot: true`, which returns the updated accessibility tree after the action — useful for verifying the result without a separate `snapshot` call.
 
+### Post-Action Waits
+
+`navigate` and interaction tools support `waitForSelector`, `waitForText`, and `waitTimeout` to wait after a successful action before returning. When combined with `includeSnapshot: true`, the snapshot is captured after the wait.
+
 ## Architecture
 
 ### MCP Server (`MCPServer/`)
