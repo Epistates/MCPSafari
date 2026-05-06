@@ -392,37 +392,43 @@ async function restoreSessionState() {
 async function handleNavigate(params) {
     const tabId = params.tabId || (await getActiveTabId());
     const action = params.action || "goto";
+    const beforeTab = await browser.tabs.get(tabId);
 
     let message;
+    let tab;
     switch (action) {
         case "goto":
             if (!params.url) throw new Error("URL required for 'goto' action");
+            const gotoComplete = waitForTabLoad(tabId, beforeTab);
             await browser.tabs.update(tabId, { url: params.url });
-            await delay(500);
+            tab = await gotoComplete;
             message = "Navigated to";
             break;
 
         case "back":
+            const backComplete = waitForTabLoad(tabId, beforeTab);
             await browser.scripting.executeScript({
                 target: { tabId },
                 func: () => history.back(),
             });
-            await delay(300);
+            tab = await backComplete;
             message = "Navigated back to";
             break;
 
         case "forward":
+            const forwardComplete = waitForTabLoad(tabId, beforeTab);
             await browser.scripting.executeScript({
                 target: { tabId },
                 func: () => history.forward(),
             });
-            await delay(300);
+            tab = await forwardComplete;
             message = "Navigated forward to";
             break;
 
         case "reload":
+            const reloadComplete = waitForTabLoad(tabId, beforeTab);
             await browser.tabs.reload(tabId);
-            await delay(300);
+            tab = await reloadComplete;
             message = "Reloaded";
             break;
 
@@ -431,8 +437,48 @@ async function handleNavigate(params) {
     }
 
     // Return tab info so the caller knows where they landed
-    const tab = await browser.tabs.get(tabId);
+    tab = tab || (await browser.tabs.get(tabId));
     return `${message} ${tab.url || ""} (${tab.title || ""})`
+}
+
+async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000) {
+    const beforeUrl = beforeTab?.url || "";
+    let sawNavigation = false;
+
+    return new Promise((resolve, reject) => {
+        let settled = false;
+
+        const cleanup = () => {
+            browser.tabs.onUpdated.removeListener(onUpdated);
+            clearTimeout(timer);
+        };
+
+        const settle = async () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            try {
+                resolve(await browser.tabs.get(tabId));
+            } catch (err) {
+                reject(err);
+            }
+        };
+
+        const onUpdated = (updatedTabId, changeInfo, tab) => {
+            if (updatedTabId !== tabId) return;
+
+            if (changeInfo.status === "loading" || (changeInfo.url && changeInfo.url !== beforeUrl)) {
+                sawNavigation = true;
+            }
+
+            if (changeInfo.status === "complete" && (sawNavigation || (tab.url || "") !== beforeUrl)) {
+                settle();
+            }
+        };
+
+        const timer = setTimeout(settle, timeoutMs);
+        browser.tabs.onUpdated.addListener(onUpdated);
+    });
 }
 
 // ─── Screenshot Handler ─────────────────────────────────────────────

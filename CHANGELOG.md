@@ -3,6 +3,7 @@
 ## [Unreleased]
 ### Bug Fixes
 - Fixed a host app launch crash when SafariServices returned extension state on a non-main XPC callback queue.
+- Fixed navigation responses racing page load completion, which could return stale tab URL/title metadata after `goto`, `back`, `forward`, or `reload`.
 
 ## [0.2.7] - 2026-05-06
 ### Added
