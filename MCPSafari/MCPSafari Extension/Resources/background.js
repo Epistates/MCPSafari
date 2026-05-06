@@ -48,10 +48,10 @@ function connectToPort(port) {
     const conn = ensurePort(port);
     if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) return;
 
-    // Security: auto-scan ports require auth token to prevent rogue process connections.
-    // Manual ports (user explicitly added) are trusted without auth.
+    // Security: every server instance requires its per-port auth token.
     const authToken = authTokensByPort.get(port) || legacyAuthToken;
-    if (!conn.manual && isAutoScanPort(port) && !authToken) {
+    if (!authToken) {
+        conn.state = "disconnected";
         return; // Skip — can't verify server identity without auth
     }
 
@@ -60,25 +60,11 @@ function connectToPort(port) {
     const socket = new WebSocket(wsUrl);
     conn.ws = socket;
 
-    // Auto-scan ports always require auth; manual ports use auth if available
-    const requireAuth = !conn.manual && isAutoScanPort(port);
-    let pendingAuth = !!authToken;
+    let pendingAuth = true;
 
     socket.onopen = () => {
-        conn.lastConnected = Date.now();
-        if (authToken) {
-            socket.send(JSON.stringify({ auth: authToken }));
-            console.log(`[MCPSafari:${port}] Sent auth token`);
-        } else if (!requireAuth) {
-            // Manual port, no auth available — connect directly
-            conn.state = "connected";
-            conn.attempts = 0;
-            console.log(`[MCPSafari:${port}] Connected (manual, no auth)`);
-        } else {
-            // Should not reach here due to guard above, but be safe
-            console.error(`[MCPSafari:${port}] Auto-scan port requires auth`);
-            socket.close();
-        }
+        socket.send(JSON.stringify({ auth: authToken }));
+        console.log(`[MCPSafari:${port}] Sent auth token`);
     };
 
     socket.onmessage = async (event) => {
@@ -87,6 +73,7 @@ function connectToPort(port) {
             try {
                 const msg = JSON.parse(event.data);
                 if (msg.auth === "ok") {
+                    conn.lastConnected = Date.now();
                     conn.state = "connected";
                     conn.attempts = 0;
                     console.log(`[MCPSafari:${port}] Authenticated`);
@@ -145,6 +132,17 @@ function connectAll() {
     }
 }
 
+function reconnectKnownPorts() {
+    for (const [port, conn] of connections) {
+        if (conn.ws && conn.ws.readyState === WebSocket.OPEN) continue;
+
+        if (conn.lastConnected > 0 || conn.manual || authTokensByPort.has(port)) {
+            conn.attempts = 0;
+        }
+        connectToPort(port);
+    }
+}
+
 function ensurePortsForKnownTokens() {
     for (const port of authTokensByPort.keys()) {
         if (isAutoScanPort(port) || manualPorts.has(port)) {
@@ -159,6 +157,23 @@ function disconnectPort(port) {
         if (conn.ws) conn.ws.close();
         connections.delete(port);
     }
+}
+
+function visibleConnectionStatuses() {
+    const ports = [];
+    for (const [port, conn] of connections) {
+        // Only surface connections worth showing:
+        // - Currently connected or attempting an authenticated connection
+        // - Manually added by the user
+        // - Auto-scan ports with a known token or previous connection
+        const isVisible = conn.state === "connected"
+            || conn.state === "connecting"
+            || conn.manual
+            || (isAutoScanPort(port) && (authTokensByPort.has(port) || conn.lastConnected > 0));
+        if (!isVisible) continue;
+        ports.push({ port, state: conn.state, manual: conn.manual });
+    }
+    return ports;
 }
 
 // ─── Request Router ──────────────────────────────────────────────────
@@ -590,20 +605,13 @@ function delay(ms) {
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "getStatus") {
-        const ports = [];
-        for (const [port, conn] of connections) {
-            // Only surface connections worth showing:
-            // - Currently connected
-            // - Manually added by the user
-            // - Auto-scan ports that have previously connected (server went away)
-            const isVisible = conn.state === "connected"
-                || conn.manual
-                || (isAutoScanPort(port) && conn.lastConnected > 0);
-            if (!isVisible) continue;
-            ports.push({ port, state: conn.state, manual: conn.manual });
-        }
-        sendResponse({ ports });
-        return false;
+        loadAuthTokens().finally(() => {
+            reconnectKnownPorts();
+            setTimeout(() => {
+                sendResponse({ ports: visibleConnectionStatuses() });
+            }, 250);
+        });
+        return true;
     }
     if (message.type === "addPort") {
         const port = parseInt(message.port, 10);
@@ -634,12 +642,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } else {
             // Only reconnect ports that aren't already connected
             loadAuthTokens().finally(() => {
-                for (const [port, conn] of connections) {
-                    if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
-                        conn.attempts = 0;
-                        connectToPort(port);
-                    }
-                }
+                reconnectKnownPorts();
             });
         }
         sendResponse({ ok: true });
@@ -673,7 +676,7 @@ if (typeof browser.alarms !== "undefined") {
                 // keep their attempt count so they get cleaned up below.
                 for (const [port, conn] of connections) {
                     if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
-                        if (conn.lastConnected > 0 || conn.manual) {
+                        if (conn.lastConnected > 0 || conn.manual || authTokensByPort.has(port)) {
                             conn.attempts = 0;
                         }
                         connectToPort(port);

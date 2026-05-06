@@ -376,6 +376,7 @@
 		9DC62F122F717081006535B1 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "MCPSafari Extension/MCPSafari Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
@@ -411,6 +412,7 @@
 		9DC62F132F717081006535B1 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "MCPSafari Extension/MCPSafari Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;

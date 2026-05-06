@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Bug Fixes
+- Fixed Safari extension autoconnect for authenticated MCP servers by loading tokens from the real macOS home directory and requiring auth before reporting a port connected.
 
 ## [0.2.7] - 2026-05-06
 ### Added
