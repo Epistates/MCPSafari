@@ -203,6 +203,8 @@ async function handleRequest(request) {
             case "hover":
             case "drag":
             case "wait":
+            case "start_trace":
+            case "stop_trace":
             case "get_console_messages":
             case "get_network_requests":
                 data = await sendToContentScript(params.tabId, {
@@ -538,6 +540,7 @@ async function injectContentScripts(tabId) {
         await browser.scripting.executeScript({
             target: { tabId },
             files: [
+                "trace-interceptor.js",
                 "dialog-interceptor.js",
                 "console-interceptor.js",
                 "network-interceptor.js",

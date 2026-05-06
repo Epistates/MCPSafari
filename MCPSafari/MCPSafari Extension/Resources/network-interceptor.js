@@ -11,6 +11,22 @@
     const MAX_REQUESTS = 500;
     const requests = [];
 
+    function recordTraceEvent(type, request) {
+        try {
+            if (typeof window.__mcpRecordTraceEvent === "function") {
+                window.__mcpRecordTraceEvent(`network.${type}`, {
+                    type,
+                    method: request.method,
+                    url: request.url,
+                    status: request.status,
+                    statusText: request.statusText,
+                    duration: request.duration,
+                    error: request.error,
+                }, request.timestamp);
+            }
+        } catch (_) { /* trace capture must not affect network behavior */ }
+    }
+
     // ─── XMLHttpRequest Interception ─────────────────────────────────
 
     const XHROpen = XMLHttpRequest.prototype.open;
@@ -32,7 +48,7 @@
 
             this.addEventListener("loadend", () => {
                 if (requests.length >= MAX_REQUESTS) requests.shift();
-                requests.push({
+                const request = {
                     type: "xhr",
                     method: this.__mcpMeta.method,
                     url: this.__mcpMeta.url,
@@ -43,7 +59,9 @@
                         ? this.responseText.length
                         : 0,
                     timestamp: this.__mcpMeta.startTime,
-                });
+                };
+                requests.push(request);
+                recordTraceEvent("xhr", request);
             });
         }
         return XHRSend.call(this, body);
@@ -67,7 +85,7 @@
             const response = await originalFetch.call(this, input, init);
 
             if (requests.length >= MAX_REQUESTS) requests.shift();
-            requests.push({
+            const request = {
                 type: "fetch",
                 method,
                 url,
@@ -75,12 +93,14 @@
                 statusText: response.statusText,
                 duration: Date.now() - startTime,
                 timestamp: startTime,
-            });
+            };
+            requests.push(request);
+            recordTraceEvent("fetch", request);
 
             return response;
         } catch (err) {
             if (requests.length >= MAX_REQUESTS) requests.shift();
-            requests.push({
+            const request = {
                 type: "fetch",
                 method,
                 url,
@@ -89,7 +109,9 @@
                 duration: Date.now() - startTime,
                 timestamp: startTime,
                 error: String(err.message || err),
-            });
+            };
+            requests.push(request);
+            recordTraceEvent("fetch", request);
             throw err;
         }
     };

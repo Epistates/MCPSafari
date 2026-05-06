@@ -14,6 +14,17 @@
     const levels = ["log", "warn", "error", "info", "debug"];
     const originals = {};
 
+    function recordTraceEvent(level, text, timestamp) {
+        try {
+            if (typeof window.__mcpRecordTraceEvent === "function") {
+                window.__mcpRecordTraceEvent(`console.${level}`, {
+                    level,
+                    message: text,
+                }, timestamp);
+            }
+        } catch (_) { /* trace capture must not affect console behavior */ }
+    }
+
     for (const level of levels) {
         originals[level] = console[level].bind(console);
         console[level] = (...args) => {
@@ -24,7 +35,7 @@
             if (messages.length >= MAX_MESSAGES) {
                 messages.shift();
             }
-            messages.push({
+            const message = {
                 level,
                 timestamp: Date.now(),
                 text: args
@@ -36,28 +47,34 @@
                         }
                     })
                     .join(" "),
-            });
+            };
+            messages.push(message);
+            recordTraceEvent(level, message.text, message.timestamp);
         };
     }
 
     // Capture unhandled errors
     window.addEventListener("error", (event) => {
         if (messages.length >= MAX_MESSAGES) messages.shift();
-        messages.push({
+        const message = {
             level: "error",
             timestamp: Date.now(),
             text: `Uncaught ${event.error ? event.error.stack || event.error.message : event.message}`,
-        });
+        };
+        messages.push(message);
+        recordTraceEvent("error", message.text, message.timestamp);
     });
 
     // Capture unhandled promise rejections
     window.addEventListener("unhandledrejection", (event) => {
         if (messages.length >= MAX_MESSAGES) messages.shift();
-        messages.push({
+        const message = {
             level: "error",
             timestamp: Date.now(),
             text: `Unhandled Promise Rejection: ${event.reason}`,
-        });
+        };
+        messages.push(message);
+        recordTraceEvent("error", message.text, message.timestamp);
     });
 
     // API for content script to read messages

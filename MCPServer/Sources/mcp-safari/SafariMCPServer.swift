@@ -14,7 +14,7 @@ actor SafariMCPServer {
         self.bridge = try WebSocketBridge(port: port, logger: logger)
         self.server = Server(
             name: "mcp-safari",
-            version: "0.2.6",
+            version: "0.2.7",
             instructions: """
                 Safari browser automation. Use tabs_context to list tabs, snapshot for element UIDs, \
                 then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state.
@@ -65,13 +65,24 @@ actor SafariMCPServer {
     private static let waitSel: Value = .object(["type": .string("string"), "description": .string("Wait for CSS selector after action")])
     private static let waitTxt: Value = .object(["type": .string("string"), "description": .string("Wait for visible text after action")])
     private static let waitTimeout: Value = .object(["type": .string("number"), "description": .string("Post-action wait timeout seconds (default: 10)")])
+    private static let trace: Value = .object(["type": .string("boolean"), "description": .string("Capture page trace events during and shortly after action")])
+    private static let traceDuration: Value = .object(["type": .string("number"), "description": .string("Seconds to continue trace capture after action and waits (default: 2, max: 30)")])
     private static let postActionWaitKeys: Set<String> = ["waitForSelector", "waitForText", "waitTimeout"]
+    private static let postActionTraceKeys: Set<String> = ["trace", "traceDuration"]
+    private static let actionControlKeys: Set<String> = postActionWaitKeys.union(postActionTraceKeys)
 
     private static func withPostActionWait(_ properties: [String: Value]) -> [String: Value] {
         var props = properties
         props["waitForSelector"] = Self.waitSel
         props["waitForText"] = Self.waitTxt
         props["waitTimeout"] = Self.waitTimeout
+        return props
+    }
+
+    private static func withActionOptions(_ properties: [String: Value]) -> [String: Value] {
+        var props = Self.withPostActionWait(properties)
+        props["trace"] = Self.trace
+        props["traceDuration"] = Self.traceDuration
         return props
     }
 
@@ -185,7 +196,7 @@ actor SafariMCPServer {
                 description: "Click element by UID, selector, text, or x/y coordinates.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(Self.withPostActionWait([
+                    "properties": .object(Self.withActionOptions([
                         "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
                         "x": .object(["type": .string("number")]),
                         "y": .object(["type": .string("number")]),
@@ -199,7 +210,7 @@ actor SafariMCPServer {
                 description: "Type into element. Supports clearFirst and submitKey (e.g. Enter).",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(Self.withPostActionWait([
+                    "properties": .object(Self.withActionOptions([
                         "text": .object(["type": .string("string")]),
                         "uid": Self.uid, "selector": Self.sel,
                         "clearFirst": .object(["type": .string("boolean")]),
@@ -214,7 +225,7 @@ actor SafariMCPServer {
                 description: "Batch fill form fields. React-compatible.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(Self.withPostActionWait([
+                    "properties": .object(Self.withActionOptions([
                         "fields": .object([
                             "type": .string("object"),
                             "description": .string("CSS selector → value map"),
@@ -230,7 +241,7 @@ actor SafariMCPServer {
                 description: "Select dropdown option by value or label.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(Self.withPostActionWait([
+                    "properties": .object(Self.withActionOptions([
                         "uid": Self.uid, "selector": Self.sel,
                         "value": .object(["type": .string("string")]),
                         "label": .object(["type": .string("string")]),
@@ -243,7 +254,7 @@ actor SafariMCPServer {
                 description: "Scroll page or element.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(Self.withPostActionWait([
+                    "properties": .object(Self.withActionOptions([
                         "direction": .object(["type": .string("string"), "enum": .array([.string("up"), .string("down"), .string("left"), .string("right")])]),
                         "amount": .object(["type": .string("integer"), "description": .string("Pixels (default: viewport height)")]),
                         "uid": Self.uid, "selector": Self.sel, "includeSnapshot": Self.snap, "tabId": Self.tab,
@@ -256,7 +267,7 @@ actor SafariMCPServer {
                 description: "Press key combo (Enter, Tab, Meta+a, Control+c).",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(Self.withPostActionWait([
+                    "properties": .object(Self.withActionOptions([
                         "key": .object(["type": .string("string")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -268,7 +279,7 @@ actor SafariMCPServer {
                 description: "Hover element to trigger tooltips/menus.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(Self.withPostActionWait([
+                    "properties": .object(Self.withActionOptions([
                         "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -279,7 +290,7 @@ actor SafariMCPServer {
                 description: "Drag and drop between elements.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(Self.withPostActionWait([
+                    "properties": .object(Self.withActionOptions([
                         "fromUid": .object(["type": .string("string")]),
                         "toUid": .object(["type": .string("string")]),
                         "fromSelector": .object(["type": .string("string")]),
@@ -543,7 +554,7 @@ actor SafariMCPServer {
 
         // Forward all value args (except includeSnapshot which is handled here)
         for (key, value) in args {
-            if key == "includeSnapshot" || key == "tabId" || Self.postActionWaitKeys.contains(key) { continue }
+            if key == "includeSnapshot" || key == "tabId" || Self.actionControlKeys.contains(key) { continue }
             if let s = value.stringValue { params[key] = AnyCodable(s) }
             else if let i = value.intValue { params[key] = AnyCodable(i) }
             else if let d = value.doubleValue { params[key] = AnyCodable(d) }
@@ -551,8 +562,16 @@ actor SafariMCPServer {
         }
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
 
-        let response = try await bridge.send(action: action, params: params)
-        return try await resultAfterAction(response, args, wantSnapshot: wantSnapshot)
+        let traceSession = try await startTraceIfNeeded(args)
+        do {
+            let response = try await bridge.send(action: action, params: params)
+            return try await resultAfterAction(response, args, wantSnapshot: wantSnapshot, traceSession: traceSession)
+        } catch {
+            if let traceSession {
+                _ = try? await stopTraceResponse(traceSession, args, waitForDuration: false)
+            }
+            throw error
+        }
     }
 
     private func handleFormInput(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -590,8 +609,16 @@ actor SafariMCPServer {
 
         params["fields"] = AnyCodable(fieldDict)
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        let response = try await bridge.send(action: "form_input", params: params)
-        return try await resultAfterAction(response, args)
+        let traceSession = try await startTraceIfNeeded(args)
+        do {
+            let response = try await bridge.send(action: "form_input", params: params)
+            return try await resultAfterAction(response, args, traceSession: traceSession)
+        } catch {
+            if let traceSession {
+                _ = try? await stopTraceResponse(traceSession, args, waitForDuration: false)
+            }
+            throw error
+        }
     }
 
     private func handleScreenshot(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -674,6 +701,7 @@ actor SafariMCPServer {
     }
 
     private static let maxWaitSeconds: Double = 300 // 5-minute cap
+    private static let maxTraceSeconds: Double = 30
 
     private func handleWait(_ args: [String: Value]) async throws -> CallTool.Result {
         if let seconds = Self.numberValue(args["seconds"]), args["selector"] == nil, args["text"] == nil {
@@ -695,13 +723,42 @@ actor SafariMCPServer {
 
     // MARK: - Helpers
 
-    private func resultAfterAction(_ response: BridgeResponse, _ args: [String: Value], wantSnapshot: Bool? = nil) async throws -> CallTool.Result {
-        guard response.success else { return textResult(response) }
+    private struct TraceSession {
+        let id: String
+        let duration: Double
+    }
 
+    private func resultAfterAction(
+        _ response: BridgeResponse,
+        _ args: [String: Value],
+        wantSnapshot: Bool? = nil,
+        traceSession: TraceSession? = nil
+    ) async throws -> CallTool.Result {
         var content = [Self.textContent(responseText(response))]
+        guard response.success else {
+            if let traceSession {
+                let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
+                content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
+            }
+            return CallTool.Result(content: content, isError: true)
+        }
+
         if let waitResponse = try await waitAfterAction(args) {
-            guard waitResponse.success else { return textResult(waitResponse) }
+            guard waitResponse.success else {
+                content.append(Self.textContent(responseText(waitResponse)))
+                if let traceSession {
+                    let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
+                    content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
+                }
+                return CallTool.Result(content: content, isError: true)
+            }
             content.append(Self.textContent(responseText(waitResponse)))
+        }
+
+        if let traceSession {
+            let traceResponse = try await stopTraceResponse(traceSession, args)
+            content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
+            guard traceResponse.success else { return CallTool.Result(content: content, isError: true) }
         }
 
         if wantSnapshot ?? args["includeSnapshot"]?.boolValue == true {
@@ -712,6 +769,40 @@ actor SafariMCPServer {
         }
 
         return CallTool.Result(content: content)
+    }
+
+    private func startTraceIfNeeded(_ args: [String: Value]) async throws -> TraceSession? {
+        guard let traceValue = args["trace"] else { return nil }
+        guard let traceEnabled = traceValue.boolValue else { throw ToolInputError("trace must be a boolean") }
+        guard traceEnabled else { return nil }
+
+        var params: [String: AnyCodable] = [:]
+        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
+
+        let response = try await bridge.send(action: "start_trace", params: params)
+        guard response.success else { throw ToolInputError(responseText(response)) }
+        guard let traceID = response.data?.stringValue, !traceID.isEmpty else {
+            throw ToolInputError("Trace did not return an id")
+        }
+
+        return TraceSession(
+            id: traceID,
+            duration: try Self.cappedTraceDuration(args["traceDuration"])
+        )
+    }
+
+    private func stopTraceResponse(
+        _ traceSession: TraceSession,
+        _ args: [String: Value],
+        waitForDuration: Bool = true
+    ) async throws -> BridgeResponse {
+        if waitForDuration, traceSession.duration > 0 {
+            try await Task.sleep(for: .seconds(traceSession.duration))
+        }
+
+        var params: [String: AnyCodable] = ["id": AnyCodable(traceSession.id)]
+        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
+        return try await bridge.send(action: "stop_trace", params: params)
     }
 
     private func waitAfterAction(_ args: [String: Value]) async throws -> BridgeResponse? {
@@ -741,6 +832,13 @@ actor SafariMCPServer {
 
     private static func cappedWaitTimeout(_ value: Value?) -> Double {
         max(0.1, min(Self.numberValue(value) ?? 10, Self.maxWaitSeconds))
+    }
+
+    private static func cappedTraceDuration(_ value: Value?) throws -> Double {
+        if let value, Self.numberValue(value) == nil {
+            throw ToolInputError("traceDuration must be a number")
+        }
+        return max(0, min(Self.numberValue(value) ?? 2, Self.maxTraceSeconds))
     }
 
     private static func numberValue(_ value: Value?) -> Double? {

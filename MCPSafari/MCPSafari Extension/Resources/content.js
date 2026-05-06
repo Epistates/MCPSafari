@@ -101,6 +101,10 @@
                 return dragElement(params);
             case "wait":
                 return waitFor(params);
+            case "start_trace":
+                return startTrace(params);
+            case "stop_trace":
+                return stopTrace(params);
             case "handle_dialog":
                 return handleDialog(params);
             case "get_console_messages":
@@ -777,6 +781,17 @@
             return `${action} ${result.type} dialog: "${result.message}"${suffix}`;
         }
         return "No pending dialog found";
+    }
+
+    // --- Page Trace (delegate to interceptor) ------------------------
+
+    async function startTrace(params) {
+        const trace = await requestMainWorld("start_trace", params);
+        return trace.id;
+    }
+
+    async function stopTrace(params) {
+        return await requestMainWorld("stop_trace", params, 5000);
     }
 
     // ─── Console Messages (delegate to interceptor) ──────────────────

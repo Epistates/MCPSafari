@@ -310,6 +310,10 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 
 `navigate` and interaction tools support `waitForSelector`, `waitForText`, and `waitTimeout` to wait after a successful action before returning. When combined with `includeSnapshot: true`, the snapshot is captured after the wait.
 
+### Page Traces
+
+Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Traces include URL/history changes, console messages, fetch/XHR requests, and DOM mutations captured during the action window.
+
 ## Architecture
 
 ### MCP Server (`MCPServer/`)
@@ -327,6 +331,7 @@ A Manifest V3 Safari Web Extension with:
 
 - `background.js` — WebSocket client, request router, tab/navigation/screenshot handlers
 - `content.js` — DOM interaction, accessibility snapshots, element finding, click/type/scroll simulation
+- `trace-interceptor.js` — Captures action-window URL, history, console, network, and DOM mutation events
 - `dialog-interceptor.js` — Patches `window.alert/confirm/prompt` before page scripts run
 - `console-interceptor.js` — Captures console messages for `read_console`
 - `network-interceptor.js` — Captures XHR/fetch requests for `read_network`

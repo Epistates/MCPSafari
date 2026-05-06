@@ -1,11 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.2.7] - 2026-05-06
 ### Added
 - Added optional post-action waits for `navigate` and interaction tools via `waitForSelector`, `waitForText`, and `waitTimeout`.
+- Added optional action traces for interaction tools via `trace` and `traceDuration`, capturing URL/history, console, network, and DOM mutation events.
 
 ### Bug Fixes
 - `javascript_tool` now returns values for bare expression inputs while preserving multi-statement function-body behavior.
+
+### Build
+- Bumped app, extension, and server versions to `0.2.7`.
 
 ## [0.2.6] - 2026-05-04
 ### Build
