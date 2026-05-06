@@ -460,7 +460,13 @@ async function handleJavaScript(params) {
         target: { tabId },
         func: (code) => {
             try {
-                const fn = new Function(`return (async () => { ${code} })()`);
+                const expressionCode = String(code).trim().replace(/;+$/, "");
+                let fn;
+                try {
+                    fn = new Function(`return (async () => (${expressionCode}))()`);
+                } catch (_) {
+                    fn = new Function(`return (async () => { ${code} })()`);
+                }
                 return fn();
             } catch (e) {
                 return { __error: e.message };

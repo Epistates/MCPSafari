@@ -241,7 +241,7 @@ For ports outside the default range, add them manually in the extension popup or
 
 | Tool | Description |
 |------|-------------|
-| `javascript_tool` | Execute arbitrary JS in the page context |
+| `javascript_tool` | Execute arbitrary JS in the page context and return expression results |
 
 ### Debugging
 

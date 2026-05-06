@@ -302,7 +302,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "javascript_tool",
-                description: "Execute JS in page context. Returns result.",
+                description: "Execute JS in page context. Returns expression results.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
