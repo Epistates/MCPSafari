@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- Added optional post-action waits for `navigate` and interaction tools via `waitForSelector`, `waitForText`, and `waitTimeout`.
 
 ### Bug Fixes
 - `javascript_tool` now returns values for bare expression inputs while preserving multi-statement function-body behavior.

@@ -62,6 +62,18 @@ actor SafariMCPServer {
     private static let sel: Value = .object(["type": .string("string"), "description": .string("CSS selector")])
     private static let txt: Value = .object(["type": .string("string"), "description": .string("Visible text to match")])
     private static let snap: Value = .object(["type": .string("boolean"), "description": .string("Return snapshot after action")])
+    private static let waitSel: Value = .object(["type": .string("string"), "description": .string("Wait for CSS selector after action")])
+    private static let waitTxt: Value = .object(["type": .string("string"), "description": .string("Wait for visible text after action")])
+    private static let waitTimeout: Value = .object(["type": .string("number"), "description": .string("Post-action wait timeout seconds (default: 10)")])
+    private static let postActionWaitKeys: Set<String> = ["waitForSelector", "waitForText", "waitTimeout"]
+
+    private static func withPostActionWait(_ properties: [String: Value]) -> [String: Value] {
+        var props = properties
+        props["waitForSelector"] = Self.waitSel
+        props["waitForText"] = Self.waitTxt
+        props["waitTimeout"] = Self.waitTimeout
+        return props
+    }
 
     private static func textContent(_ text: String) -> Tool.Content {
         .text(text: text, annotations: nil, _meta: nil)
@@ -120,11 +132,12 @@ actor SafariMCPServer {
                 description: "Go to URL or back/forward/reload.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "url": .object(["type": .string("string")]),
                         "action": .object(["type": .string("string"), "enum": .array([.string("goto"), .string("back"), .string("forward"), .string("reload")])]),
+                        "includeSnapshot": Self.snap,
                         "tabId": Self.tab,
-                    ]),
+                    ])),
                 ])
             ),
 
@@ -172,13 +185,13 @@ actor SafariMCPServer {
                 description: "Click element by UID, selector, text, or x/y coordinates.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
                         "x": .object(["type": .string("number")]),
                         "y": .object(["type": .string("number")]),
                         "doubleClick": .object(["type": .string("boolean")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
-                    ]),
+                    ])),
                 ])
             ),
             Tool(
@@ -186,13 +199,13 @@ actor SafariMCPServer {
                 description: "Type into element. Supports clearFirst and submitKey (e.g. Enter).",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "text": .object(["type": .string("string")]),
                         "uid": Self.uid, "selector": Self.sel,
                         "clearFirst": .object(["type": .string("boolean")]),
                         "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
-                    ]),
+                    ])),
                     "required": .array([.string("text")]),
                 ])
             ),
@@ -201,14 +214,14 @@ actor SafariMCPServer {
                 description: "Batch fill form fields. React-compatible.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "fields": .object([
                             "type": .string("object"),
                             "description": .string("CSS selector → value map"),
                             "additionalProperties": .object(["type": .string("string")]),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
-                    ]),
+                    ])),
                     "required": .array([.string("fields")]),
                 ])
             ),
@@ -217,12 +230,12 @@ actor SafariMCPServer {
                 description: "Select dropdown option by value or label.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "uid": Self.uid, "selector": Self.sel,
                         "value": .object(["type": .string("string")]),
                         "label": .object(["type": .string("string")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
-                    ]),
+                    ])),
                 ])
             ),
             Tool(
@@ -230,11 +243,11 @@ actor SafariMCPServer {
                 description: "Scroll page or element.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "direction": .object(["type": .string("string"), "enum": .array([.string("up"), .string("down"), .string("left"), .string("right")])]),
                         "amount": .object(["type": .string("integer"), "description": .string("Pixels (default: viewport height)")]),
                         "uid": Self.uid, "selector": Self.sel, "includeSnapshot": Self.snap, "tabId": Self.tab,
-                    ]),
+                    ])),
                     "required": .array([.string("direction")]),
                 ])
             ),
@@ -243,10 +256,10 @@ actor SafariMCPServer {
                 description: "Press key combo (Enter, Tab, Meta+a, Control+c).",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "key": .object(["type": .string("string")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
-                    ]),
+                    ])),
                     "required": .array([.string("key")]),
                 ])
             ),
@@ -255,10 +268,10 @@ actor SafariMCPServer {
                 description: "Hover element to trigger tooltips/menus.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
-                    ]),
+                    ])),
                 ])
             ),
             Tool(
@@ -266,13 +279,13 @@ actor SafariMCPServer {
                 description: "Drag and drop between elements.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([
+                    "properties": .object(Self.withPostActionWait([
                         "fromUid": .object(["type": .string("string")]),
                         "toUid": .object(["type": .string("string")]),
                         "fromSelector": .object(["type": .string("string")]),
                         "toSelector": .object(["type": .string("string")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
-                    ]),
+                    ])),
                 ])
             ),
             Tool(
@@ -486,7 +499,7 @@ actor SafariMCPServer {
             params["action"] = AnyCodable(action)
         }
         let response = try await bridge.send(action: "navigate", params: params)
-        return textResult(response)
+        return try await resultAfterAction(response, args)
     }
 
     private func handleReadPage(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -530,7 +543,7 @@ actor SafariMCPServer {
 
         // Forward all value args (except includeSnapshot which is handled here)
         for (key, value) in args {
-            if key == "includeSnapshot" || key == "tabId" { continue }
+            if key == "includeSnapshot" || key == "tabId" || Self.postActionWaitKeys.contains(key) { continue }
             if let s = value.stringValue { params[key] = AnyCodable(s) }
             else if let i = value.intValue { params[key] = AnyCodable(i) }
             else if let d = value.doubleValue { params[key] = AnyCodable(d) }
@@ -539,21 +552,7 @@ actor SafariMCPServer {
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
 
         let response = try await bridge.send(action: action, params: params)
-
-        if wantSnapshot && response.success {
-            // Take a follow-up snapshot
-            var snapParams: [String: AnyCodable] = [:]
-            if let tabId = args["tabId"]?.intValue { snapParams["tabId"] = AnyCodable(tabId) }
-            let snapResponse = try await bridge.send(action: "snapshot", params: snapParams)
-            let actionText = response.data?.stringValue ?? "\(response.data ?? AnyCodable("OK"))"
-            let snapText = snapResponse.data?.stringValue ?? "\(snapResponse.data ?? AnyCodable(""))"
-            return CallTool.Result(content: [
-                Self.textContent(actionText),
-                Self.textContent("--- Page Snapshot ---\n\(snapText)"),
-            ])
-        }
-
-        return textResult(response)
+        return try await resultAfterAction(response, args, wantSnapshot: wantSnapshot)
     }
 
     private func handleFormInput(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -592,20 +591,7 @@ actor SafariMCPServer {
         params["fields"] = AnyCodable(fieldDict)
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         let response = try await bridge.send(action: "form_input", params: params)
-
-        if args["includeSnapshot"]?.boolValue == true, response.success {
-            var snapParams: [String: AnyCodable] = [:]
-            if let tabId = args["tabId"]?.intValue { snapParams["tabId"] = AnyCodable(tabId) }
-            let snapResponse = try await bridge.send(action: "snapshot", params: snapParams)
-            let actionText = response.data?.stringValue ?? "OK"
-            let snapText = snapResponse.data?.stringValue ?? ""
-            return CallTool.Result(content: [
-                Self.textContent(actionText),
-                Self.textContent("--- Page Snapshot ---\n\(snapText)"),
-            ])
-        }
-
-        return textResult(response)
+        return try await resultAfterAction(response, args)
     }
 
     private func handleScreenshot(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -690,8 +676,8 @@ actor SafariMCPServer {
     private static let maxWaitSeconds: Double = 300 // 5-minute cap
 
     private func handleWait(_ args: [String: Value]) async throws -> CallTool.Result {
-        if let seconds = args["seconds"]?.doubleValue, args["selector"] == nil, args["text"] == nil {
-            let capped = min(seconds, Self.maxWaitSeconds)
+        if let seconds = Self.numberValue(args["seconds"]), args["selector"] == nil, args["text"] == nil {
+            let capped = max(0, min(seconds, Self.maxWaitSeconds))
             try await Task.sleep(for: .seconds(capped))
             return CallTool.Result(content: [Self.textContent("Waited \(capped) seconds")])
         }
@@ -699,7 +685,7 @@ actor SafariMCPServer {
         var params: [String: AnyCodable] = [:]
         if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
         if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
-        let userTimeout = min(args["timeout"]?.doubleValue ?? 10, Self.maxWaitSeconds)
+        let userTimeout = Self.cappedWaitTimeout(args["timeout"])
         params["timeout"] = AnyCodable(userTimeout)
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         // Extend bridge timeout to exceed the wait timeout so it doesn't race
@@ -709,19 +695,82 @@ actor SafariMCPServer {
 
     // MARK: - Helpers
 
-    private func textResult(_ response: BridgeResponse) -> CallTool.Result {
-        let text: String
-        if let data = response.data {
-            text = "\(data)"
-        } else if let error = response.error {
-            text = error
-        } else {
-            text = response.success ? "OK" : "Failed"
+    private func resultAfterAction(_ response: BridgeResponse, _ args: [String: Value], wantSnapshot: Bool? = nil) async throws -> CallTool.Result {
+        guard response.success else { return textResult(response) }
+
+        var content = [Self.textContent(responseText(response))]
+        if let waitResponse = try await waitAfterAction(args) {
+            guard waitResponse.success else { return textResult(waitResponse) }
+            content.append(Self.textContent(responseText(waitResponse)))
         }
 
-        return CallTool.Result(
-            content: [Self.textContent(text)],
+        if wantSnapshot ?? args["includeSnapshot"]?.boolValue == true {
+            let snapResponse = try await snapshotResponse(args)
+            let snapText = responseText(snapResponse)
+            content.append(Self.textContent("--- Page Snapshot ---\n\(snapText)"))
+            guard snapResponse.success else { return CallTool.Result(content: content, isError: true) }
+        }
+
+        return CallTool.Result(content: content)
+    }
+
+    private func waitAfterAction(_ args: [String: Value]) async throws -> BridgeResponse? {
+        guard args["waitForSelector"] != nil || args["waitForText"] != nil else { return nil }
+        var params: [String: AnyCodable] = [:]
+        if let selectorValue = args["waitForSelector"] {
+            guard let selector = selectorValue.stringValue else { throw ToolInputError("waitForSelector must be a string") }
+            guard !selector.isEmpty else { throw ToolInputError("waitForSelector must not be empty") }
+            params["selector"] = AnyCodable(selector)
+        }
+        if let textValue = args["waitForText"] {
+            guard let text = textValue.stringValue else { throw ToolInputError("waitForText must be a string") }
+            guard !text.isEmpty else { throw ToolInputError("waitForText must not be empty") }
+            params["text"] = AnyCodable(text)
+        }
+        let timeout = Self.cappedWaitTimeout(args["waitTimeout"])
+        params["timeout"] = AnyCodable(timeout)
+        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
+        return try await bridge.send(action: "wait", params: params, timeout: timeout + 5)
+    }
+
+    private func snapshotResponse(_ args: [String: Value]) async throws -> BridgeResponse {
+        var snapParams: [String: AnyCodable] = [:]
+        if let tabId = args["tabId"]?.intValue { snapParams["tabId"] = AnyCodable(tabId) }
+        return try await bridge.send(action: "snapshot", params: snapParams)
+    }
+
+    private static func cappedWaitTimeout(_ value: Value?) -> Double {
+        max(0.1, min(Self.numberValue(value) ?? 10, Self.maxWaitSeconds))
+    }
+
+    private static func numberValue(_ value: Value?) -> Double? {
+        if let double = value?.doubleValue { return double }
+        if let int = value?.intValue { return Double(int) }
+        return nil
+    }
+
+    private struct ToolInputError: Error, CustomStringConvertible {
+        let description: String
+
+        init(_ description: String) {
+            self.description = description
+        }
+    }
+
+    private func textResult(_ response: BridgeResponse) -> CallTool.Result {
+        CallTool.Result(
+            content: [Self.textContent(responseText(response))],
             isError: !response.success
         )
+    }
+
+    private func responseText(_ response: BridgeResponse) -> String {
+        if let data = response.data {
+            return "\(data)"
+        } else if let error = response.error {
+            return error
+        } else {
+            return response.success ? "OK" : "Failed"
+        }
     }
 }
