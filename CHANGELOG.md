@@ -3,6 +3,7 @@
 ## [Unreleased]
 ### Bug Fixes
 - Fixed a host app launch crash when SafariServices returned extension state on a non-main XPC callback queue.
+- Fixed Safari extension autoconnect for authenticated MCP servers by loading tokens from the real macOS home directory and requiring auth before reporting a port connected.
 
 ## [0.2.7] - 2026-05-06
 ### Added

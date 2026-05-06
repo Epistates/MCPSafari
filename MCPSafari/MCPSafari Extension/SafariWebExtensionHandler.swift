@@ -6,6 +6,7 @@
 //
 
 import SafariServices
+import Darwin
 import os.log
 
 class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
@@ -35,30 +36,14 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         if let dict = message as? [String: Any],
            let type = dict["type"] as? String,
            type == "getToken" || type == "getTokens" {
-            let configDirectory = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/mcp-safari")
-            let tokenDirectory = configDirectory.appendingPathComponent("tokens")
-            let legacyTokenPath = configDirectory.appendingPathComponent("token")
+            let result = Self.loadTokens()
 
-            var tokens: [String: String] = [:]
-            if let files = try? FileManager.default.contentsOfDirectory(
-                at: tokenDirectory,
-                includingPropertiesForKeys: nil
-            ) {
-                for file in files {
-                    guard UInt16(file.lastPathComponent) != nil,
-                          let token = try? String(contentsOf: file, encoding: .utf8)
-                    else { continue }
-                    tokens[file.lastPathComponent] = token.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-            }
-
-            if !tokens.isEmpty {
-                responseBody = ["tokens": tokens]
-            } else if let token = try? String(contentsOf: legacyTokenPath, encoding: .utf8) {
-                responseBody = ["token": token.trimmingCharacters(in: .whitespacesAndNewlines)]
+            if !result.tokens.isEmpty {
+                responseBody = ["tokens": result.tokens]
+            } else if let token = result.legacyToken {
+                responseBody = ["token": token]
             } else {
-                responseBody = ["error": "No token files found in \(tokenDirectory.path)"]
+                responseBody = ["error": "No token files found in \(result.checkedPaths.joined(separator: ", "))"]
             }
         } else {
             responseBody = ["echo": message as Any]
@@ -72,6 +57,96 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         }
 
         context.completeRequest(returningItems: [ response ], completionHandler: nil)
+    }
+
+    private struct TokenLoadResult {
+        let tokens: [String: String]
+        let legacyToken: String?
+        let checkedPaths: [String]
+    }
+
+    private static func loadTokens() -> TokenLoadResult {
+        var checkedPaths: [String] = []
+
+        for configDirectory in tokenConfigDirectories() {
+            let tokenDirectory = configDirectory.appendingPathComponent("tokens")
+            checkedPaths.append(tokenDirectory.path)
+
+            let tokens = readPortTokens(from: tokenDirectory)
+            if !tokens.isEmpty {
+                return TokenLoadResult(tokens: tokens, legacyToken: nil, checkedPaths: checkedPaths)
+            }
+
+            let legacyTokenPath = configDirectory.appendingPathComponent("token")
+            checkedPaths.append(legacyTokenPath.path)
+
+            if let token = readToken(at: legacyTokenPath) {
+                return TokenLoadResult(tokens: [:], legacyToken: token, checkedPaths: checkedPaths)
+            }
+        }
+
+        return TokenLoadResult(tokens: [:], legacyToken: nil, checkedPaths: checkedPaths)
+    }
+
+    private static func tokenConfigDirectories() -> [URL] {
+        var directories: [URL] = []
+
+        if let realHomeDirectory {
+            appendUnique(
+                realHomeDirectory.appendingPathComponent(".config/mcp-safari"),
+                to: &directories
+            )
+        }
+
+        appendUnique(
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/mcp-safari"),
+            to: &directories
+        )
+
+        return directories
+    }
+
+    private static var realHomeDirectory: URL? {
+        guard let passwordEntry = getpwuid(getuid()),
+              let homeDirectory = passwordEntry.pointee.pw_dir
+        else { return nil }
+
+        return URL(fileURLWithPath: String(cString: homeDirectory), isDirectory: true)
+    }
+
+    private static func appendUnique(_ url: URL, to directories: inout [URL]) {
+        let path = url.standardizedFileURL.path
+
+        if !directories.contains(where: { $0.standardizedFileURL.path == path }) {
+            directories.append(url)
+        }
+    }
+
+    private static func readPortTokens(from tokenDirectory: URL) -> [String: String] {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: tokenDirectory,
+            includingPropertiesForKeys: nil
+        ) else { return [:] }
+
+        var tokens: [String: String] = [:]
+        for file in files {
+            guard UInt16(file.lastPathComponent) != nil,
+                  let token = readToken(at: file)
+            else { continue }
+
+            tokens[file.lastPathComponent] = token
+        }
+
+        return tokens
+    }
+
+    private static func readToken(at file: URL) -> String? {
+        guard let token = try? String(contentsOf: file, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty
+        else { return nil }
+
+        return token
     }
 
 }

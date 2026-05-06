@@ -61,6 +61,9 @@ async function refresh() {
 document.addEventListener("DOMContentLoaded", async () => {
     await refresh();
 
+    const refreshTimer = setInterval(refresh, 1000);
+    window.addEventListener("unload", () => clearInterval(refreshTimer));
+
     document.getElementById("add-btn").addEventListener("click", async () => {
         const input = document.getElementById("port-input");
         const port = parseInt(input.value, 10);
