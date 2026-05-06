@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Bug Fixes
+- Fixed WebSocket listener startup on systems that reject setting the local port twice.
 
 ## [0.2.7] - 2026-05-06
 ### Added

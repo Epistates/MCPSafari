@@ -138,7 +138,7 @@ actor WebSocketBridge {
             guard let nwPort = NWEndpoint.Port(rawValue: tryPort) else { continue }
 
             do {
-                let newListener = try NWListener(using: Self.makeWebSocketParameters(for: nwPort), on: nwPort)
+                let newListener = try NWListener(using: Self.makeWebSocketParameters(for: nwPort))
                 self.listener = newListener
                 self.port = tryPort
 
