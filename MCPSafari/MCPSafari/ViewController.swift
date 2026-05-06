@@ -9,7 +9,7 @@ import Cocoa
 import SafariServices
 import WebKit
 
-let extensionBundleIdentifier = "com.epistates.MCPSafari.Extension"
+nonisolated let extensionBundleIdentifier = "com.epistates.MCPSafari.Extension"
 
 class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHandler {
 
@@ -26,20 +26,28 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: extensionBundleIdentifier) { (state, error) in
+        Self.updateExtensionStateDisplay(for: webView)
+    }
+
+    private nonisolated static func updateExtensionStateDisplay(for webView: WKWebView) {
+        let completion: @Sendable (SFSafariExtensionState?, Error?) -> Void = { (state, error) in
             guard let state = state, error == nil else {
                 // Insert code to inform the user that something went wrong.
                 return
             }
 
+            let isEnabled = state.isEnabled
+
             DispatchQueue.main.async {
                 if #available(macOS 13, *) {
-                    webView.evaluateJavaScript("show(\(state.isEnabled), true)")
+                    webView.evaluateJavaScript("show(\(isEnabled), true)")
                 } else {
-                    webView.evaluateJavaScript("show(\(state.isEnabled), false)")
+                    webView.evaluateJavaScript("show(\(isEnabled), false)")
                 }
             }
         }
+
+        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: extensionBundleIdentifier, completionHandler: completion)
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

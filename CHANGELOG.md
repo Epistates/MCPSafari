@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Bug Fixes
+- Fixed a host app launch crash when SafariServices returned extension state on a non-main XPC callback queue.
 
 ## [0.2.7] - 2026-05-06
 ### Added
