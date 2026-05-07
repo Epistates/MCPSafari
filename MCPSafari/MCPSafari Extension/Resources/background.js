@@ -456,9 +456,11 @@ async function handleNavigate(params) {
     return `${message} ${tab.url || ""} (${tab.title || ""})`
 }
 
-async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000) {
+async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000, noNavigationTimeoutMs = 1500) {
     const beforeUrl = beforeTab?.url || "";
     let sawNavigation = false;
+    let loadStarted = false;
+    let sameDocumentTimer = null;
 
     return new Promise((resolve, reject) => {
         let settled = false;
@@ -466,6 +468,8 @@ async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000) {
         const cleanup = () => {
             browser.tabs.onUpdated.removeListener(onUpdated);
             clearTimeout(timer);
+            clearTimeout(noNavigationTimer);
+            clearTimeout(sameDocumentTimer);
         };
 
         const settle = async () => {
@@ -479,11 +483,25 @@ async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000) {
             }
         };
 
+        const settleIfSameDocument = () => {
+            clearTimeout(sameDocumentTimer);
+            sameDocumentTimer = setTimeout(settle, 500);
+        };
+
         const onUpdated = (updatedTabId, changeInfo, tab) => {
             if (updatedTabId !== tabId) return;
 
-            if (changeInfo.status === "loading" || (changeInfo.url && changeInfo.url !== beforeUrl)) {
+            if (changeInfo.status === "loading") {
                 sawNavigation = true;
+                loadStarted = true;
+                clearTimeout(sameDocumentTimer);
+            }
+
+            if (changeInfo.url && changeInfo.url !== beforeUrl) {
+                sawNavigation = true;
+                if (!loadStarted) {
+                    settleIfSameDocument();
+                }
             }
 
             if (changeInfo.status === "complete" && (sawNavigation || (tab.url || "") !== beforeUrl)) {
@@ -492,6 +510,11 @@ async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000) {
         };
 
         const timer = setTimeout(settle, timeoutMs);
+        const noNavigationTimer = setTimeout(() => {
+            if (!sawNavigation) {
+                settle();
+            }
+        }, noNavigationTimeoutMs);
         browser.tabs.onUpdated.addListener(onUpdated);
     });
 }

@@ -1,11 +1,18 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.2.8] - 2026-05-07
 ### Bug Fixes
 - Fixed a host app launch crash when SafariServices returned extension state on a non-main XPC callback queue.
 - Fixed WebSocket listener startup on systems that reject setting the local port twice.
 - Fixed Safari extension autoconnect for authenticated MCP servers by loading tokens from the real macOS home directory and requiring auth before reporting a port connected.
 - Fixed navigation responses racing page load completion, which could return stale tab URL/title metadata after `goto`, `back`, `forward`, or `reload`.
+- Fixed navigation waits for no-op and same-document navigations so they do not sit on the full page-load timeout.
+
+### Build
+- Bumped app, extension, and server versions to `0.2.8`.
+- Corrected GitHub Release install instructions to use the current artifact names and recommended Homebrew cask.
 
 ## [0.2.7] - 2026-05-06
 ### Added

@@ -238,22 +238,28 @@ jobs:
 
             ### Installation
 
-            **MCP Server (CLI):**
+            **Homebrew (recommended):**
             ```bash
-            # Download universal binary (works on Intel + Apple Silicon)
-            curl -L https://github.com/Epistates/MCPSafari/releases/download/${{ steps.version.outputs.version }}/MCPSafari-universal-apple-darwin -o ~/.local/bin/MCPSafari
-            chmod +x ~/.local/bin/MCPSafari
+            brew install --cask epistates/tap/mcp-safari
             ```
 
-            **Safari Extension:**
-            Download `MCPSafari-arm64.tar.gz` (Apple Silicon) or `MCPSafari-x86_64.tar.gz` (Intel), extract, and move to Applications.
+            **Manual MCP Server (CLI):**
+            ```bash
+            # Download universal binary (works on Intel + Apple Silicon)
+            mkdir -p ~/.local/bin
+            curl -L https://github.com/Epistates/MCPSafari/releases/download/${{ steps.version.outputs.version }}/MCPSafari-Server-universal-apple-darwin -o ~/.local/bin/mcp-safari
+            chmod +x ~/.local/bin/mcp-safari
+            ```
+
+            **Manual Safari Extension:**
+            Download `MCPSafari-Extension-arm64.tar.gz` (Apple Silicon) or `MCPSafari-Extension-x86_64.tar.gz` (Intel), extract, and move `MCPSafari.app` to `/Applications`.
 
             **Configure Claude Code:**
             ```json
             {
               "mcpServers": {
                 "mcp-safari": {
-                  "command": "~/.local/bin/MCPSafari"
+                  "command": "~/.local/bin/mcp-safari"
                 }
               }
             }
