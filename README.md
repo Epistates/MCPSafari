@@ -121,6 +121,29 @@ Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extens
 
 ## Configuration
 
+### Codex CLI
+
+Register the server with Codex CLI:
+
+```bash
+codex mcp add mcp-safari -- mcp-safari
+```
+
+If `mcp-safari` is not in your `$PATH`, use the full path to the server binary:
+
+```bash
+codex mcp add mcp-safari -- /usr/local/bin/mcp-safari
+```
+
+Verify the registration:
+
+```bash
+codex mcp list
+codex mcp get mcp-safari
+```
+
+Start a new Codex CLI session after registering the server. MCPSafari uses the MCP stdio transport, so use `--` before the command; `--url` is only for streamable HTTP MCP servers.
+
 ### Claude Code
 
 Register the server with the Claude Code CLI (user scope, available in every project):
