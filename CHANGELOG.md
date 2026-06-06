@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-06-06
+### Added
+- `select_tab` now exposes its `bringToFront` option (activate and focus the tab, default `true`) in the tool schema and description.
+
+### Documentation
+- Documented that `press_key` modifier combos and `drag` dispatch synthetic events and do not trigger native browser actions (clipboard, select-all) or HTML5 drag-and-drop.
+- Noted that `read_console`/`read_network` telemetry is captured in the page main world and should be treated as page-controlled data on untrusted pages.
+
+### CI
+- Ran the gitleaks secret scan via the non-deprecated `gitleaks git` command.
+- Bumped `actions/checkout` to v5 across all workflows to clear the Node 20 runner deprecation.
+
+### Build
+- Bumped app, extension, and server versions to `0.2.9`.
+
 ## [0.2.8] - 2026-05-07
 ### Bug Fixes
 - Fixed a host app launch crash when SafariServices returned extension state on a non-main XPC callback queue.

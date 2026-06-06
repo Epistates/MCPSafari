@@ -248,6 +248,8 @@ For ports outside the default range, add them manually in the extension popup or
 | `hover` | Hover to trigger tooltips, menus, or hover states |
 | `drag` | Drag and drop between elements |
 
+> **Note:** Interaction tools drive elements via synthetic DOM events (and React-compatible value setting for text), which works across the vast majority of sites. Because the events are synthetic, `press_key` modifier combos (e.g. `Meta+a`, `Control+c`) and `drag` reach page-level JS handlers but do **not** trigger native browser actions — clipboard copy/paste, select-all, or HTML5 native drag-and-drop. Use `type_text`/`form_input` for text entry and `javascript_tool` when a true native action is required.
+
 ### Dialogs
 
 | Tool | Description |
@@ -272,6 +274,8 @@ For ports outside the default range, add them manually in the extension popup or
 |------|-------------|
 | `read_console` | Read console messages with level and regex filtering |
 | `read_network` | Read captured XHR/fetch requests with type filtering |
+
+> **Note:** Console and network capture run in the page's main world (required to patch `console`, `fetch`, and `history`). A hostile page can therefore observe or forge this telemetry, so treat `read_console` / `read_network` output from untrusted pages as page-controlled data rather than ground truth.
 
 ### Window
 

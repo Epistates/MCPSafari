@@ -14,7 +14,7 @@ actor SafariMCPServer {
         self.bridge = try WebSocketBridge(port: port, logger: logger)
         self.server = Server(
             name: "mcp-safari",
-            version: "0.2.8",
+            version: "0.2.9",
             instructions: """
                 Safari browser automation. Use tabs_context to list tabs, snapshot for element UIDs, \
                 then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state.
@@ -128,10 +128,13 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "select_tab",
-                description: "Pin a tab as default context for future calls.",
+                description: "Pin a tab as default context for future calls. Activates and focuses the tab unless bringToFront is false.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(["tabId": Self.tab]),
+                    "properties": .object([
+                        "tabId": Self.tab,
+                        "bringToFront": .object(["type": .string("boolean"), "description": .string("Activate and focus the tab (default: true)")]),
+                    ]),
                     "required": .array([.string("tabId")]),
                 ])
             ),
