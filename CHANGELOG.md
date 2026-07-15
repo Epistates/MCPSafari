@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Bug Fixes
+- Fixed `snapshot` crashing on SVG elements with non-string `type` properties.
 
 ## [0.2.9] - 2026-06-06
 ### Added
