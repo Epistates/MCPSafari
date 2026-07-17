@@ -7,12 +7,7 @@ function renderConnections(ports) {
         return;
     }
 
-    // Sort: connected first, then by port number
-    ports.sort((a, b) => {
-        if (a.state === "connected" && b.state !== "connected") return -1;
-        if (b.state === "connected" && a.state !== "connected") return 1;
-        return a.port - b.port;
-    });
+    ports.sort((a, b) => a.port - b.port);
 
     for (const { port, state, manual } of ports) {
         const row = document.createElement("div");
@@ -58,8 +53,16 @@ async function refresh() {
     } catch (_) { /* extension may not be ready */ }
 }
 
+async function refreshConnections() {
+    try {
+        const response = await browser.runtime.sendMessage({ type: "refreshConnections" });
+        if (response) renderConnections(response.ports);
+    } catch (_) { /* extension may not be ready */ }
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
-    await refresh();
+    document.getElementById("version").textContent = `v${browser.runtime.getManifest().version}`;
+    await refreshConnections();
 
     const refreshTimer = setInterval(refresh, 1000);
     window.addEventListener("unload", () => clearInterval(refreshTimer));

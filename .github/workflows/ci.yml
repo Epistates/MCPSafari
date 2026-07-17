@@ -51,6 +51,9 @@ jobs:
           cd MCPServer
           swift test
 
+      - name: Test extension background
+        run: node --test Tests/ExtensionBackgroundTests.mjs
+
       - name: Test MCP handshake
         run: |
           cd MCPServer

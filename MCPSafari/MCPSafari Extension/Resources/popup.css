@@ -6,6 +6,8 @@ body {
     width: 240px;
     padding: 12px;
     margin: 0;
+    color: CanvasText;
+    color: -apple-system-label;
     font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     font-size: 13px;
 }
@@ -20,8 +22,9 @@ body {
 .version {
     font-weight: 400;
     font-size: 10px;
-    color: #999;
-    letter-spacing: 0.02em;
+    color: CanvasText;
+    color: -apple-system-secondary-label;
+    letter-spacing: 0;
 }
 
 /* ─── Connection rows ─────────────────────────────── */
@@ -40,6 +43,7 @@ body {
     padding: 5px 8px;
     border-radius: 6px;
     background: rgba(128, 128, 128, 0.06);
+    background: -apple-system-quaternary-fill;
 }
 
 .dot {
@@ -67,7 +71,8 @@ body {
 
 .conn-state {
     font-size: 11px;
-    color: #888;
+    color: CanvasText;
+    color: -apple-system-label;
     flex: 1;
 }
 
@@ -76,9 +81,11 @@ body {
     padding: 1px 4px;
     border-radius: 3px;
     background: rgba(128, 128, 128, 0.15);
-    color: #888;
+    background: -apple-system-tertiary-fill;
+    color: CanvasText;
+    color: -apple-system-secondary-label;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0;
     flex-shrink: 0;
 }
 
@@ -89,7 +96,7 @@ body {
     cursor: pointer;
     padding: 0 2px;
     line-height: 1;
-    opacity: 0.5;
+    opacity: 0.8;
     transition: opacity 0.15s;
 }
 
@@ -140,7 +147,6 @@ body {
 /* ─── Dark mode ───────────────────────────────────── */
 
 @media (prefers-color-scheme: dark) {
-    .conn-state { color: #999; }
     .add-row input {
         background: #1c1c1e;
         border-color: #444;
