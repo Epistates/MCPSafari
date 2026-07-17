@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+- Stop stale per-port token files from causing endless extension reconnect attempts and popup state cycling.
+- Read the popup version from its manifest, keep ports ordered, and use adaptive system colors for legibility on Safari glass.
+
 ## [0.2.9] - 2026-06-06
 ### Added
 - `select_tab` now exposes its `bringToFront` option (activate and focus the tab, default `true`) in the tool schema and description.

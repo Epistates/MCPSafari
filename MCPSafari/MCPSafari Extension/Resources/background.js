@@ -25,6 +25,7 @@ const manualPorts = new Set();
 let selectedTabId = null;
 let legacyAuthToken = null;
 const authTokensByPort = new Map();
+const staleTokensByPort = new Map();
 
 function ensurePort(port, manual = false) {
     if (!connections.has(port)) {
@@ -45,7 +46,8 @@ function isAutoScanPort(port) {
 // ─── WebSocket Connection ────────────────────────────────────────────
 
 function connectToPort(port) {
-    const conn = ensurePort(port);
+    const conn = connections.get(port);
+    if (!conn) return;
     if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) return;
 
     // Security: every server instance requires its per-port auth token.
@@ -117,7 +119,12 @@ function connectToPort(port) {
 }
 
 function scheduleReconnect(port) {
-    const conn = ensurePort(port);
+    const conn = connections.get(port);
+    if (!conn) return;
+    if (!conn.manual && conn.lastConnected === 0 && conn.attempts >= 3) {
+        suppressStaleTokenPort(port);
+        return;
+    }
     const delayMs = Math.min(
         RECONNECT_BASE_MS * Math.pow(2, conn.attempts),
         RECONNECT_MAX_MS
@@ -136,7 +143,7 @@ function reconnectKnownPorts() {
     for (const [port, conn] of connections) {
         if (conn.ws && conn.ws.readyState === WebSocket.OPEN) continue;
 
-        if (conn.lastConnected > 0 || conn.manual || authTokensByPort.has(port)) {
+        if (conn.lastConnected > 0 || conn.manual) {
             conn.attempts = 0;
         }
         connectToPort(port);
@@ -144,11 +151,22 @@ function reconnectKnownPorts() {
 }
 
 function ensurePortsForKnownTokens() {
-    for (const port of authTokensByPort.keys()) {
+    for (const [port, token] of authTokensByPort) {
+        if (staleTokensByPort.get(port) === token) continue;
+        staleTokensByPort.delete(port);
         if (isAutoScanPort(port) || manualPorts.has(port)) {
-            ensurePort(port, manualPorts.has(port));
+            if (!connections.has(port)) {
+                ensurePort(port, manualPorts.has(port));
+                connectToPort(port);
+            }
         }
     }
+}
+
+function suppressStaleTokenPort(port) {
+    const token = authTokensByPort.get(port);
+    if (token) staleTokensByPort.set(port, token);
+    connections.delete(port);
 }
 
 function disconnectPort(port) {
@@ -157,6 +175,7 @@ function disconnectPort(port) {
         if (conn.ws) conn.ws.close();
         connections.delete(port);
     }
+    staleTokensByPort.delete(port);
 }
 
 function visibleConnectionStatuses() {
@@ -673,14 +692,16 @@ function delay(ms) {
 // ─── Message Listener (from popup or content scripts) ────────────────
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === "getStatus") {
+    if (message.type === "refreshConnections") {
         loadAuthTokens().finally(() => {
             reconnectKnownPorts();
-            setTimeout(() => {
-                sendResponse({ ports: visibleConnectionStatuses() });
-            }, 250);
+            sendResponse({ ports: visibleConnectionStatuses() });
         });
         return true;
+    }
+    if (message.type === "getStatus") {
+        sendResponse({ ports: visibleConnectionStatuses() });
+        return false;
     }
     if (message.type === "addPort") {
         const port = parseInt(message.port, 10);
@@ -704,7 +725,8 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Reconnect a specific port, or only disconnected ports if no port specified
         if (message.port) {
             const port = parseInt(message.port, 10);
-            const conn = connections.get(port);
+            staleTokensByPort.delete(port);
+            const conn = ensurePort(port, manualPorts.has(port));
             if (conn && conn.ws) conn.ws.close();
             if (conn) conn.attempts = 0;
             loadAuthTokens().finally(() => connectToPort(port));
@@ -745,7 +767,7 @@ if (typeof browser.alarms !== "undefined") {
                 // keep their attempt count so they get cleaned up below.
                 for (const [port, conn] of connections) {
                     if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
-                        if (conn.lastConnected > 0 || conn.manual || authTokensByPort.has(port)) {
+                        if (conn.lastConnected > 0 || conn.manual) {
                             conn.attempts = 0;
                         }
                         connectToPort(port);
@@ -761,10 +783,10 @@ if (typeof browser.alarms !== "undefined") {
                     if (conn.state === "connected") continue;
                     if (conn.lastConnected === 0 && conn.attempts > 3) {
                         // Never connected — remove after a few failed attempts
-                        connections.delete(port);
+                        suppressStaleTokenPort(port);
                     } else if (conn.lastConnected > 0 && (now - conn.lastConnected) > AUTO_CLEANUP_MS) {
                         // Was connected but server has been gone for 2+ minutes
-                        connections.delete(port);
+                        suppressStaleTokenPort(port);
                     }
                 }
             });
@@ -788,6 +810,9 @@ async function loadAuthTokens() {
                 if (parsedPort >= 1024 && parsedPort <= 65535 && token) {
                     authTokensByPort.set(parsedPort, token);
                 }
+            }
+            for (const port of staleTokensByPort.keys()) {
+                if (!authTokensByPort.has(port)) staleTokensByPort.delete(port);
             }
             ensurePortsForKnownTokens();
             console.log(`[MCPSafari] Loaded ${authTokensByPort.size} auth token(s)`);

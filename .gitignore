@@ -19,6 +19,7 @@ xcuserdata/
 
 # MCP config (contains local paths)
 .mcp.json
+.env
 
 # Claude
 .claude/
