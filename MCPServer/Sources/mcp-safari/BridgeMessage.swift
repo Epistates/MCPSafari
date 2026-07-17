@@ -21,6 +21,25 @@ struct BridgeResponse: Codable, Sendable {
     let success: Bool
     let data: AnyCodable?
     let error: String?
+    let errorCode: String?
+    let retryable: Bool?
+    let recoveryAction: String?
+
+    var toolFailure: ToolFailure {
+        ToolFailure(
+            code: errorCode ?? "extension_error",
+            message: error ?? "Safari extension failed",
+            retryable: retryable ?? false,
+            recoveryAction: recoveryAction ?? "inspect_error"
+        )
+    }
+}
+
+struct ToolFailure: Codable, Equatable, Sendable {
+    let code: String
+    let message: String
+    let retryable: Bool
+    let recoveryAction: String
 }
 
 // MARK: - AnyCodable

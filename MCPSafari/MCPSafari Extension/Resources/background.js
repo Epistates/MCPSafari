@@ -26,6 +26,32 @@ let selectedTabId = null;
 let legacyAuthToken = null;
 const authTokensByPort = new Map();
 
+function toolErrorFromResponse(response) {
+    const error = new Error(response.error);
+    error.code = typeof response.errorCode === "string"
+        ? response.errorCode
+        : "extension_error";
+    error.retryable = response.retryable === true;
+    error.recoveryAction = typeof response.recoveryAction === "string"
+        ? response.recoveryAction
+        : "inspect_error";
+    return error;
+}
+
+function failureResponse(id, error) {
+    return {
+        id,
+        success: false,
+        data: null,
+        error: String(error.message || error),
+        errorCode: typeof error.code === "string" ? error.code : "extension_error",
+        retryable: error.retryable === true,
+        recoveryAction: typeof error.recoveryAction === "string"
+            ? error.recoveryAction
+            : "inspect_error",
+    };
+}
+
 function ensurePort(port, manual = false) {
     if (!connections.has(port)) {
         connections.set(port, { ws: null, state: "disconnected", attempts: 0, manual, lastConnected: 0 });
@@ -98,12 +124,7 @@ function connectToPort(port) {
             socket.send(JSON.stringify(response));
         } catch (err) {
             console.error(`[MCPSafari:${port}] Error:`, err);
-            socket.send(JSON.stringify({
-                id: request.id,
-                success: false,
-                error: String(err),
-                data: null,
-            }));
+            socket.send(JSON.stringify(failureResponse(request.id, err)));
         }
     };
 
@@ -275,12 +296,7 @@ async function handleRequest(request) {
                 break;
 
             default:
-                return {
-                    id,
-                    success: false,
-                    error: `Unknown action: ${action}`,
-                    data: null,
-                };
+                return failureResponse(id, new Error(`Unknown action: ${action}`));
         }
 
         return {
@@ -290,12 +306,7 @@ async function handleRequest(request) {
             error: null,
         };
     } catch (err) {
-        return {
-            id,
-            success: false,
-            error: String(err.message || err),
-            data: null,
-        };
+        return failureResponse(id, err);
     }
 }
 
@@ -594,8 +605,9 @@ async function sendToContentScript(tabId, message) {
 
     try {
         const response = await browser.tabs.sendMessage(resolvedTabId, message);
+        if (!response) throw new Error("Receiving end does not exist");
         if (response && response.error) {
-            throw new Error(response.error);
+            throw toolErrorFromResponse(response);
         }
         return response ? response.data : null;
     } catch (err) {
@@ -610,8 +622,9 @@ async function sendToContentScript(tabId, message) {
                 resolvedTabId,
                 message
             );
+            if (!response) throw new Error("Content script did not respond after injection");
             if (response && response.error) {
-                throw new Error(response.error);
+                throw toolErrorFromResponse(response);
             }
             return response ? response.data : null;
         }
