@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Native input fixture</title>
+</head>
+<body>
+    <div id="editor" contenteditable="true" role="textbox"></div>
+    <script>
+        window.inputEvents = [];
+        const editor = document.querySelector("#editor");
+        for (const type of ["keydown", "beforeinput", "input", "keyup"]) {
+            editor.addEventListener(type, (event) => {
+                window.inputEvents.push({
+                    type,
+                    key: event.key || null,
+                    data: event.data || null,
+                    inputType: event.inputType || null,
+                });
+            });
+        }
+        editor.addEventListener("keydown", (event) => {
+            if (event.key === "/") editor.dataset.slashMenu = "opened";
+        });
+    </script>
+</body>
+</html>

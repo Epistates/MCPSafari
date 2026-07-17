@@ -18,6 +18,7 @@
 - Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
 - Added a backward-compatible versioned extension/server handshake with explicit protocol mismatch errors.
 - Tool failures now include stable error codes, retry guidance, and recovery actions for disconnected bridges, stale element UIDs, missing targets, and wait timeouts.
+- `type_text` now supports opt-in native macOS keyboard events for contenteditable and framework-managed editors.
 
 ### Bug Fixes
 - Stop stale per-port token files from causing endless extension reconnect attempts and popup state cycling.

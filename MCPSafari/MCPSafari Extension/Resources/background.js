@@ -255,6 +255,10 @@ async function handleRequest(request) {
                 data = await handleNavigate(params);
                 break;
 
+            case "native_type_text":
+                data = await handleNativeTypeText(params);
+                break;
+
             // Page reading (delegated to content script)
             case "read_page":
             case "get_page_text":
@@ -397,6 +401,19 @@ async function handleSelectTab(params) {
         title: tab.title || "",
         selected: true,
     };
+}
+
+async function handleNativeTypeText(params) {
+    const tabId = params.tabId || (await getActiveTabId());
+    const tab = await browser.tabs.get(tabId);
+    await browser.tabs.update(tabId, { active: true });
+    await browser.windows.update(tab.windowId, { focused: true });
+    await delay(100);
+    await sendToContentScript(tabId, {
+        action: "prepare_native_input",
+        params,
+    });
+    return "Safari is ready for native input";
 }
 
 function persistSelectedTab(tabId) {

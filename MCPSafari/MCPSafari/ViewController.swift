@@ -10,6 +10,7 @@ import SafariServices
 import WebKit
 
 nonisolated let extensionBundleIdentifier = "com.epistates.MCPSafari.Extension"
+nonisolated private let accessibilitySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
 
 class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHandler {
 
@@ -51,14 +52,15 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if (message.body as! String != "open-preferences") {
-            return;
-        }
+        guard let action = message.body as? String else { return }
 
-        SFSafariApplication.showPreferencesForExtension(withIdentifier: extensionBundleIdentifier) { error in
-            DispatchQueue.main.async {
-                NSApplication.shared.terminate(nil)
-            }
+        switch action {
+        case "open-preferences":
+            SFSafariApplication.showPreferencesForExtension(withIdentifier: extensionBundleIdentifier) { _ in }
+        case "enable-native-input":
+            NSWorkspace.shared.open(accessibilitySettingsURL)
+        default:
+            break
         }
     }
 
