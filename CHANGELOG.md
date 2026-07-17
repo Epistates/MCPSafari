@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
+- Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
+- Added a backward-compatible versioned extension/server handshake with explicit protocol mismatch errors.
+
 ## [0.2.9] - 2026-06-06
 ### Added
 - `select_tab` now exposes its `bringToFront` option (activate and focus the tab, default `true`) in the tool schema and description.

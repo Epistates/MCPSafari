@@ -45,6 +45,7 @@ jobs:
         run: |
           cd MCPServer
           swift build
+          swift test
 
       - name: Test MCP handshake
         run: |
