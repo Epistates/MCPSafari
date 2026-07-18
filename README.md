@@ -219,7 +219,7 @@ mcp-safari doctor --json
 
 The doctor checks the server executable, app and extension bundles, PlugInKit registration, matching versions, and the selected port's token file. It never returns token contents and does not change system state.
 
-## Tools (26)
+## Tools (27)
 
 ### Diagnostics
 
@@ -304,6 +304,7 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 
 | Tool | Description |
 |------|-------------|
+| `run_steps` | Run up to 10 interaction or wait steps sequentially, stopping on the first failure |
 | `wait` | Wait for a duration, CSS selector, or text to appear |
 
 ## Usage
@@ -371,6 +372,25 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 ### Page Traces
 
 Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Use `eventTypes` for an exact-match allowlist such as `["dom.mutation", "network.fetch"]`; omit it to capture all URL/history, console, fetch/XHR, and DOM mutation events during the action window.
+
+### Bounded Action Batches
+
+Use `run_steps` for a fixed sequence of existing interactions and waits with a shared default tab:
+
+```json
+{
+  "tabId": 42,
+  "steps": [
+    { "tool": "navigate", "arguments": { "url": "https://example.com" } },
+    { "tool": "click", "arguments": { "selector": "#continue" } },
+    { "tool": "wait", "arguments": { "text": "Done" } }
+  ],
+  "trace": true,
+  "includeSnapshot": true
+}
+```
+
+The batch stops at the first structured failure and reports `completedSteps`, `failedStep`, and ordered step results. Completed browser actions are not rolled back. Batch-level trace and snapshot options produce one trace and one final snapshot rather than one artifact per step.
 
 ## Architecture
 
