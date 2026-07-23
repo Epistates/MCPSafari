@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Bug Fixes
+- Fixed `snapshot` crashing on SVG elements with non-string `type` properties.
 
 ### Build
 - Updated SwiftPM dependencies, including MCP Swift SDK 0.12.1, SwiftLog 1.14.0, and SwiftNIO 2.101.3.
