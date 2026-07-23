@@ -354,7 +354,7 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 
 ### Page Traces
 
-Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Traces include URL/history changes, console messages, fetch/XHR requests, and DOM mutations captured during the action window.
+Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Use `eventTypes` for an exact-match allowlist such as `["dom.mutation", "network.fetch"]`; omit it to capture all URL/history, console, fetch/XHR, and DOM mutation events during the action window.
 
 ## Architecture
 
@@ -450,6 +450,7 @@ Use `--port` to pick a different port:
 # Build the MCP server
 cd MCPServer
 swift build
+swift test
 
 # Build the Safari extension
 cd MCPSafari
@@ -464,8 +465,9 @@ xcodebuild -project MCPSafari.xcodeproj -scheme MCPSafari build
 The CI workflow runs on every push and PR to `main`:
 
 1. Builds the MCP server (`swift build`)
-2. Tests the MCP handshake (verifies the binary responds to `initialize`)
-3. Builds the Safari extension (`xcodebuild`)
+2. Runs the MCP server test suite (`swift test`)
+3. Tests the MCP handshake (verifies the binary responds to `initialize`)
+4. Builds the Safari extension (`xcodebuild`)
 
 ### Project Structure
 

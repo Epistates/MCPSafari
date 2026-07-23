@@ -19,13 +19,13 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
-      - name: Select Xcode 26.4
+      - name: Select Xcode 26.6
         run: |
           set -euo pipefail
 
-          for app in /Applications/Xcode_26.4.app /Applications/Xcode_26.4.0.app /Applications/Xcode.app; do
+          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app /Applications/Xcode.app; do
             if [ -d "$app/Contents/Developer" ]; then
               sudo xcode-select -s "$app/Contents/Developer"
               break
@@ -40,7 +40,7 @@ jobs:
           }
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: swift
 
@@ -50,4 +50,4 @@ jobs:
           swift build -c release
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4

@@ -29,13 +29,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
-      - name: Select Xcode 26.4
+      - name: Select Xcode 26.6
         run: |
           set -euo pipefail
 
-          for app in /Applications/Xcode_26.4.app /Applications/Xcode_26.4.0.app /Applications/Xcode.app; do
+          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app /Applications/Xcode.app; do
             if [ -d "$app/Contents/Developer" ]; then
               sudo xcode-select -s "$app/Contents/Developer"
               break
@@ -53,7 +53,7 @@ jobs:
 
       - name: Import Apple Code Signing Certificate
         continue-on-error: true
-        uses: Apple-Actions/import-codesign-certs@v3
+        uses: Apple-Actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -167,7 +167,7 @@ jobs:
           ls -lh artifacts/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.arch }}
           path: artifacts/*
@@ -184,10 +184,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
 
@@ -227,7 +227,7 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: 'MCPSafari ${{ steps.version.outputs.version }}'
