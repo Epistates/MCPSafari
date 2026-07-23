@@ -45,7 +45,6 @@ jobs:
         run: |
           cd MCPServer
           swift build
-          swift test
 
       - name: Test MCP Server
         run: |
