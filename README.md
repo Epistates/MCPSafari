@@ -339,7 +339,7 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 
 ### Page Traces
 
-Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Traces include URL/history changes, console messages, fetch/XHR requests, and DOM mutations captured during the action window.
+Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Use `eventTypes` for an exact-match allowlist such as `["dom.mutation", "network.fetch"]`; omit it to capture all URL/history, console, fetch/XHR, and DOM mutation events during the action window.
 
 ## Architecture
 

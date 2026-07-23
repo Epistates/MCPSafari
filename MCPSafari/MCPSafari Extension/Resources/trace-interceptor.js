@@ -60,6 +60,7 @@
     }
 
     function pushEvent(trace, type, detail = {}, at = now()) {
+        if (trace.eventTypes && !trace.eventTypes.has(type)) return;
         if (trace.events.length >= MAX_EVENTS) {
             if (!trace.truncated) {
                 trace.truncated = true;
@@ -186,6 +187,7 @@
             startTime,
             startUrl: location.href,
             events: [],
+            eventTypes: Array.isArray(params.eventTypes) ? new Set(params.eventTypes) : null,
             truncated: false,
         };
 

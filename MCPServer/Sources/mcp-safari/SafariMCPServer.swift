@@ -67,8 +67,13 @@ actor SafariMCPServer {
     private static let waitTimeout: Value = .object(["type": .string("number"), "description": .string("Post-action wait timeout seconds (default: 10)")])
     private static let trace: Value = .object(["type": .string("boolean"), "description": .string("Capture page trace events during and shortly after action")])
     private static let traceDuration: Value = .object(["type": .string("number"), "description": .string("Seconds to continue trace capture after action and waits (default: 2, max: 30)")])
+    private static let eventTypes: Value = .object([
+        "type": .string("array"),
+        "items": .object(["type": .string("string"), "minLength": .int(1)]),
+        "description": .string("Exact trace event types to capture (for example dom.mutation, network.fetch, console.error); omitted captures all"),
+    ])
     private static let postActionWaitKeys: Set<String> = ["waitForSelector", "waitForText", "waitTimeout"]
-    private static let postActionTraceKeys: Set<String> = ["trace", "traceDuration"]
+    private static let postActionTraceKeys: Set<String> = ["trace", "traceDuration", "eventTypes"]
     private static let actionControlKeys: Set<String> = postActionWaitKeys.union(postActionTraceKeys)
 
     private static func withPostActionWait(_ properties: [String: Value]) -> [String: Value] {
@@ -83,6 +88,7 @@ actor SafariMCPServer {
         var props = Self.withPostActionWait(properties)
         props["trace"] = Self.trace
         props["traceDuration"] = Self.traceDuration
+        props["eventTypes"] = Self.eventTypes
         return props
     }
 
@@ -781,6 +787,13 @@ actor SafariMCPServer {
 
         var params: [String: AnyCodable] = [:]
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
+        if let value = args["eventTypes"] {
+            guard let values = value.arrayValue,
+                  values.allSatisfy({ $0.stringValue?.isEmpty == false }) else {
+                throw ToolInputError("eventTypes must be an array of non-empty strings")
+            }
+            params["eventTypes"] = AnyCodable(values.compactMap(\.stringValue))
+        }
 
         let response = try await bridge.send(action: "start_trace", params: params)
         guard response.success else { throw ToolInputError(responseText(response)) }
