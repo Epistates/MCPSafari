@@ -21,13 +21,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
-      - name: Select Xcode 26.4
+      - name: Select Xcode 26.6
         run: |
           set -euo pipefail
 
-          for app in /Applications/Xcode_26.4.app /Applications/Xcode_26.4.0.app /Applications/Xcode.app; do
+          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app /Applications/Xcode.app; do
             if [ -d "$app/Contents/Developer" ]; then
               sudo xcode-select -s "$app/Contents/Developer"
               break
@@ -45,6 +45,11 @@ jobs:
         run: |
           cd MCPServer
           swift build
+
+      - name: Test MCP Server
+        run: |
+          cd MCPServer
+          swift test
 
       - name: Test MCP handshake
         run: |

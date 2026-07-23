@@ -10,9 +10,9 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/modelcontextprotocol/swift-sdk.git",
-            revision: "a0ae212ebf6eab5f754c3129608bc5557637e605"
+            exact: "0.12.1"
         ),
-        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.14.0"),
     ],
     targets: [
         .executableTarget(

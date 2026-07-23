@@ -435,6 +435,7 @@ Use `--port` to pick a different port:
 # Build the MCP server
 cd MCPServer
 swift build
+swift test
 
 # Build the Safari extension
 cd MCPSafari
@@ -449,8 +450,9 @@ xcodebuild -project MCPSafari.xcodeproj -scheme MCPSafari build
 The CI workflow runs on every push and PR to `main`:
 
 1. Builds the MCP server (`swift build`)
-2. Tests the MCP handshake (verifies the binary responds to `initialize`)
-3. Builds the Safari extension (`xcodebuild`)
+2. Runs the MCP server test suite (`swift test`)
+3. Tests the MCP handshake (verifies the binary responds to `initialize`)
+4. Builds the Safari extension (`xcodebuild`)
 
 ### Project Structure
 

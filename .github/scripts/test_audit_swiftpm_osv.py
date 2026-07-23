@@ -61,6 +61,14 @@ class AuditSwiftPMOSVTests(unittest.TestCase):
             },
             payloads,
         )
+        self.assertIn(
+            {
+                "package": {
+                    "purl": "pkg:swift/github.com/apple/swift-nio@2.97.0"
+                }
+            },
+            payloads,
+        )
         self.assertIn({"commit": "abc123"}, payloads)
 
     def test_collect_vulnerabilities_deduplicates_results(self):
