@@ -195,6 +195,39 @@ actor WebSocketBridge {
                 "Extension failed to authenticate. Token mismatch."
             }
         }
+
+        var toolFailure: ToolFailure {
+            switch self {
+            case .notConnected:
+                ToolFailure(
+                    code: "bridge_disconnected",
+                    message: description,
+                    retryable: false,
+                    recoveryAction: "call_status"
+                )
+            case .timeout:
+                ToolFailure(
+                    code: "bridge_timeout",
+                    message: description,
+                    retryable: true,
+                    recoveryAction: "retry"
+                )
+            case .authenticationFailed:
+                ToolFailure(
+                    code: "bridge_authentication_failed",
+                    message: description,
+                    retryable: false,
+                    recoveryAction: "call_status"
+                )
+            case .encodingFailed, .decodingFailed, .extensionError:
+                ToolFailure(
+                    code: "bridge_error",
+                    message: description,
+                    retryable: false,
+                    recoveryAction: "inspect_error"
+                )
+            }
+        }
     }
 
     var isConnected: Bool { connection != nil }

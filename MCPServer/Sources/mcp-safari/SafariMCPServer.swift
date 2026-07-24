@@ -46,9 +46,13 @@ actor SafariMCPServer {
 
         await server.withMethodHandler(CallTool.self) { [weak self] params -> CallTool.Result in
             guard let self else {
-                return CallTool.Result(
-                    content: [Self.textContent("Server shutting down")],
-                    isError: true
+                return Self.failureResult(
+                    ToolFailure(
+                        code: "server_shutting_down",
+                        message: "Server shutting down",
+                        retryable: true,
+                        recoveryAction: "retry"
+                    )
                 )
             }
             return await self.handleToolCall(params)
@@ -444,16 +448,17 @@ actor SafariMCPServer {
             case "resize_window":   return try await handleResizeWindow(args)
             case "wait":            return try await handleWait(args)
             default:
-                return CallTool.Result(
-                    content: [Self.textContent("Unknown tool: \(params.name)")],
-                    isError: true
+                return Self.failureResult(
+                    ToolFailure(
+                        code: "unknown_tool",
+                        message: "Unknown tool: \(params.name)",
+                        retryable: false,
+                        recoveryAction: "list_tools"
+                    )
                 )
             }
         } catch {
-            return CallTool.Result(
-                content: [Self.textContent("\(error)")],
-                isError: true
-            )
+            return Self.failureResult(toolFailure(for: error))
         }
     }
 
@@ -765,7 +770,7 @@ actor SafariMCPServer {
                 let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
                 content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
             }
-            return CallTool.Result(content: content, isError: true)
+            return Self.failureResult(response.toolFailure, content: content)
         }
 
         if let waitResponse = try await waitAfterAction(args) {
@@ -775,7 +780,7 @@ actor SafariMCPServer {
                     let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
                     content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
                 }
-                return CallTool.Result(content: content, isError: true)
+                return Self.failureResult(waitResponse.toolFailure, content: content)
             }
             content.append(Self.textContent(responseText(waitResponse)))
         }
@@ -783,14 +788,18 @@ actor SafariMCPServer {
         if let traceSession {
             let traceResponse = try await stopTraceResponse(traceSession, args)
             content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
-            guard traceResponse.success else { return CallTool.Result(content: content, isError: true) }
+            guard traceResponse.success else {
+                return Self.failureResult(traceResponse.toolFailure, content: content)
+            }
         }
 
         if wantSnapshot ?? args["includeSnapshot"]?.boolValue == true {
             let snapResponse = try await snapshotResponse(args)
             let snapText = responseText(snapResponse)
             content.append(Self.textContent("--- Page Snapshot ---\n\(snapText)"))
-            guard snapResponse.success else { return CallTool.Result(content: content, isError: true) }
+            guard snapResponse.success else {
+                return Self.failureResult(snapResponse.toolFailure, content: content)
+            }
         }
 
         return CallTool.Result(content: content)
@@ -888,9 +897,48 @@ actor SafariMCPServer {
     }
 
     private func textResult(_ response: BridgeResponse) -> CallTool.Result {
-        CallTool.Result(
+        guard response.success else {
+            return Self.failureResult(response.toolFailure)
+        }
+        return CallTool.Result(
             content: [Self.textContent(responseText(response))],
-            isError: !response.success
+            isError: false
+        )
+    }
+
+    private func toolFailure(for error: any Error) -> ToolFailure {
+        if let bridgeError = error as? WebSocketBridge.BridgeError {
+            return bridgeError.toolFailure
+        }
+        if let inputError = error as? ToolInputError {
+            return ToolFailure(
+                code: "invalid_input",
+                message: inputError.description,
+                retryable: false,
+                recoveryAction: "fix_input"
+            )
+        }
+        return ToolFailure(
+            code: "internal_error",
+            message: "\(error)",
+            retryable: false,
+            recoveryAction: "inspect_error"
+        )
+    }
+
+    private static func failureResult(
+        _ failure: ToolFailure,
+        content: [Tool.Content]? = nil
+    ) -> CallTool.Result {
+        CallTool.Result(
+            content: content ?? [Self.textContent(failure.message)],
+            structuredContent: .object([
+                "code": .string(failure.code),
+                "message": .string(failure.message),
+                "retryable": .bool(failure.retryable),
+                "recoveryAction": .string(failure.recoveryAction),
+            ]),
+            isError: true
         )
     }
 

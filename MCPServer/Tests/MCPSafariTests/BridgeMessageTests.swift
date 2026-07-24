@@ -28,7 +28,10 @@ struct BridgeMessageTests {
             id: "request-1",
             success: false,
             data: nil,
-            error: "not authenticated"
+            error: "UID expired",
+            errorCode: "stale_uid",
+            retryable: false,
+            recoveryAction: "take_snapshot"
         )
 
         let data = try JSONEncoder().encode(response)
@@ -37,6 +40,43 @@ struct BridgeMessageTests {
         #expect(decoded.id == "request-1")
         #expect(decoded.success == false)
         #expect(decoded.data == nil)
-        #expect(decoded.error == "not authenticated")
+        #expect(decoded.error == "UID expired")
+        #expect(decoded.errorCode == "stale_uid")
+        #expect(decoded.retryable == false)
+        #expect(decoded.recoveryAction == "take_snapshot")
+        #expect(decoded.toolFailure == ToolFailure(
+            code: "stale_uid",
+            message: "UID expired",
+            retryable: false,
+            recoveryAction: "take_snapshot"
+        ))
+    }
+
+    @Test func bridgeErrorsProvideRecoveryMetadata() {
+        #expect(WebSocketBridge.BridgeError.notConnected.toolFailure == ToolFailure(
+            code: "bridge_disconnected",
+            message: "No Safari extension connected. Open Safari and click the MCPSafari extension icon to connect.",
+            retryable: false,
+            recoveryAction: "call_status"
+        ))
+
+        #expect(WebSocketBridge.BridgeError.timeout.toolFailure == ToolFailure(
+            code: "bridge_timeout",
+            message: "Request to Safari extension timed out after 30 seconds.",
+            retryable: true,
+            recoveryAction: "retry"
+        ))
+    }
+
+    @Test func legacyExtensionErrorsRemainDecodable() throws {
+        let data = Data(#"{"id":"request-1","success":false,"data":null,"error":"Old extension error"}"#.utf8)
+        let response = try JSONDecoder().decode(BridgeResponse.self, from: data)
+
+        #expect(response.toolFailure == ToolFailure(
+            code: "extension_error",
+            message: "Old extension error",
+            retryable: false,
+            recoveryAction: "inspect_error"
+        ))
     }
 }

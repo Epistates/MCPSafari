@@ -16,6 +16,14 @@
     const reverseUidMap = new Map();
     let bridgeRequestCounter = 0;
 
+    function toolError(code, message, retryable, recoveryAction) {
+        const error = new Error(message);
+        error.code = code;
+        error.retryable = retryable;
+        error.recoveryAction = recoveryAction;
+        return error;
+    }
+
     function getUid(element) {
         if (uidMap.has(element)) return uidMap.get(element);
         const uid = `e${++uidCounter}`;
@@ -68,7 +76,15 @@
 
         handleAction(message.action, message.params || {})
             .then((data) => sendResponse({ data, error: null }))
-            .catch((err) => sendResponse({ data: null, error: String(err.message || err) }));
+            .catch((err) => sendResponse({
+                data: null,
+                error: String(err.message || err),
+                errorCode: typeof err.code === "string" ? err.code : "extension_error",
+                retryable: err.retryable === true,
+                recoveryAction: typeof err.recoveryAction === "string"
+                    ? err.recoveryAction
+                    : "inspect_error",
+            }));
 
         return true; // async response
     });
@@ -387,7 +403,14 @@
         // By UID (preferred — most precise, from snapshot)
         if (params.uid) {
             const el = getElementByUid(params.uid);
-            if (!el) throw new Error(`No element found for uid: ${params.uid}. Take a new snapshot — UIDs may have changed.`);
+            if (!el) {
+                throw toolError(
+                    "stale_uid",
+                    `No element found for uid: ${params.uid}. Take a new snapshot; UIDs may have changed.`,
+                    false,
+                    "take_snapshot"
+                );
+            }
             return el;
         }
 
@@ -395,7 +418,12 @@
         if (params.selector) {
             const el = document.querySelector(params.selector);
             if (!el)
-                throw new Error(`No element found for selector: ${params.selector}`);
+                throw toolError(
+                    "target_not_found",
+                    `No element found for selector: ${params.selector}`,
+                    false,
+                    "take_snapshot"
+                );
             return el;
         }
 
@@ -422,7 +450,12 @@
                 candidates.push(node);
             }
             if (candidates.length === 0)
-                throw new Error(`No element found with text: "${params.text}"`);
+                throw toolError(
+                    "target_not_found",
+                    `No element found with text: "${params.text}"`,
+                    false,
+                    "take_snapshot"
+                );
 
             // Rank: interactive elements first, then by text length (shorter = more specific)
             const interactiveTags = new Set(["button", "a", "input", "select", "textarea", "summary"]);
@@ -448,8 +481,11 @@
         if (params.x !== undefined && params.y !== undefined) {
             const el = document.elementFromPoint(params.x, params.y);
             if (!el)
-                throw new Error(
-                    `No element at coordinates (${params.x}, ${params.y})`
+                throw toolError(
+                    "target_not_found",
+                    `No element at coordinates (${params.x}, ${params.y})`,
+                    false,
+                    "take_snapshot"
                 );
             simulateClick(el, params.doubleClick);
             return `Clicked element at (${params.x}, ${params.y}): <${el.tagName.toLowerCase()}>`;
@@ -529,7 +565,14 @@
         const el = (params.uid || params.selector)
             ? resolveElement(params)
             : document.activeElement;
-        if (!el) throw new Error("No element to type into");
+        if (!el) {
+            throw toolError(
+                "target_not_found",
+                "No element to type into",
+                false,
+                "take_snapshot"
+            );
+        }
 
         el.focus();
 
@@ -751,8 +794,11 @@
                 }
                 await new Promise((r) => setTimeout(r, 200));
             }
-            throw new Error(
-                `Timeout waiting for selector: ${params.selector}`
+            throw toolError(
+                "wait_timeout",
+                `Timeout waiting for selector: ${params.selector}`,
+                true,
+                "retry"
             );
         }
 
@@ -766,7 +812,12 @@
                 }
                 await new Promise((r) => setTimeout(r, 200));
             }
-            throw new Error(`Timeout waiting for text: "${params.text}"`);
+            throw toolError(
+                "wait_timeout",
+                `Timeout waiting for text: "${params.text}"`,
+                true,
+                "retry"
+            );
         }
 
         return "Nothing to wait for";

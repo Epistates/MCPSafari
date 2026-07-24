@@ -17,10 +17,12 @@
 - Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
 - Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
 - Added a backward-compatible versioned extension/server handshake with explicit protocol mismatch errors.
+- Tool failures now include stable error codes, retry guidance, and recovery actions for disconnected bridges, stale element UIDs, missing targets, and wait timeouts.
 
 ### Bug Fixes
 - Stop stale per-port token files from causing endless extension reconnect attempts and popup state cycling.
 - Read the popup version from its manifest, keep ports ordered, and use adaptive system colors for legibility on Safari glass.
+- Reinject the content script when Safari returns no message-listener response instead of reporting a successful `null` result.
 
 ## [0.2.9] - 2026-06-06
 ### Added
