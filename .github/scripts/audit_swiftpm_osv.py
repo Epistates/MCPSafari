@@ -89,7 +89,14 @@ def build_queries(pins: list[Pin]) -> list[Query]:
                         "version": pin.version,
                     },
                 )
-            add(pin, {"package": {"purl": f"pkg:swift/{pin.identity}@{pin.version}"}})
+            add(
+                pin,
+                {
+                    "package": {
+                        "purl": f"pkg:swift/{pin.repository_name}@{pin.version}"
+                    }
+                },
+            )
         if pin.revision:
             add(pin, {"commit": pin.revision})
 

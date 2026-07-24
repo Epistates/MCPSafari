@@ -7,6 +7,8 @@
  */
 
 const DEFAULT_PORT = 8089;
+const BRIDGE_PROTOCOL_VERSION = 1;
+const EXTENSION_VERSION = browser.runtime.getManifest().version;
 const AUTO_SCAN_RANGE = 10; // Ports 8089-8098 are auto-managed
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 5000;
@@ -65,7 +67,11 @@ function connectToPort(port) {
     let pendingAuth = true;
 
     socket.onopen = () => {
-        socket.send(JSON.stringify({ auth: authToken }));
+        socket.send(JSON.stringify({
+            auth: authToken,
+            extensionVersion: EXTENSION_VERSION,
+            protocolVersion: BRIDGE_PROTOCOL_VERSION,
+        }));
         console.log(`[MCPSafari:${port}] Sent auth token`);
     };
 
@@ -75,12 +81,17 @@ function connectToPort(port) {
             try {
                 const msg = JSON.parse(event.data);
                 if (msg.auth === "ok") {
+                    if (msg.protocolVersion !== undefined && msg.protocolVersion !== BRIDGE_PROTOCOL_VERSION) {
+                        console.error(`[MCPSafari:${port}] Protocol mismatch: extension=${BRIDGE_PROTOCOL_VERSION}, server=${msg.protocolVersion}`);
+                        socket.close();
+                        return;
+                    }
                     conn.lastConnected = Date.now();
                     conn.state = "connected";
                     conn.attempts = 0;
                     console.log(`[MCPSafari:${port}] Authenticated`);
                 } else {
-                    console.error(`[MCPSafari:${port}] Auth rejected`);
+                    console.error(`[MCPSafari:${port}] Auth rejected: ${msg.error || "unknown error"}`);
                     socket.close();
                 }
             } catch (err) {

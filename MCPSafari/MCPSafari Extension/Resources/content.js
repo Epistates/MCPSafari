@@ -218,10 +218,11 @@
 
         // Implicit roles by tag
         const tag = element.tagName ? element.tagName.toLowerCase() : "";
+        if (tag === "input") return getInputRole(element);
+
         const implicitRoles = {
             a: "link",
             button: "button",
-            input: getInputRole(element),
             select: "combobox",
             textarea: "textbox",
             img: "img",

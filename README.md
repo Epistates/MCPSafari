@@ -9,7 +9,7 @@
 ![Swift](https://img.shields.io/badge/Swift-6.3+-orange)
 ![Xcode](https://img.shields.io/badge/Xcode-26+-orange)
 
-Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on macOS. Navigate tabs, click/type/fill forms (even React), read HTML/accessibility trees, execute JS, capture screenshots, inspect console & network — all with 23 secure tools. Zero Chrome overhead, Apple Silicon optimized, token-authenticated, and built with official Swift + Manifest V3 Safari Extension.
+Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on macOS. Navigate tabs, click/type/fill forms (even React), read HTML/accessibility trees, execute JS, capture screenshots, inspect console & network — all with 24 secure tools. Zero Chrome overhead, Apple Silicon optimized, token-authenticated, and built with official Swift + Manifest V3 Safari Extension.
 
 ## Why MCPSafari?
 
@@ -210,7 +210,22 @@ For ports outside the default range, add them manually in the extension popup or
 | `--port <n>` / `-p <n>` | WebSocket port (default: `8089`) |
 | `--verbose` | Debug-level logging to stderr |
 
-## Tools (23)
+Diagnose an installation without starting the MCP server:
+
+```bash
+mcp-safari doctor
+mcp-safari doctor --json
+```
+
+The doctor checks the server executable, app and extension bundles, PlugInKit registration, matching versions, and the selected port's token file. It never returns token contents and does not change system state.
+
+## Tools (24)
+
+### Diagnostics
+
+| Tool | Description |
+|-|-|
+| `status` | Report listener, authenticated bridge, version, and token health without requiring a Safari connection |
 
 ### Tab Management
 
@@ -339,7 +354,7 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 
 ### Page Traces
 
-Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Traces include URL/history changes, console messages, fetch/XHR requests, and DOM mutations captured during the action window.
+Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Use `eventTypes` for an exact-match allowlist such as `["dom.mutation", "network.fetch"]`; omit it to capture all URL/history, console, fetch/XHR, and DOM mutation events during the action window.
 
 ## Architecture
 
@@ -435,6 +450,7 @@ Use `--port` to pick a different port:
 # Build the MCP server
 cd MCPServer
 swift build
+swift test
 
 # Build the Safari extension
 cd MCPSafari
@@ -449,8 +465,9 @@ xcodebuild -project MCPSafari.xcodeproj -scheme MCPSafari build
 The CI workflow runs on every push and PR to `main`:
 
 1. Builds the MCP server (`swift build`)
-2. Tests the MCP handshake (verifies the binary responds to `initialize`)
-3. Builds the Safari extension (`xcodebuild`)
+2. Runs the MCP server test suite (`swift test`)
+3. Tests the MCP handshake (verifies the binary responds to `initialize`)
+4. Builds the Safari extension (`xcodebuild`)
 
 ### Project Structure
 

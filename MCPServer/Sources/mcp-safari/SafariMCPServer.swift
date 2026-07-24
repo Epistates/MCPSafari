@@ -14,7 +14,7 @@ actor SafariMCPServer {
         self.bridge = try WebSocketBridge(port: port, logger: logger)
         self.server = Server(
             name: "mcp-safari",
-            version: "0.2.9",
+            version: MCPSafariProduct.version,
             instructions: """
                 Safari browser automation. Use tabs_context to list tabs, snapshot for element UIDs, \
                 then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state.
@@ -67,8 +67,13 @@ actor SafariMCPServer {
     private static let waitTimeout: Value = .object(["type": .string("number"), "description": .string("Post-action wait timeout seconds (default: 10)")])
     private static let trace: Value = .object(["type": .string("boolean"), "description": .string("Capture page trace events during and shortly after action")])
     private static let traceDuration: Value = .object(["type": .string("number"), "description": .string("Seconds to continue trace capture after action and waits (default: 2, max: 30)")])
+    private static let eventTypes: Value = .object([
+        "type": .string("array"),
+        "items": .object(["type": .string("string"), "minLength": .int(1)]),
+        "description": .string("Exact trace event types to capture (for example dom.mutation, network.fetch, console.error); omitted captures all"),
+    ])
     private static let postActionWaitKeys: Set<String> = ["waitForSelector", "waitForText", "waitTimeout"]
-    private static let postActionTraceKeys: Set<String> = ["trace", "traceDuration"]
+    private static let postActionTraceKeys: Set<String> = ["trace", "traceDuration", "eventTypes"]
     private static let actionControlKeys: Set<String> = postActionWaitKeys.union(postActionTraceKeys)
 
     private static func withPostActionWait(_ properties: [String: Value]) -> [String: Value] {
@@ -83,6 +88,7 @@ actor SafariMCPServer {
         var props = Self.withPostActionWait(properties)
         props["trace"] = Self.trace
         props["traceDuration"] = Self.traceDuration
+        props["eventTypes"] = Self.eventTypes
         return props
     }
 
@@ -98,6 +104,13 @@ actor SafariMCPServer {
 
     private func buildToolDefinitions() -> [Tool] {
         [
+            Tool(
+                name: "status",
+                description: "Report local Safari MCP listener, authentication, version, and token health. Works without an extension connection.",
+                inputSchema: .object(["type": .string("object"), "properties": .object([:])]),
+                annotations: .init(readOnlyHint: true, openWorldHint: false)
+            ),
+
             // ── Tabs ─────────────────────────────────────────────────
 
             Tool(
@@ -406,6 +419,7 @@ actor SafariMCPServer {
 
         do {
             switch params.name {
+            case "status":          return try await handleStatus()
             case "tabs_context":    return try await handleTabsContext()
             case "tabs_create":     return try await handleTabsCreate(args)
             case "close_tab":       return try await handleCloseTab(args)
@@ -444,6 +458,14 @@ actor SafariMCPServer {
     }
 
     // MARK: - Tool Handlers
+
+    private func handleStatus() async throws -> CallTool.Result {
+        let status = await bridge.status()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(status)
+        return CallTool.Result(content: [Self.textContent(String(decoding: data, as: UTF8.self))])
+    }
 
     private func handleTabsContext() async throws -> CallTool.Result {
         let response = try await bridge.send(action: "tabs_query")
@@ -781,6 +803,13 @@ actor SafariMCPServer {
 
         var params: [String: AnyCodable] = [:]
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
+        if let value = args["eventTypes"] {
+            guard let values = value.arrayValue,
+                  values.allSatisfy({ $0.stringValue?.isEmpty == false }) else {
+                throw ToolInputError("eventTypes must be an array of non-empty strings")
+            }
+            params["eventTypes"] = AnyCodable(values.compactMap(\.stringValue))
+        }
 
         let response = try await bridge.send(action: "start_trace", params: params)
         guard response.success else { throw ToolInputError(responseText(response)) }
