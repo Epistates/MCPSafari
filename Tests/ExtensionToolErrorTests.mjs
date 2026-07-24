@@ -48,6 +48,7 @@ function backgroundHarness(contentResponse) {
             onAlarm: { addListener() {} },
         },
         runtime: {
+            getManifest: () => ({ version: "0.2.9" }),
             onMessage: { addListener() {} },
             sendNativeMessage: async () => ({ tokens: {} }),
         },
