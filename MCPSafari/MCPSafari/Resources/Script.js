@@ -1,11 +1,4 @@
-function show(enabled, useSettingsInsteadOfPreferences) {
-    if (useSettingsInsteadOfPreferences) {
-        document.getElementsByClassName('state-on')[0].innerText = "MCPSafari’s extension is currently on. You can turn it off in the Extensions section of Safari Settings.";
-        document.getElementsByClassName('state-off')[0].innerText = "MCPSafari’s extension is currently off. You can turn it on in the Extensions section of Safari Settings.";
-        document.getElementsByClassName('state-unknown')[0].innerText = "You can turn on MCPSafari’s extension in the Extensions section of Safari Settings.";
-        document.getElementsByClassName('open-preferences')[0].innerText = "Quit and Open Safari Settings…";
-    }
-
+function show(enabled) {
     if (typeof enabled === "boolean") {
         document.body.classList.toggle(`state-on`, enabled);
         document.body.classList.toggle(`state-off`, !enabled);
@@ -19,4 +12,9 @@ function openPreferences() {
     webkit.messageHandlers.controller.postMessage("open-preferences");
 }
 
+function enableNativeInput() {
+    webkit.messageHandlers.controller.postMessage("enable-native-input");
+}
+
 document.querySelector("button.open-preferences").addEventListener("click", openPreferences);
+document.querySelector("button.enable-native-input").addEventListener("click", enableNativeInput);

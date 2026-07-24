@@ -1,3 +1,6 @@
+import AppKit
+import ApplicationServices
+import CoreGraphics
 import Foundation
 import Logging
 import MCP
@@ -227,13 +230,17 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "type_text",
-                description: "Type into element. Supports clearFirst and submitKey (e.g. Enter).",
+                description: "Type into element. Set native=true for real macOS key events in editors that depend on keyboard input.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
                         "text": .object(["type": .string("string")]),
                         "uid": Self.uid, "selector": Self.sel,
                         "clearFirst": .object(["type": .string("boolean")]),
+                        "native": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Use real macOS key events; foregrounds Safari and requires Accessibility permission"),
+                        ]),
                         "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -433,7 +440,7 @@ actor SafariMCPServer {
             case "snapshot":        return try await handleSnapshot(args)
             case "find":            return try await handleFind(args)
             case "click":           return try await handleInteraction("click", args)
-            case "type_text":       return try await handleInteraction("type_text", args)
+            case "type_text":       return try await handleTypeText(args)
             case "form_input":      return try await handleFormInput(args)
             case "select_option":   return try await handleInteraction("select_option", args)
             case "scroll":          return try await handleInteraction("scroll", args)
@@ -579,18 +586,8 @@ actor SafariMCPServer {
     /// Unified handler for interaction tools: click, type_text, hover, scroll, press_key, select_option, drag.
     /// Forwards all params to the extension and optionally appends a snapshot.
     private func handleInteraction(_ action: String, _ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
+        let params = interactionParams(args)
         let wantSnapshot = args["includeSnapshot"]?.boolValue == true
-
-        // Forward all value args (except includeSnapshot which is handled here)
-        for (key, value) in args {
-            if key == "includeSnapshot" || key == "tabId" || Self.actionControlKeys.contains(key) { continue }
-            if let s = value.stringValue { params[key] = AnyCodable(s) }
-            else if let i = value.intValue { params[key] = AnyCodable(i) }
-            else if let d = value.doubleValue { params[key] = AnyCodable(d) }
-            else if let b = value.boolValue { params[key] = AnyCodable(b) }
-        }
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
 
         let traceSession = try await startTraceIfNeeded(args)
         do {
@@ -602,6 +599,183 @@ actor SafariMCPServer {
             }
             throw error
         }
+    }
+
+    private func interactionParams(_ args: [String: Value]) -> [String: AnyCodable] {
+        var params: [String: AnyCodable] = [:]
+        for (key, value) in args {
+            if key == "includeSnapshot" || key == "tabId" || Self.actionControlKeys.contains(key) { continue }
+            if let s = value.stringValue { params[key] = AnyCodable(s) }
+            else if let i = value.intValue { params[key] = AnyCodable(i) }
+            else if let d = value.doubleValue { params[key] = AnyCodable(d) }
+            else if let b = value.boolValue { params[key] = AnyCodable(b) }
+        }
+        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
+        return params
+    }
+
+    private func handleTypeText(_ args: [String: Value]) async throws -> CallTool.Result {
+        if let native = args["native"], native.boolValue == nil {
+            throw ToolInputError("native must be a boolean")
+        }
+        guard args["native"]?.boolValue == true else {
+            return try await handleInteraction("type_text", args)
+        }
+        return try await handleNativeTypeText(args)
+    }
+
+    private func handleNativeTypeText(_ args: [String: Value]) async throws -> CallTool.Result {
+        let input = try Self.nativeInputPlan(args)
+        let traceSession = try await startTraceIfNeeded(args)
+        do {
+            let preparation = try await bridge.send(action: "native_type_text", params: interactionParams(args))
+            guard preparation.success else {
+                return try await resultAfterAction(preparation, args, traceSession: traceSession)
+            }
+
+            let message = try Self.typeNativeText(input)
+            let response = BridgeResponse(
+                id: preparation.id,
+                success: true,
+                data: AnyCodable(message),
+                error: nil,
+                errorCode: nil,
+                retryable: nil,
+                recoveryAction: nil
+            )
+            return try await resultAfterAction(response, args, traceSession: traceSession)
+        } catch {
+            if let traceSession {
+                _ = try? await stopTraceResponse(traceSession, args, waitForDuration: false)
+            }
+            throw error
+        }
+    }
+
+    private struct NativeInputError: Error {
+        let failure: ToolFailure
+    }
+
+    private struct NativeInputPlan {
+        let text: String
+        let clearFirst: Bool
+        let submitKey: String?
+        let submitKeyCode: CGKeyCode?
+    }
+
+    private nonisolated static func nativeInputPlan(_ args: [String: Value]) throws -> NativeInputPlan {
+        guard let text = args["text"]?.stringValue else {
+            throw ToolInputError("text is required")
+        }
+        if let clearFirst = args["clearFirst"], clearFirst.boolValue == nil {
+            throw ToolInputError("clearFirst must be a boolean")
+        }
+        if let submitKey = args["submitKey"], submitKey.stringValue == nil {
+            throw ToolInputError("submitKey must be a string")
+        }
+
+        let submitKey = args["submitKey"]?.stringValue
+        let submitKeyCode = try nativeSubmitKeyCode(for: submitKey)
+        guard AXIsProcessTrusted() else {
+            throw NativeInputError(failure: ToolFailure(
+                code: "native_input_permission_required",
+                message: "Native typing requires Accessibility permission for the app running mcp-safari (Codex, Claude, or your terminal). Enable that app in System Settings > Privacy & Security > Accessibility. Standard typing works without this permission.",
+                retryable: false,
+                recoveryAction: "grant_accessibility_to_mcp_client"
+            ))
+        }
+
+        return NativeInputPlan(
+            text: text,
+            clearFirst: args["clearFirst"]?.boolValue == true,
+            submitKey: submitKey,
+            submitKeyCode: submitKeyCode
+        )
+    }
+
+    private nonisolated static func typeNativeText(_ input: NativeInputPlan) throws -> String {
+        try ensureSafariIsFrontmost()
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            throw nativeInputUnavailable("macOS could not create a native keyboard event.")
+        }
+
+        if input.clearFirst {
+            try postKey(code: 0, flags: .maskCommand, source: source)
+            try postKey(code: 51, source: source)
+        }
+        for character in input.text {
+            try ensureSafariIsFrontmost()
+            try postText(String(character), source: source)
+        }
+        if let submitKeyCode = input.submitKeyCode {
+            try postKey(code: submitKeyCode, source: source)
+        }
+
+        let suffix = input.submitKey.map { " then pressed \($0)" } ?? ""
+        return "Typed \(input.text.count) character(s) with native input\(suffix)"
+    }
+
+    private nonisolated static func nativeSubmitKeyCode(for key: String?) throws -> CGKeyCode? {
+        guard let key else { return nil }
+        switch key.lowercased() {
+        case "enter", "return": return 36
+        case "tab": return 48
+        default: throw ToolInputError("Native submitKey does not support \(key). Use Enter, Return, or Tab.")
+        }
+    }
+
+    private nonisolated static func ensureSafariIsFrontmost() throws {
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Safari" else {
+            throw NativeInputError(failure: ToolFailure(
+                code: "native_input_focus_lost",
+                message: "Safari lost focus before native typing completed. Input may be partial; focus the target and retry.",
+                retryable: true,
+                recoveryAction: "retry"
+            ))
+        }
+    }
+
+    private nonisolated static func nativeInputUnavailable(_ message: String) -> NativeInputError {
+        NativeInputError(failure: ToolFailure(
+            code: "native_input_unavailable",
+            message: message,
+            retryable: false,
+            recoveryAction: "inspect_error"
+        ))
+    }
+
+    private nonisolated static func postText(_ text: String, source: CGEventSource) throws {
+        let utf16 = Array(text.utf16)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+        else {
+            throw nativeInputUnavailable("macOS could not create a native keyboard event.")
+        }
+        utf16.withUnsafeBufferPointer { buffer in
+            keyDown.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+            keyUp.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+        }
+        keyDown.post(tap: .cgSessionEventTap)
+        keyUp.post(tap: .cgSessionEventTap)
+        Thread.sleep(forTimeInterval: 0.005)
+    }
+
+    private nonisolated static func postKey(
+        code: CGKeyCode,
+        flags: CGEventFlags = [],
+        source: CGEventSource
+    ) throws {
+        try ensureSafariIsFrontmost()
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
+        else {
+            throw nativeInputUnavailable("macOS could not create a native keyboard event.")
+        }
+        keyDown.flags = flags
+        keyUp.flags = flags
+        keyDown.post(tap: .cgSessionEventTap)
+        keyUp.post(tap: .cgSessionEventTap)
+        Thread.sleep(forTimeInterval: 0.005)
     }
 
     private func handleFormInput(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -909,6 +1083,9 @@ actor SafariMCPServer {
     private func toolFailure(for error: any Error) -> ToolFailure {
         if let bridgeError = error as? WebSocketBridge.BridgeError {
             return bridgeError.toolFailure
+        }
+        if let nativeInputError = error as? NativeInputError {
+            return nativeInputError.failure
         }
         if let inputError = error as? ToolInputError {
             return ToolFailure(

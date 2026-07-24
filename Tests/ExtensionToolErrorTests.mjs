@@ -12,7 +12,13 @@ const backgroundSource = readFileSync(
     "utf8"
 );
 
-function contentHarness() {
+function contentHarness(document = {
+    activeElement: null,
+    body: { innerText: "" },
+    createTreeWalker: () => ({ nextNode: () => null }),
+    elementFromPoint: () => null,
+    querySelector: () => null,
+}) {
     let listener;
     const context = vm.createContext({
         browser: {
@@ -20,13 +26,7 @@ function contentHarness() {
                 onMessage: { addListener: (value) => { listener = value; } },
             },
         },
-        document: {
-            activeElement: null,
-            body: { innerText: "" },
-            createTreeWalker: () => ({ nextNode: () => null }),
-            elementFromPoint: () => null,
-            querySelector: () => null,
-        },
+        document,
         setTimeout,
         clearTimeout,
         window: {},
@@ -42,6 +42,8 @@ function backgroundHarness(contentResponse) {
     const contentResponses = Array.isArray(contentResponse)
         ? [...contentResponse]
         : [contentResponse];
+    const tabUpdates = [];
+    const windowUpdates = [];
     const browser = {
         alarms: {
             create() {},
@@ -57,8 +59,12 @@ function backgroundHarness(contentResponse) {
             session: { get: async () => ({}), set() {}, remove: async () => {} },
         },
         tabs: {
-            get: async () => ({ id: 1 }),
+            get: async () => ({ id: 1, windowId: 7 }),
             sendMessage: async () => contentResponses.shift(),
+            update: async (...args) => { tabUpdates.push(args); },
+        },
+        windows: {
+            update: async (...args) => { windowUpdates.push(args); },
         },
         scripting: { executeScript: async () => {} },
     };
@@ -71,10 +77,13 @@ function backgroundHarness(contentResponse) {
         WebSocket: class { static OPEN = 1; static CONNECTING = 0; },
     });
     vm.runInContext(backgroundSource, context);
-    return (request) => vm.runInContext(
+    const handleRequest = (request) => vm.runInContext(
         `handleRequest(${JSON.stringify(request)})`,
         context
     );
+    handleRequest.tabUpdates = tabUpdates;
+    handleRequest.windowUpdates = windowUpdates;
+    return handleRequest;
 }
 
 test("content errors identify stale UIDs and missing targets", async () => {
@@ -140,4 +149,51 @@ test("background reinjects when Safari returns no content response", async () =>
 
     assert.equal(response.errorCode, "stale_uid");
     assert.equal(response.recoveryAction, "take_snapshot");
+});
+
+test("native input preparation focuses only editable text targets", async () => {
+    const document = { activeElement: null };
+    const editor = {
+        contains: (element) => element === editor,
+        disabled: false,
+        focus: () => { document.activeElement = editor; },
+        isContentEditable: true,
+        readOnly: false,
+        scrollIntoView() {},
+        tagName: "DIV",
+    };
+    document.querySelector = () => editor;
+    const call = contentHarness(document);
+
+    const focused = await call("prepare_native_input", { selector: "#editor" });
+    assert.equal(focused.error, null);
+    assert.equal(focused.data, "Focused <div> for native typing");
+
+    document.querySelector = () => ({
+        disabled: false,
+        isContentEditable: false,
+        readOnly: false,
+        tagName: "BUTTON",
+    });
+    const unsupported = await call("prepare_native_input", { selector: "button" });
+    assert.equal(unsupported.errorCode, "unsupported_native_target");
+    assert.equal(unsupported.recoveryAction, "use_synthetic_input");
+});
+
+test("native input preparation foregrounds the target Safari tab", async () => {
+    const handleRequest = backgroundHarness({ data: "Focused", error: null });
+    const response = await handleRequest({
+        id: "request-1",
+        action: "native_type_text",
+        params: { tabId: 1, selector: "#editor", text: "/hello" },
+    });
+
+    assert.equal(response.success, true);
+    assert.equal(response.data, "Safari is ready for native input");
+    assert.equal(handleRequest.tabUpdates.length, 1);
+    assert.equal(handleRequest.tabUpdates[0][0], 1);
+    assert.equal(handleRequest.tabUpdates[0][1].active, true);
+    assert.equal(handleRequest.windowUpdates.length, 1);
+    assert.equal(handleRequest.windowUpdates[0][0], 7);
+    assert.equal(handleRequest.windowUpdates[0][1].focused, true);
 });

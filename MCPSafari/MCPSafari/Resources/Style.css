@@ -6,8 +6,17 @@
 
 :root {
     color-scheme: light dark;
+    --border: rgba(127, 127, 127, 0.28);
+    --muted: #555;
+    --positive: #137333;
+    --surface: rgba(127, 127, 127, 0.12);
+}
 
-    --spacing: 20px;
+@media (prefers-color-scheme: dark) {
+    :root {
+        --muted: #b8b8b8;
+        --positive: #62d482;
+    }
 }
 
 html {
@@ -15,17 +24,85 @@ html {
 }
 
 body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: Canvas;
+    color: CanvasText;
+    font: -apple-system-body;
+}
+
+main {
+    box-sizing: border-box;
+    width: min(100%, 460px);
+    margin: 0 auto;
+    padding: 24px;
+}
+
+header {
     display: flex;
     align-items: center;
-    justify-content: center;
-    flex-direction: column;
+    gap: 12px;
+    padding-bottom: 18px;
+}
 
-    gap: var(--spacing);
-    margin: 0 calc(var(--spacing) * 2);
-    height: 100%;
+header img {
+    flex: none;
+}
 
-    font: -apple-system-short-body;
+h1,
+h2,
+p {
+    margin: 0;
+}
+
+h1 {
+    font: -apple-system-title1;
+    font-weight: 650;
+}
+
+h2 {
+    font: -apple-system-headline;
+}
+
+.setting {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    min-height: 58px;
+    padding: 16px 0;
+    border-top: 1px solid var(--border);
+}
+
+.setting-copy p {
+    max-width: 260px;
+    margin-top: 4px;
+    color: var(--muted);
+    line-height: 1.35;
+}
+
+.setting-actions {
+    display: grid;
+    justify-items: end;
+    gap: 8px;
+}
+
+.status {
+    flex: none;
+    box-sizing: border-box;
+    min-width: 82px;
+    padding: 4px 9px;
+    border-radius: 6px;
+    background: var(--surface);
+    font: -apple-system-caption1;
+    font-weight: 600;
     text-align: center;
+}
+
+.state-on.status {
+    background: color-mix(in srgb, var(--positive) 18%, transparent);
+    color: var(--positive);
 }
 
 body:not(.state-on, .state-off) :is(.state-on, .state-off) {
@@ -41,5 +118,9 @@ body.state-off :is(.state-on, .state-unknown) {
 }
 
 button {
-    font-size: 1em;
+    margin: 0;
+    min-height: 28px;
+    padding: 3px 12px;
+    font: -apple-system-body;
+    cursor: default;
 }

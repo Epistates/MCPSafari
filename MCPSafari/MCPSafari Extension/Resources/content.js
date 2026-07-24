@@ -103,6 +103,8 @@
                 return clickElement(params);
             case "type_text":
                 return typeText(params);
+            case "prepare_native_input":
+                return prepareNativeInput(params);
             case "form_input":
                 return formInput(params);
             case "select_option":
@@ -560,6 +562,47 @@
     }
 
     // ─── Type Text ───────────────────────────────────────────────────
+
+    function prepareNativeInput(params) {
+        const el = (params.uid || params.selector)
+            ? resolveElement(params)
+            : document.activeElement;
+        if (!el) {
+            throw toolError(
+                "target_not_found",
+                "No element to type into",
+                false,
+                "take_snapshot"
+            );
+        }
+
+        const tag = el.tagName.toLowerCase();
+        const textInputTypes = new Set([
+            "text", "search", "url", "tel", "email", "password", "number",
+        ]);
+        const isTextInput = tag === "textarea"
+            || (tag === "input" && textInputTypes.has(el.type));
+        if ((!isTextInput && !el.isContentEditable) || el.disabled || el.readOnly) {
+            throw toolError(
+                "unsupported_native_target",
+                `Native typing requires an editable text control; received <${tag}>`,
+                false,
+                "use_synthetic_input"
+            );
+        }
+
+        el.scrollIntoView({ block: "center", inline: "center" });
+        el.focus({ preventScroll: true });
+        if (document.activeElement !== el && !el.contains(document.activeElement)) {
+            throw toolError(
+                "native_input_focus_failed",
+                `Could not focus <${tag}> for native typing`,
+                true,
+                "retry"
+            );
+        }
+        return `Focused <${tag}> for native typing`;
+    }
 
     function typeText(params) {
         const el = (params.uid || params.selector)
