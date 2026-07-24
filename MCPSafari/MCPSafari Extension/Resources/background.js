@@ -272,6 +272,8 @@ async function handleRequest(request) {
             case "press_key":
             case "hover":
             case "drag":
+            case "upload_file":
+            case "drop_file":
             case "wait":
             case "start_trace":
             case "stop_trace":
