@@ -2,6 +2,41 @@ import Foundation
 import Logging
 import Network
 
+struct ExtensionMetadata: Codable, Equatable {
+    let version: String?
+    let protocolVersion: Int?
+}
+
+enum HandshakeDecision: Equatable {
+    case accept(ExtensionMetadata)
+    case rejectToken
+    case rejectProtocol(extensionVersion: String?, protocolVersion: Int)
+}
+
+enum BridgeHandshake {
+    private struct Message: Decodable {
+        let auth: String
+        let extensionVersion: String?
+        let protocolVersion: Int?
+    }
+
+    static func decision(for data: Data, expectedToken: String) -> HandshakeDecision? {
+        guard let message = try? JSONDecoder().decode(Message.self, from: data) else { return nil }
+        guard message.auth == expectedToken else { return .rejectToken }
+        if let protocolVersion = message.protocolVersion,
+           protocolVersion != MCPSafariProduct.bridgeProtocolVersion {
+            return .rejectProtocol(
+                extensionVersion: message.extensionVersion,
+                protocolVersion: protocolVersion
+            )
+        }
+        return .accept(.init(
+            version: message.extensionVersion,
+            protocolVersion: message.protocolVersion
+        ))
+    }
+}
+
 /// WebSocket server that bridges MCP tool calls to the Safari extension.
 ///
 /// Listens on a local port for a WebSocket connection from the extension's
@@ -9,6 +44,92 @@ import Network
 /// port is in use. Provides a request/response pattern: sends a `BridgeRequest`,
 /// awaits a correlated `BridgeResponse` by matching IDs.
 actor WebSocketBridge {
+    struct Failure: Codable, Equatable {
+        let code: String
+        let message: String
+        let recovery: String
+
+        static func protocolMismatch(extensionProtocolVersion: Int) -> Self {
+            .init(
+                code: "protocol_version_mismatch",
+                message: "Extension bridge protocol \(extensionProtocolVersion) does not match server protocol \(MCPSafariProduct.bridgeProtocolVersion).",
+                recovery: "Install matching MCPSafari app and mcp-safari server versions, then restart Safari and the MCP client."
+            )
+        }
+    }
+
+    enum ListenerStatus: String, Codable {
+        case stopped
+        case binding
+        case listening
+        case failed
+    }
+
+    enum ConnectionStatus: String, Codable {
+        case disconnected
+        case authenticating
+        case authenticated
+    }
+
+    struct Status: Codable, Equatable {
+        let serverVersion: String
+        let protocolVersion: Int
+        let requestedPort: UInt16
+        let port: UInt16
+        let listener: ListenerStatus
+        let bridge: ConnectionStatus
+        let tokenFileExists: Bool
+        let tokenFileSecure: Bool?
+        let extensionVersion: String?
+        let extensionProtocolVersion: Int?
+        let lastError: Failure?
+
+        enum CodingKeys: String, CodingKey {
+            case serverVersion
+            case protocolVersion
+            case requestedPort
+            case port
+            case listener
+            case bridge
+            case tokenFileExists
+            case tokenFileSecure
+            case extensionVersion
+            case extensionProtocolVersion
+            case lastError
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(serverVersion, forKey: .serverVersion)
+            try container.encode(protocolVersion, forKey: .protocolVersion)
+            try container.encode(requestedPort, forKey: .requestedPort)
+            try container.encode(port, forKey: .port)
+            try container.encode(listener, forKey: .listener)
+            try container.encode(bridge, forKey: .bridge)
+            try container.encode(tokenFileExists, forKey: .tokenFileExists)
+            if let tokenFileSecure {
+                try container.encode(tokenFileSecure, forKey: .tokenFileSecure)
+            } else {
+                try container.encodeNil(forKey: .tokenFileSecure)
+            }
+            if let extensionVersion {
+                try container.encode(extensionVersion, forKey: .extensionVersion)
+            } else {
+                try container.encodeNil(forKey: .extensionVersion)
+            }
+            if let extensionProtocolVersion {
+                try container.encode(extensionProtocolVersion, forKey: .extensionProtocolVersion)
+            } else {
+                try container.encodeNil(forKey: .extensionProtocolVersion)
+            }
+            if let lastError {
+                try container.encode(lastError, forKey: .lastError)
+            } else {
+                try container.encodeNil(forKey: .lastError)
+            }
+        }
+    }
+
     private var listener: NWListener?
     /// The authenticated extension connection currently allowed to receive MCP requests.
     private var connection: NWConnection?
@@ -23,6 +144,10 @@ actor WebSocketBridge {
     private let logger: Logger
     private let requestedPort: UInt16
     private(set) var port: UInt16
+    private var listenerStatus = ListenerStatus.stopped
+    private var extensionVersion: String?
+    private var extensionProtocolVersion: Int?
+    private var lastError: Failure?
     private let networkQueue = DispatchQueue(label: "mcp-safari.websocket", qos: .userInitiated)
 
     /// Authentication token that the extension must send as its first message.
@@ -107,6 +232,30 @@ actor WebSocketBridge {
 
     var isConnected: Bool { connection != nil }
 
+    func status() -> Status {
+        let tokenFilePath = Self.tokenFilePath(for: port)
+        let fileManager = FileManager.default
+        let tokenFileExists = fileManager.fileExists(atPath: tokenFilePath)
+        let permissions = (try? fileManager.attributesOfItem(atPath: tokenFilePath)[.posixPermissions] as? NSNumber)?.intValue
+        let connectionStatus: ConnectionStatus = connection != nil
+            ? .authenticated
+            : authenticatingConnection != nil ? .authenticating : .disconnected
+
+        return Status(
+            serverVersion: MCPSafariProduct.version,
+            protocolVersion: MCPSafariProduct.bridgeProtocolVersion,
+            requestedPort: requestedPort,
+            port: port,
+            listener: listenerStatus,
+            bridge: connectionStatus,
+            tokenFileExists: tokenFileExists,
+            tokenFileSecure: tokenFileExists ? permissions == 0o600 : nil,
+            extensionVersion: extensionVersion,
+            extensionProtocolVersion: extensionProtocolVersion,
+            lastError: lastError
+        )
+    }
+
     private static let maxPortRetries: UInt16 = 10
 
     private static func makeWebSocketParameters(for port: NWEndpoint.Port) -> NWParameters {
@@ -160,6 +309,7 @@ actor WebSocketBridge {
     }
 
     func start() async {
+        listenerStatus = .binding
         // Try the requested port, then successive ports if in use
         let lastPort = min(
             UInt32(UInt16.max),
@@ -186,15 +336,15 @@ actor WebSocketBridge {
                                 resumed = true
                                 cont.resume(returning: true)
                             }
-                            Task { await self.handleListenerState(state) }
+                            Task { await self.handleListenerState(state, listener: newListener) }
                         case .failed:
                             if !resumed {
                                 resumed = true
                                 cont.resume(returning: false)
                             }
-                            Task { await self.handleListenerState(state) }
+                            Task { await self.handleListenerState(state, listener: newListener) }
                         default:
-                            Task { await self.handleListenerState(state) }
+                            Task { await self.handleListenerState(state, listener: newListener) }
                         }
                     }
 
@@ -207,6 +357,7 @@ actor WebSocketBridge {
                 }
 
                 if success {
+                    listenerStatus = .listening
                     if tryPort != requestedPort {
                         logger.info("Port \(requestedPort) in use — listening on \(tryPort) instead")
                     }
@@ -226,6 +377,7 @@ actor WebSocketBridge {
             }
         }
 
+        listenerStatus = .failed
         logger.error("Could not bind to any port in range \(requestedPort)-\(lastPort)")
     }
 
@@ -236,6 +388,9 @@ actor WebSocketBridge {
         authenticatingConnection = nil
         connection?.cancel()
         connection = nil
+        listenerStatus = .stopped
+        extensionVersion = nil
+        extensionProtocolVersion = nil
         drainPendingRequests(error: BridgeError.notConnected)
         logger.info("WebSocket server stopped")
     }
@@ -307,9 +462,11 @@ actor WebSocketBridge {
         pendingRequests.removeAll()
     }
 
-    private func handleListenerState(_ state: NWListener.State) {
+    private func handleListenerState(_ state: NWListener.State, listener source: NWListener) {
+        guard listener === source else { return }
         switch state {
         case .failed(let error):
+            listenerStatus = .failed
             logger.error("WebSocket server failed: \(error)")
         case .cancelled:
             logger.info("WebSocket server cancelled")
@@ -350,6 +507,8 @@ actor WebSocketBridge {
             logger.error("Extension connection failed: \(error)")
             if connection === conn {
                 connection = nil
+                extensionVersion = nil
+                extensionProtocolVersion = nil
                 drainPendingRequests(error: BridgeError.notConnected)
             }
             if authenticatingConnection === conn {
@@ -359,6 +518,8 @@ actor WebSocketBridge {
             logger.info("Extension connection closed")
             if connection === conn {
                 connection = nil
+                extensionVersion = nil
+                extensionProtocolVersion = nil
                 drainPendingRequests(error: BridgeError.notConnected)
             }
             if authenticatingConnection === conn {
@@ -405,17 +566,24 @@ actor WebSocketBridge {
     }
 
     private func handleTextMessage(_ data: Data, from conn: NWConnection) {
-        // Check for auth handshake message: {"auth":"<token>"}
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let token = json["auth"] as? String {
-            if token == authToken {
-                authenticate(conn)
-            } else {
+        if let decision = handshakeDecision(for: data) {
+            switch decision {
+            case .accept(let metadata):
+                authenticate(conn, metadata: metadata)
+            case .rejectToken:
                 logger.warning("Auth token mismatch — closing connection")
                 conn.cancel()
                 if authenticatingConnection === conn {
                     authenticatingConnection = nil
                 }
+            case .rejectProtocol(_, let received):
+                logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
+                sendAuthResponse([
+                    "auth": "error",
+                    "error": "protocol_version_mismatch",
+                    "extensionProtocolVersion": received,
+                    "serverProtocolVersion": MCPSafariProduct.bridgeProtocolVersion,
+                ], to: conn, closeAfterSending: true)
             }
             return
         }
@@ -448,7 +616,17 @@ actor WebSocketBridge {
         }
     }
 
-    private func authenticate(_ conn: NWConnection) {
+    func handshakeDecision(for data: Data) -> HandshakeDecision? {
+        let decision = BridgeHandshake.decision(for: data, expectedToken: authToken)
+        if case .rejectProtocol(let rejectedVersion, let protocolVersion) = decision {
+            extensionVersion = rejectedVersion
+            extensionProtocolVersion = protocolVersion
+            lastError = .protocolMismatch(extensionProtocolVersion: protocolVersion)
+        }
+        return decision
+    }
+
+    private func authenticate(_ conn: NWConnection, metadata: ExtensionMetadata) {
         if let existing = connection, existing !== conn {
             logger.info("Replacing authenticated extension connection")
             existing.cancel()
@@ -456,19 +634,36 @@ actor WebSocketBridge {
         }
 
         connection = conn
+        extensionVersion = metadata.version
+        extensionProtocolVersion = metadata.protocolVersion
+        lastError = nil
         if authenticatingConnection === conn {
             authenticatingConnection = nil
         }
 
         logger.info("Safari extension authenticated")
-        let ack = #"{"auth":"ok"}"#
+        sendAuthResponse([
+            "auth": "ok",
+            "serverVersion": MCPSafariProduct.version,
+            "protocolVersion": MCPSafariProduct.bridgeProtocolVersion,
+        ], to: conn)
+    }
+
+    private func sendAuthResponse(
+        _ response: [String: Any],
+        to conn: NWConnection,
+        closeAfterSending: Bool = false
+    ) {
+        guard let data = try? JSONSerialization.data(withJSONObject: response) else { return }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "ws-auth", metadata: [metadata])
         conn.send(
-            content: ack.data(using: .utf8),
+            content: data,
             contentContext: context,
             isComplete: true,
-            completion: .contentProcessed { _ in }
+            completion: .contentProcessed { _ in
+                if closeAfterSending { conn.cancel() }
+            }
         )
     }
 }

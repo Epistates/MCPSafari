@@ -14,7 +14,7 @@ actor SafariMCPServer {
         self.bridge = try WebSocketBridge(port: port, logger: logger)
         self.server = Server(
             name: "mcp-safari",
-            version: "0.2.9",
+            version: MCPSafariProduct.version,
             instructions: """
                 Safari browser automation. Use tabs_context to list tabs, snapshot for element UIDs, \
                 then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state.
@@ -108,6 +108,13 @@ actor SafariMCPServer {
 
     private func buildToolDefinitions() -> [Tool] {
         [
+            Tool(
+                name: "status",
+                description: "Report local Safari MCP listener, authentication, version, and token health. Works without an extension connection.",
+                inputSchema: .object(["type": .string("object"), "properties": .object([:])]),
+                annotations: .init(readOnlyHint: true, openWorldHint: false)
+            ),
+
             // ── Tabs ─────────────────────────────────────────────────
 
             Tool(
@@ -416,6 +423,7 @@ actor SafariMCPServer {
 
         do {
             switch params.name {
+            case "status":          return try await handleStatus()
             case "tabs_context":    return try await handleTabsContext()
             case "tabs_create":     return try await handleTabsCreate(args)
             case "close_tab":       return try await handleCloseTab(args)
@@ -455,6 +463,14 @@ actor SafariMCPServer {
     }
 
     // MARK: - Tool Handlers
+
+    private func handleStatus() async throws -> CallTool.Result {
+        let status = await bridge.status()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(status)
+        return CallTool.Result(content: [Self.textContent(String(decoding: data, as: UTF8.self))])
+    }
 
     private func handleTabsContext() async throws -> CallTool.Result {
         let response = try await bridge.send(action: "tabs_query")
