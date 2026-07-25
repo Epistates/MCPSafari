@@ -1,7 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+### Security
+- `snapshot` no longer reports the contents of password inputs, or of inputs whose `autocomplete` marks them as a one-time code or payment card field; those values come back as `[redacted]`.
+
 ### Bug Fixes
+- `select_option` now fails with `target_not_found` instead of reporting success when the requested value matches no option, and restores the previous selection.
+- `form_input` now fails with `target_not_found` when no field matched, instead of returning a successful result whose body reads `not found`.
+- `read_console` with `clear` now removes only the messages the call returned, so a level- or pattern-filtered read no longer discards unread messages.
+- `find` by CSS selector is now capped at 50 matches, the same cap the text and role strategies already used.
+- `press_key`, `click`, `hover`, `scroll`, `drag`, `select_option`, and `form_input` now return `invalid_input` for missing or empty required arguments instead of a raw JavaScript error.
+- `getAccessibleName` now escapes element ids before building a `label[for=...]` selector, so an id containing a quote no longer fails the whole page's snapshot, and resolves every id in an `aria-labelledby` list rather than only the first.
+- `press_key` now reports `Digit1`-style codes for digits instead of `Key1`, and `scroll` treats `amount: 0` as an explicit distance rather than falling back to the viewport height.
 - Fixed `snapshot` dropping an element's own text when that element also has element children, so mixed content such as `<button><span>9</span>All</button>` no longer loses `All`.
 - Fixed `find` missing elements named only by `aria-label` or another accessible-name source; `text` now matches the accessible name as well as visible text.
 - `find` without `selector`, `text`, or `role` now returns `invalid_input` instead of an empty result that looks like a failed match.

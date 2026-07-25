@@ -95,15 +95,13 @@
         }
 
         if (params.clear) {
-            // Only clear the messages that matched the filter, not the entire buffer
-            if (params.level && params.level !== "all") {
-                for (let i = messages.length - 1; i >= 0; i--) {
-                    if (messages[i].level === params.level) {
-                        messages.splice(i, 1);
-                    }
+            // Clear exactly what this call returned, so a level- or pattern-filtered
+            // read never discards messages the caller never saw.
+            const returned = new Set(filtered);
+            for (let i = messages.length - 1; i >= 0; i--) {
+                if (returned.has(messages[i])) {
+                    messages.splice(i, 1);
                 }
-            } else {
-                messages.length = 0;
             }
         }
 

@@ -248,7 +248,7 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 |------|-------------|
 | `read_page` | Get page content as `text`, `html`, or `snapshot` |
 | `snapshot` | Accessibility tree with element UIDs for interaction |
-| `find` | Find elements by CSS selector, visible text or accessible name, or ARIA role |
+| `find` | Find elements by CSS selector, visible text or accessible name, or ARIA role (up to 50 matches) |
 
 ### Interaction
 
@@ -412,6 +412,11 @@ The server generates a random UUID token at startup, writes it to `~/.config/mcp
 - Regex patterns capped at 200 characters and validated before forwarding
 - Wait durations capped at 300 seconds
 - File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call
+- `find` returns at most 50 matches per call
+
+### Snapshot Redaction
+
+`snapshot` reports that a sensitive field has a value without reporting the value itself. Password inputs, and inputs whose `autocomplete` marks them as a password, one-time code, or payment card field, come back as `"value": "[redacted]"`. Everything else is reported verbatim, so a snapshot of a filled login or checkout form can be handed to a model without leaking the credential.
 
 ### Permissions
 
