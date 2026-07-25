@@ -591,11 +591,43 @@ async function handleScreenshot(params) {
         await delay(300);
     }
 
+    // Context before the frame: a page that loses focus between the two reads
+    // then produces a warning about a good frame rather than an all-clear on a
+    // stale one.
+    const context = await capturePageContext(tabId);
     const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, {
         format: "png",
     });
-    // Strip data URI prefix, return raw base64
-    return dataUrl.replace(/^data:image\/\w+;base64,/, "");
+
+    return {
+        // Raw base64, data URI prefix stripped
+        image: dataUrl.replace(/^data:image\/\w+;base64,/, ""),
+        ...context,
+    };
+}
+
+// Viewport, scale, visibility, and focus at capture time. Safari does not
+// repaint an occluded page, so a capture of a hidden page can predate the last
+// action, and it does not match :focus while its window is not key.
+async function capturePageContext(tabId) {
+    try {
+        const results = await browser.scripting.executeScript({
+            target: { tabId },
+            func: () => ({
+                visible: document.visibilityState === "visible",
+                hasFocus: document.hasFocus(),
+                viewport: {
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                },
+                devicePixelRatio: window.devicePixelRatio,
+            }),
+        });
+        return results[0]?.result || {};
+    } catch (err) {
+        console.warn("[MCPSafari] Screenshot context unavailable:", err);
+        return {};
+    }
 }
 
 // ─── JavaScript Execution Handler ────────────────────────────────────
