@@ -79,6 +79,14 @@ actor SafariMCPServer {
         "items": .object(["type": .string("string"), "minLength": .int(1)]),
         "description": .string("Exact trace event types to capture (for example dom.mutation, network.fetch, console.error); omitted captures all"),
     ])
+    private static let filePath: Value = .object(["type": .string("string"), "description": .string("Local file path (~ expanded)")])
+    private static let filePaths: Value = .object([
+        "type": .string("array"),
+        "items": .object(["type": .string("string"), "minLength": .int(1)]),
+        "description": .string("Local file paths, up to \(FileAttachmentLoader.maxFileCount) and \(FileAttachmentLoader.maxTotalBytes / (1024 * 1024)) MB per call"),
+    ])
+    private static let mimeType: Value = .object(["type": .string("string"), "description": .string("Override the MIME type inferred from the file extension")])
+    private static let fileInputKeys: Set<String> = ["filePath", "filePaths", "mimeType"]
     private static let postActionWaitKeys: Set<String> = ["waitForSelector", "waitForText", "waitTimeout"]
     private static let postActionTraceKeys: Set<String> = ["trace", "traceDuration", "eventTypes"]
     private static let actionControlKeys: Set<String> = postActionWaitKeys.union(postActionTraceKeys)
@@ -327,6 +335,30 @@ actor SafariMCPServer {
                 ])
             ),
             Tool(
+                name: "upload_file",
+                description: "Attach local files to a file input.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object(Self.withActionOptions([
+                        "uid": Self.uid, "selector": Self.sel,
+                        "filePath": Self.filePath, "filePaths": Self.filePaths, "mimeType": Self.mimeType,
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
+                    ])),
+                ])
+            ),
+            Tool(
+                name: "drop_file",
+                description: "Drop local files onto an element (dragenter/dragover/drop).",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object(Self.withActionOptions([
+                        "uid": Self.uid, "selector": Self.sel,
+                        "filePath": Self.filePath, "filePaths": Self.filePaths, "mimeType": Self.mimeType,
+                        "includeSnapshot": Self.snap, "tabId": Self.tab,
+                    ])),
+                ])
+            ),
+            Tool(
                 name: "handle_dialog",
                 description: "Accept/dismiss alert, confirm, or prompt dialog.",
                 inputSchema: .object([
@@ -447,6 +479,8 @@ actor SafariMCPServer {
             case "press_key":       return try await handleInteraction("press_key", args)
             case "hover":           return try await handleInteraction("hover", args)
             case "drag":            return try await handleInteraction("drag", args)
+            case "upload_file":     return try await handleFileAction("upload_file", args)
+            case "drop_file":       return try await handleFileAction("drop_file", args)
             case "handle_dialog":   return try await handleInteraction("handle_dialog", args)
             case "screenshot":      return try await handleScreenshot(args)
             case "javascript_tool": return try await handleJavaScript(args)
@@ -583,11 +617,63 @@ actor SafariMCPServer {
         return textResult(response)
     }
 
+    /// Reads the caller's local files, then runs the interaction with them attached.
+    private func handleFileAction(_ action: String, _ args: [String: Value]) async throws -> CallTool.Result {
+        var paths: [String] = []
+        if let filePath = args["filePath"] {
+            guard let path = filePath.stringValue else { throw ToolInputError("filePath must be a string") }
+            paths.append(path)
+        }
+        if let filePaths = args["filePaths"] {
+            guard let values = filePaths.arrayValue else { throw ToolInputError("filePaths must be an array of strings") }
+            for value in values {
+                guard let path = value.stringValue else { throw ToolInputError("filePaths must be an array of strings") }
+                paths.append(path)
+            }
+        }
+
+        var mimeTypeOverride: String?
+        if let mimeType = args["mimeType"] {
+            guard let value = mimeType.stringValue else { throw ToolInputError("mimeType must be a string") }
+            mimeTypeOverride = value
+        }
+
+        let attachments: [FileAttachment]
+        do {
+            attachments = try FileAttachmentLoader.load(paths: paths, mimeTypeOverride: mimeTypeOverride)
+        } catch let error as FileAttachmentError {
+            throw ToolInputError(error.description)
+        }
+
+        let files = attachments.map { attachment in
+            AnyCodable([
+                "name": AnyCodable(attachment.name),
+                "type": AnyCodable(attachment.mimeType),
+                "data": AnyCodable(attachment.base64),
+            ] as [String: AnyCodable])
+        }
+
+        return try await handleInteraction(
+            action,
+            args,
+            extraParams: ["files": AnyCodable(files)],
+            skipKeys: Self.fileInputKeys
+        )
+    }
+
     /// Unified handler for interaction tools: click, type_text, hover, scroll, press_key, select_option, drag.
     /// Forwards all params to the extension and optionally appends a snapshot.
-    private func handleInteraction(_ action: String, _ args: [String: Value]) async throws -> CallTool.Result {
-        let params = interactionParams(args)
+    private func handleInteraction(
+        _ action: String,
+        _ args: [String: Value],
+        extraParams: [String: AnyCodable] = [:],
+        skipKeys: Set<String> = []
+    ) async throws -> CallTool.Result {
+        var params = interactionParams(args, skipKeys: skipKeys)
         let wantSnapshot = args["includeSnapshot"]?.boolValue == true
+
+        // Server-supplied params win over forwarded caller args.
+        params.merge(extraParams) { _, supplied in supplied }
 
         let traceSession = try await startTraceIfNeeded(args)
         do {
@@ -601,10 +687,11 @@ actor SafariMCPServer {
         }
     }
 
-    private func interactionParams(_ args: [String: Value]) -> [String: AnyCodable] {
+    private func interactionParams(_ args: [String: Value], skipKeys: Set<String> = []) -> [String: AnyCodable] {
         var params: [String: AnyCodable] = [:]
         for (key, value) in args {
             if key == "includeSnapshot" || key == "tabId" || Self.actionControlKeys.contains(key) { continue }
+            if skipKeys.contains(key) { continue }
             if let s = value.stringValue { params[key] = AnyCodable(s) }
             else if let i = value.intValue { params[key] = AnyCodable(i) }
             else if let d = value.doubleValue { params[key] = AnyCodable(d) }

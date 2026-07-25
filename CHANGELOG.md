@@ -23,6 +23,7 @@
 - Added a backward-compatible versioned extension/server handshake with explicit protocol mismatch errors.
 - Tool failures now include stable error codes, retry guidance, and recovery actions for disconnected bridges, stale element UIDs, missing targets, and wait timeouts.
 - `type_text` now supports opt-in native macOS keyboard events for contenteditable and framework-managed editors.
+- Added `upload_file` and `drop_file` for attaching explicit local files to a file input or dropping them onto an element.
 
 ### Bug Fixes
 - Stop stale per-port token files from causing endless extension reconnect attempts and popup state cycling.

@@ -219,7 +219,7 @@ mcp-safari doctor --json
 
 The doctor checks the server executable, app and extension bundles, PlugInKit registration, matching versions, and the selected port's token file. It never returns token contents and does not change system state.
 
-## Tools (24)
+## Tools (26)
 
 ### Diagnostics
 
@@ -262,6 +262,8 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 | `press_key` | Press key combinations (e.g., `Enter`, `Meta+a`, `Control+c`) |
 | `hover` | Hover to trigger tooltips, menus, or hover states |
 | `drag` | Drag and drop between elements |
+| `upload_file` | Attach local files to an `<input type="file">` |
+| `drop_file` | Drop local files onto an element |
 
 > **Note:** Interaction tools drive elements via synthetic DOM events (and React-compatible value setting for text), which works across the vast majority of sites. Because the events are synthetic, `press_key` modifier combos (e.g. `Meta+a`, `Control+c`) and `drag` reach page-level JS handlers but do **not** trigger native browser actions — clipboard copy/paste, select-all, or HTML5 native drag-and-drop. Use `type_text`/`form_input` for text entry and `javascript_tool` when a true native action is required.
 
@@ -340,6 +342,20 @@ Use `form_input` to fill multiple fields at once:
 
 This uses React-compatible value setting (`nativeInputValueSetter`) so it works with controlled inputs in React, Next.js, and similar frameworks.
 
+### File Upload and Drop
+
+`upload_file` attaches local files to a file input, and `drop_file` delivers them to a drop zone:
+
+```json
+{ "selector": "input[type=file]", "filePath": "~/Pictures/reference.png" }
+```
+
+```json
+{ "selector": "#dropzone", "filePaths": ["/tmp/a.pdf", "/tmp/b.pdf"] }
+```
+
+The server reads only the paths you name, infers each MIME type from the file extension (override with `mimeType`), and sends the bytes to the page. `upload_file` accepts the input itself, its `<label>`, or a wrapper containing it, then fires `input` and `change`; `drop_file` dispatches `dragenter`, `dragover`, and `drop` with a `DataTransfer` holding the files. Up to 10 files and 10 MB total per call.
+
 ### Smart Text Matching
 
 When targeting by `text`, interactive elements (buttons, links, inputs) are ranked higher than generic containers. Clicking `text: "Submit"` will prefer a `<button>Submit</button>` over a `<div>Submit</div>`.
@@ -395,6 +411,7 @@ The server generates a random UUID token at startup, writes it to `~/.config/mcp
 - Navigation actions validated against an allowlist
 - Regex patterns capped at 200 characters and validated before forwarding
 - Wait durations capped at 300 seconds
+- File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call
 
 ### Permissions
 

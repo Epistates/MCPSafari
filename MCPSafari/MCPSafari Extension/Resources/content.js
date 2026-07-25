@@ -117,6 +117,10 @@
                 return hoverElement(params);
             case "drag":
                 return dragElement(params);
+            case "upload_file":
+                return uploadFile(params);
+            case "drop_file":
+                return dropFile(params);
             case "wait":
                 return waitFor(params);
             case "start_trace":
@@ -842,6 +846,88 @@
         fromEl.dispatchEvent(new MouseEvent("mouseup", { ...baseOpts, clientX: toX, clientY: toY }));
 
         return `Dragged <${fromEl.tagName.toLowerCase()}> to <${toEl.tagName.toLowerCase()}>`;
+    }
+
+    // ─── File Attachment ─────────────────────────────────────────────
+
+    function buildFiles(params) {
+        const specs = params.files || [];
+        if (specs.length === 0) throw new Error("No files provided");
+
+        return specs.map((spec) => {
+            const binary = atob(spec.data);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i += 1) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return new File([bytes], spec.name, { type: spec.type });
+        });
+    }
+
+    function transferFor(files) {
+        const dataTransfer = new DataTransfer();
+        for (const file of files) dataTransfer.items.add(file);
+        return dataTransfer;
+    }
+
+    function describeFiles(files) {
+        return files.map((file) => file.name).join(", ");
+    }
+
+    // Accepts the input itself, a wrapper element around it, or its <label>.
+    function resolveFileInput(element) {
+        if (element.tagName && element.tagName.toLowerCase() === "input" && element.type === "file") {
+            return element;
+        }
+        if (element.control && element.control.type === "file") {
+            return element.control;
+        }
+        const nested = element.querySelector && element.querySelector('input[type="file"]');
+        if (nested) return nested;
+
+        throw new Error(
+            `<${element.tagName ? element.tagName.toLowerCase() : "element"}> is not a file input and contains none. Target the <input type="file"> directly, or use drop_file for a drop zone.`
+        );
+    }
+
+    function uploadFile(params) {
+        const target = resolveElement({ uid: params.uid, selector: params.selector });
+        const input = resolveFileInput(target);
+        const files = buildFiles(params);
+
+        if (files.length > 1 && !input.multiple) {
+            throw new Error(`Input accepts one file but ${files.length} were provided`);
+        }
+        if (input.disabled) throw new Error("File input is disabled");
+
+        input.files = transferFor(files).files;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+
+        return `Attached ${describeFiles(files)} to file input`;
+    }
+
+    function dropFile(params) {
+        const target = resolveElement({ uid: params.uid, selector: params.selector });
+        const files = buildFiles(params);
+        const dataTransfer = transferFor(files);
+
+        target.scrollIntoView({ behavior: "instant", block: "center" });
+        const rect = target.getBoundingClientRect();
+        const baseOpts = {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: rect.left + rect.width / 2,
+            clientY: rect.top + rect.height / 2,
+            dataTransfer,
+        };
+
+        for (const type of ["dragenter", "dragover", "drop"]) {
+            target.dispatchEvent(new DragEvent(type, baseOpts));
+        }
+
+        return `Dropped ${describeFiles(files)} on <${target.tagName.toLowerCase()}>`;
     }
 
     // ─── Wait ────────────────────────────────────────────────────────
