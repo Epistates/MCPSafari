@@ -881,8 +881,22 @@
     // --- Page Trace (delegate to interceptor) ------------------------
 
     async function startTrace(params) {
-        const trace = await requestMainWorld("start_trace", params);
-        return trace.id;
+        // Fixed trace id across attempts: if the interceptor processes the
+        // first request late, the retry overwrites the same trace instead of
+        // double-starting one.
+        const request = { ...params, id: `trace-${Date.now()}-${++bridgeRequestCounter}` };
+        try {
+            const trace = await requestMainWorld("start_trace", request);
+            return trace.id;
+        } catch (err) {
+            // The MAIN-world interceptor can miss a request sent right after
+            // navigation, before its listener is ready. Retry once so a
+            // transient startup timeout does not abort the traced action.
+            if (!String(err.message || err).endsWith("interceptor did not respond")) throw err;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            const trace = await requestMainWorld("start_trace", request);
+            return trace.id;
+        }
     }
 
     async function stopTrace(params) {

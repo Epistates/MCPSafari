@@ -3,6 +3,7 @@
 ## [Unreleased]
 ### Bug Fixes
 - Fixed `snapshot` crashing on SVG elements with non-string `type` properties.
+- Retried trace startup once after an interceptor timeout so a transient `start_trace interceptor did not respond` failure no longer aborts the traced action.
 
 ### Build
 - Updated SwiftPM dependencies, including MCP Swift SDK 0.12.1, SwiftLog 1.14.0, and SwiftNIO 2.101.3.
