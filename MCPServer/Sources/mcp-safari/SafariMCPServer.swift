@@ -5,6 +5,84 @@ import Foundation
 import Logging
 import MCP
 
+struct RunStep: Equatable, Sendable {
+    let tool: String
+    let arguments: [String: Value]
+}
+
+struct RunStepsPlan: Equatable, Sendable {
+    static let allowedTools: Set<String> = [
+        "navigate", "click", "type_text", "form_input", "select_option",
+        "press_key", "hover", "scroll", "drag", "wait",
+    ]
+    static let maxSteps = 10
+    static let maxTimeout = 60.0
+
+    let steps: [RunStep]
+    let timeout: Double
+
+    init(arguments: [String: Value]) throws {
+        guard arguments["_batchDeadline"] == nil else {
+            throw RunStepsInputError("_batchDeadline is reserved for internal use")
+        }
+        guard let values = arguments["steps"]?.arrayValue, !values.isEmpty else {
+            throw RunStepsInputError("steps must contain at least one step")
+        }
+        guard values.count <= Self.maxSteps else {
+            throw RunStepsInputError("steps cannot contain more than \(Self.maxSteps) steps")
+        }
+
+        let batchTabId = arguments["tabId"]
+        if let batchTabId, batchTabId.intValue == nil {
+            throw RunStepsInputError("tabId must be an integer")
+        }
+
+        steps = try values.enumerated().map { index, value in
+            guard let object = value.objectValue else {
+                throw RunStepsInputError("steps[\(index)] must be an object")
+            }
+            guard let tool = object["tool"]?.stringValue, !tool.isEmpty else {
+                throw RunStepsInputError("steps[\(index)].tool must be a non-empty string")
+            }
+            guard Self.allowedTools.contains(tool) else {
+                throw RunStepsInputError("steps[\(index)].tool does not support \(tool)")
+            }
+
+            let suppliedArguments = object["arguments"]
+            if let suppliedArguments, suppliedArguments.objectValue == nil {
+                throw RunStepsInputError("steps[\(index)].arguments must be an object")
+            }
+            var stepArguments = suppliedArguments?.objectValue ?? [:]
+            guard stepArguments["_batchDeadline"] == nil else {
+                throw RunStepsInputError("steps[\(index)].arguments._batchDeadline is reserved for internal use")
+            }
+            for key in ["trace", "traceDuration", "eventTypes", "includeSnapshot"] where stepArguments[key] != nil {
+                throw RunStepsInputError("steps[\(index)].arguments.\(key) must be set on run_steps instead")
+            }
+            if let tabId = stepArguments["tabId"], tabId.intValue == nil {
+                throw RunStepsInputError("steps[\(index)].arguments.tabId must be an integer")
+            }
+            if stepArguments["tabId"] == nil, let batchTabId {
+                stepArguments["tabId"] = batchTabId
+            }
+            return RunStep(tool: tool, arguments: stepArguments)
+        }
+
+        if let timeoutValue = arguments["timeout"], SafariMCPServer.numberValue(timeoutValue) == nil {
+            throw RunStepsInputError("timeout must be a number")
+        }
+        timeout = max(0.1, min(SafariMCPServer.numberValue(arguments["timeout"]) ?? 60, Self.maxTimeout))
+    }
+}
+
+struct RunStepsInputError: Error, CustomStringConvertible, Equatable {
+    let description: String
+
+    init(_ description: String) {
+        self.description = description
+    }
+}
+
 /// Core MCP server that registers Safari automation tools and bridges
 /// tool calls to the Safari extension via WebSocket.
 actor SafariMCPServer {
@@ -89,7 +167,9 @@ actor SafariMCPServer {
     private static let fileInputKeys: Set<String> = ["filePath", "filePaths", "mimeType"]
     private static let postActionWaitKeys: Set<String> = ["waitForSelector", "waitForText", "waitTimeout"]
     private static let postActionTraceKeys: Set<String> = ["trace", "traceDuration", "eventTypes"]
-    private static let actionControlKeys: Set<String> = postActionWaitKeys.union(postActionTraceKeys)
+    private static let actionControlKeys: Set<String> = postActionWaitKeys
+        .union(postActionTraceKeys)
+        .union(["_batchDeadline"])
 
     private static func withPostActionWait(_ properties: [String: Value]) -> [String: Value] {
         var props = properties
@@ -438,6 +518,47 @@ actor SafariMCPServer {
                 ])
             ),
             Tool(
+                name: "run_steps",
+                description: "Run up to 10 interaction or wait steps sequentially. Stops on the first failure; completed actions are not rolled back.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "tabId": Self.tab,
+                        "steps": .object([
+                            "type": .string("array"),
+                            "minItems": .int(1),
+                            "maxItems": .int(RunStepsPlan.maxSteps),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "tool": .object([
+                                        "type": .string("string"),
+                                        "enum": .array(RunStepsPlan.allowedTools.sorted().map(Value.string)),
+                                    ]),
+                                    "arguments": .object([
+                                        "type": .string("object"),
+                                        "additionalProperties": .bool(true),
+                                    ]),
+                                ]),
+                                "required": .array([.string("tool")]),
+                            ]),
+                        ]),
+                        "timeout": .object([
+                            "type": .string("number"),
+                            "description": .string("Total batch deadline in seconds (default and max: 60)"),
+                            "minimum": .double(0.1),
+                            "maximum": .double(RunStepsPlan.maxTimeout),
+                        ]),
+                        "trace": Self.trace,
+                        "traceDuration": Self.traceDuration,
+                        "eventTypes": Self.eventTypes,
+                        "includeSnapshot": Self.snap,
+                    ]),
+                    "required": .array([.string("steps")]),
+                ]),
+                annotations: .init(readOnlyHint: false)
+            ),
+            Tool(
                 name: "wait",
                 description: "Wait for duration, selector, or text to appear.",
                 inputSchema: .object([
@@ -487,6 +608,7 @@ actor SafariMCPServer {
             case "read_console":    return try await handleReadConsole(args)
             case "read_network":    return try await handleReadNetwork(args)
             case "resize_window":   return try await handleResizeWindow(args)
+            case "run_steps":       return try await handleRunSteps(args)
             case "wait":            return try await handleWait(args)
             default:
                 return Self.failureResult(
@@ -580,7 +702,11 @@ actor SafariMCPServer {
             }
             params["action"] = AnyCodable(action)
         }
-        let response = try await bridge.send(action: "navigate", params: params)
+        let response = try await bridge.send(
+            action: "navigate",
+            params: params,
+            timeout: Self.bridgeTimeout(args)
+        )
         return try await resultAfterAction(response, args)
     }
 
@@ -677,7 +803,11 @@ actor SafariMCPServer {
 
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let response = try await bridge.send(action: action, params: params)
+            let response = try await bridge.send(
+                action: action,
+                params: params,
+                timeout: Self.bridgeTimeout(args)
+            )
             return try await resultAfterAction(response, args, wantSnapshot: wantSnapshot, traceSession: traceSession)
         } catch {
             if let traceSession {
@@ -715,12 +845,19 @@ actor SafariMCPServer {
         let input = try Self.nativeInputPlan(args)
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let preparation = try await bridge.send(action: "native_type_text", params: interactionParams(args))
+            let preparation = try await bridge.send(
+                action: "native_type_text",
+                params: interactionParams(args),
+                timeout: Self.bridgeTimeout(args)
+            )
             guard preparation.success else {
                 return try await resultAfterAction(preparation, args, traceSession: traceSession)
             }
 
-            let message = try Self.typeNativeText(input)
+            let message = try Self.typeNativeText(
+                input,
+                deadline: Self.numberValue(args["_batchDeadline"])
+            )
             let response = BridgeResponse(
                 id: preparation.id,
                 success: true,
@@ -780,21 +917,39 @@ actor SafariMCPServer {
         )
     }
 
-    private nonisolated static func typeNativeText(_ input: NativeInputPlan) throws -> String {
+    private nonisolated static func typeNativeText(
+        _ input: NativeInputPlan,
+        deadline: Double? = nil
+    ) throws -> String {
+        func checkDeadline() throws {
+            guard let deadline, ProcessInfo.processInfo.systemUptime >= deadline else { return }
+            throw NativeInputError(failure: ToolFailure(
+                code: "batch_timeout",
+                message: "run_steps reached its deadline during native typing. Input may be partial.",
+                retryable: false,
+                recoveryAction: "inspect_batch_result"
+            ))
+        }
+
+        try checkDeadline()
         try ensureSafariIsFrontmost()
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw nativeInputUnavailable("macOS could not create a native keyboard event.")
         }
 
         if input.clearFirst {
+            try checkDeadline()
             try postKey(code: 0, flags: .maskCommand, source: source)
+            try checkDeadline()
             try postKey(code: 51, source: source)
         }
         for character in input.text {
+            try checkDeadline()
             try ensureSafariIsFrontmost()
             try postText(String(character), source: source)
         }
         if let submitKeyCode = input.submitKeyCode {
+            try checkDeadline()
             try postKey(code: submitKeyCode, source: source)
         }
 
@@ -902,7 +1057,11 @@ actor SafariMCPServer {
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let response = try await bridge.send(action: "form_input", params: params)
+            let response = try await bridge.send(
+                action: "form_input",
+                params: params,
+                timeout: Self.bridgeTimeout(args)
+            )
             return try await resultAfterAction(response, args, traceSession: traceSession)
         } catch {
             if let traceSession {
@@ -994,21 +1153,153 @@ actor SafariMCPServer {
     private static let maxWaitSeconds: Double = 300 // 5-minute cap
     private static let maxTraceSeconds: Double = 30
 
+    private func handleRunSteps(_ args: [String: Value]) async throws -> CallTool.Result {
+        let plan: RunStepsPlan
+        do {
+            plan = try RunStepsPlan(arguments: args)
+        } catch let error as RunStepsInputError {
+            throw ToolInputError(error.description)
+        }
+        if let includeSnapshot = args["includeSnapshot"], includeSnapshot.boolValue == nil {
+            throw ToolInputError("includeSnapshot must be a boolean")
+        }
+
+        var batchArgs = args
+        batchArgs["_batchDeadline"] = .double(ProcessInfo.processInfo.systemUptime + plan.timeout)
+        let traceSession = try await startTraceIfNeeded(batchArgs)
+        var results: [Value] = []
+        var content: [Tool.Content] = []
+
+        for (index, step) in plan.steps.enumerated() {
+            guard Self.batchRemaining(batchArgs) > 0 else {
+                return await runStepsFailure(
+                    ToolFailure(
+                        code: "batch_timeout",
+                        message: "run_steps reached its \(plan.timeout)-second deadline before step \(index)",
+                        retryable: false,
+                        recoveryAction: "inspect_batch_result"
+                    ),
+                    failedStep: index,
+                    completedSteps: index,
+                    results: results,
+                    content: content,
+                    traceSession: traceSession,
+                    args: batchArgs
+                )
+            }
+
+            var stepArguments = step.arguments
+            stepArguments["_batchDeadline"] = batchArgs["_batchDeadline"]
+            let result = await handleToolCall(.init(name: step.tool, arguments: stepArguments))
+            content.append(Self.textContent("--- Step \(index): \(step.tool) ---"))
+            content.append(contentsOf: result.content)
+            results.append(try .object([
+                "index": .int(index),
+                "tool": .string(step.tool),
+                "result": Value(result),
+            ]))
+
+            if result.isError == true {
+                return await runStepsFailure(
+                    Self.toolFailure(from: result, step: index, tool: step.tool),
+                    failedStep: index,
+                    completedSteps: index,
+                    results: results,
+                    content: content,
+                    traceSession: traceSession,
+                    args: batchArgs
+                )
+            }
+        }
+
+        var details = Self.runStepsDetails(results: results, completedSteps: plan.steps.count)
+        if let traceSession {
+            do {
+                let traceResponse = try await stopTraceResponse(traceSession, batchArgs)
+                let traceText = responseText(traceResponse)
+                content.append(Self.textContent("--- Page Trace ---\n\(traceText)"))
+                details["trace"] = .string(traceText)
+                guard traceResponse.success else {
+                    return Self.failureResult(traceResponse.toolFailure, content: content, details: details)
+                }
+            } catch {
+                return Self.failureResult(toolFailure(for: error), content: content, details: details)
+            }
+        }
+
+        if args["includeSnapshot"]?.boolValue == true {
+            do {
+                let snapshot = try await snapshotResponse(batchArgs)
+                let snapshotText = responseText(snapshot)
+                content.append(Self.textContent("--- Page Snapshot ---\n\(snapshotText)"))
+                details["snapshot"] = .string(snapshotText)
+                guard snapshot.success else {
+                    return Self.failureResult(snapshot.toolFailure, content: content, details: details)
+                }
+            } catch {
+                return Self.failureResult(toolFailure(for: error), content: content, details: details)
+            }
+        }
+
+        return CallTool.Result(content: content, structuredContent: .object(details), isError: false)
+    }
+
+    private func runStepsFailure(
+        _ failure: ToolFailure,
+        failedStep: Int?,
+        completedSteps: Int,
+        results: [Value],
+        content: [Tool.Content],
+        traceSession: TraceSession?,
+        args: [String: Value]
+    ) async -> CallTool.Result {
+        var content = content
+        var details = Self.runStepsDetails(
+            results: results,
+            completedSteps: completedSteps,
+            failedStep: failedStep
+        )
+        if let traceSession {
+            do {
+                let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
+                let traceText = responseText(traceResponse)
+                content.append(Self.textContent("--- Page Trace ---\n\(traceText)"))
+                details["trace"] = .string(traceText)
+            } catch {
+                content.append(Self.textContent("--- Page Trace ---\nFailed to stop trace: \(error)"))
+            }
+        }
+        return Self.failureResult(failure, content: content, details: details)
+    }
+
     private func handleWait(_ args: [String: Value]) async throws -> CallTool.Result {
         if let seconds = Self.numberValue(args["seconds"]), args["selector"] == nil, args["text"] == nil {
-            let capped = max(0, min(seconds, Self.maxWaitSeconds))
-            try await Task.sleep(for: .seconds(capped))
-            return CallTool.Result(content: [Self.textContent("Waited \(capped) seconds")])
+            let requested = max(0, min(seconds, Self.maxWaitSeconds))
+            let duration = min(requested, Self.batchRemaining(args))
+            try await Task.sleep(for: .seconds(duration))
+            guard duration == requested else {
+                return Self.failureResult(ToolFailure(
+                    code: "batch_timeout",
+                    message: "run_steps reached its deadline while waiting",
+                    retryable: false,
+                    recoveryAction: "inspect_batch_result"
+                ))
+            }
+            return CallTool.Result(content: [Self.textContent("Waited \(duration) seconds")])
         }
 
         var params: [String: AnyCodable] = [:]
         if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
         if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
-        let userTimeout = Self.cappedWaitTimeout(args["timeout"])
+        let userTimeout = min(Self.cappedWaitTimeout(args["timeout"]), Self.batchRemaining(args))
         params["timeout"] = AnyCodable(userTimeout)
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         // Extend bridge timeout to exceed the wait timeout so it doesn't race
-        let response = try await bridge.send(action: "wait", params: params, timeout: userTimeout + 5)
+        let response = try await bridge.send(
+            action: "wait",
+            params: params,
+            timeout: Self.bridgeTimeout(args, default: userTimeout + 5)
+        )
         return textResult(response)
     }
 
@@ -1081,7 +1372,11 @@ actor SafariMCPServer {
             params["eventTypes"] = AnyCodable(values.compactMap(\.stringValue))
         }
 
-        let response = try await bridge.send(action: "start_trace", params: params)
+        let response = try await bridge.send(
+            action: "start_trace",
+            params: params,
+            timeout: Self.bridgeTimeout(args)
+        )
         guard response.success else { throw ToolInputError(responseText(response)) }
         guard let traceID = response.data?.stringValue, !traceID.isEmpty else {
             throw ToolInputError("Trace did not return an id")
@@ -1099,12 +1394,16 @@ actor SafariMCPServer {
         waitForDuration: Bool = true
     ) async throws -> BridgeResponse {
         if waitForDuration, traceSession.duration > 0 {
-            try await Task.sleep(for: .seconds(traceSession.duration))
+            try await Task.sleep(for: .seconds(min(traceSession.duration, Self.batchRemaining(args))))
         }
 
         var params: [String: AnyCodable] = ["id": AnyCodable(traceSession.id)]
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        return try await bridge.send(action: "stop_trace", params: params)
+        return try await bridge.send(
+            action: "stop_trace",
+            params: params,
+            timeout: Self.bridgeTimeout(args)
+        )
     }
 
     private func waitAfterAction(_ args: [String: Value]) async throws -> BridgeResponse? {
@@ -1120,16 +1419,24 @@ actor SafariMCPServer {
             guard !text.isEmpty else { throw ToolInputError("waitForText must not be empty") }
             params["text"] = AnyCodable(text)
         }
-        let timeout = Self.cappedWaitTimeout(args["waitTimeout"])
+        let timeout = min(Self.cappedWaitTimeout(args["waitTimeout"]), Self.batchRemaining(args))
         params["timeout"] = AnyCodable(timeout)
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        return try await bridge.send(action: "wait", params: params, timeout: timeout + 5)
+        return try await bridge.send(
+            action: "wait",
+            params: params,
+            timeout: Self.bridgeTimeout(args, default: timeout + 5)
+        )
     }
 
     private func snapshotResponse(_ args: [String: Value]) async throws -> BridgeResponse {
         var snapParams: [String: AnyCodable] = [:]
         if let tabId = args["tabId"]?.intValue { snapParams["tabId"] = AnyCodable(tabId) }
-        return try await bridge.send(action: "snapshot", params: snapParams)
+        return try await bridge.send(
+            action: "snapshot",
+            params: snapParams,
+            timeout: Self.bridgeTimeout(args)
+        )
     }
 
     private static func cappedWaitTimeout(_ value: Value?) -> Double {
@@ -1143,7 +1450,16 @@ actor SafariMCPServer {
         return max(0, min(Self.numberValue(value) ?? 2, Self.maxTraceSeconds))
     }
 
-    private static func numberValue(_ value: Value?) -> Double? {
+    private static func batchRemaining(_ args: [String: Value]) -> Double {
+        guard let deadline = numberValue(args["_batchDeadline"]) else { return .infinity }
+        return max(0, deadline - ProcessInfo.processInfo.systemUptime)
+    }
+
+    private static func bridgeTimeout(_ args: [String: Value], default defaultTimeout: Double = 30) -> Double {
+        max(0.1, min(defaultTimeout, batchRemaining(args)))
+    }
+
+    static func numberValue(_ value: Value?) -> Double? {
         if let double = value?.doubleValue { return double }
         if let int = value?.intValue { return Double(int) }
         return nil
@@ -1192,17 +1508,40 @@ actor SafariMCPServer {
 
     private static func failureResult(
         _ failure: ToolFailure,
-        content: [Tool.Content]? = nil
+        content: [Tool.Content]? = nil,
+        details: [String: Value] = [:]
     ) -> CallTool.Result {
-        CallTool.Result(
+        var structuredContent = details
+        structuredContent["code"] = .string(failure.code)
+        structuredContent["message"] = .string(failure.message)
+        structuredContent["retryable"] = .bool(failure.retryable)
+        structuredContent["recoveryAction"] = .string(failure.recoveryAction)
+        return CallTool.Result(
             content: content ?? [Self.textContent(failure.message)],
-            structuredContent: .object([
-                "code": .string(failure.code),
-                "message": .string(failure.message),
-                "retryable": .bool(failure.retryable),
-                "recoveryAction": .string(failure.recoveryAction),
-            ]),
+            structuredContent: .object(structuredContent),
             isError: true
+        )
+    }
+
+    private static func runStepsDetails(
+        results: [Value],
+        completedSteps: Int,
+        failedStep: Int? = nil
+    ) -> [String: Value] {
+        [
+            "results": .array(results),
+            "completedSteps": .int(completedSteps),
+            "failedStep": failedStep.map(Value.int) ?? .null,
+        ]
+    }
+
+    private static func toolFailure(from result: CallTool.Result, step: Int, tool: String) -> ToolFailure {
+        let details = result.structuredContent?.objectValue
+        return ToolFailure(
+            code: details?["code"]?.stringValue ?? "step_failed",
+            message: details?["message"]?.stringValue ?? "Step \(step) (\(tool)) failed",
+            retryable: details?["retryable"]?.boolValue ?? false,
+            recoveryAction: details?["recoveryAction"]?.stringValue ?? "inspect_batch_result"
         )
     }
 
