@@ -201,9 +201,14 @@
             if (childNode) children.push(childNode);
         }
 
-        // For text-only leaf nodes, include text content
-        if (children.length === 0 && element.textContent) {
-            const text = element.textContent.trim();
+        // Leaf nodes report their whole text content. Nodes that also have
+        // element children report their own direct text nodes, so mixed
+        // content such as <button><span>9</span>All</button> keeps "All".
+        const rawText = children.length === 0
+            ? element.textContent
+            : ownTextContent(element);
+        if (rawText) {
+            const text = rawText.trim();
             if (text && text.length <= 500) {
                 node.text = text;
             } else if (text) {
@@ -214,6 +219,15 @@
         if (children.length > 0) node.children = children;
 
         return node;
+    }
+
+    // Text of an element's direct text-node children only, in document order.
+    function ownTextContent(element) {
+        let text = "";
+        for (const child of element.childNodes) {
+            if (child.nodeType === Node.TEXT_NODE) text += child.textContent;
+        }
+        return text;
     }
 
     function isVisible(element) {
@@ -321,6 +335,15 @@
     // ─── Element Finding ─────────────────────────────────────────────
 
     function findElements(params) {
+        if (!params.selector && !params.text && !params.role) {
+            throw toolError(
+                "invalid_input",
+                "find requires selector, text, or role",
+                false,
+                "fix_input"
+            );
+        }
+
         const results = [];
 
         if (params.selector) {
@@ -331,16 +354,18 @@
         }
 
         if (params.text) {
+            const needle = params.text.toLowerCase();
+            // Also match the accessible name, so an icon button labelled only
+            // by aria-label is reachable by the name snapshots report for it.
+            const matches = (node) =>
+                node.textContent?.toLowerCase().includes(needle) ||
+                getAccessibleName(node)?.toLowerCase().includes(needle);
             const walker = document.createTreeWalker(
                 document.body,
                 NodeFilter.SHOW_ELEMENT,
                 {
                     acceptNode: (node) =>
-                        node.textContent &&
-                        node.textContent
-                            .toLowerCase()
-                            .includes(params.text.toLowerCase()) &&
-                        isVisible(node)
+                        matches(node) && isVisible(node)
                             ? NodeFilter.FILTER_ACCEPT
                             : NodeFilter.FILTER_SKIP,
                 }

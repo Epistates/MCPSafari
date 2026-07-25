@@ -248,7 +248,7 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 |------|-------------|
 | `read_page` | Get page content as `text`, `html`, or `snapshot` |
 | `snapshot` | Accessibility tree with element UIDs for interaction |
-| `find` | Find elements by CSS selector, text, or ARIA role |
+| `find` | Find elements by CSS selector, visible text or accessible name, or ARIA role |
 
 ### Interaction
 

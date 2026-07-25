@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 ### Bug Fixes
+- Fixed `snapshot` dropping an element's own text when that element also has element children, so mixed content such as `<button><span>9</span>All</button>` no longer loses `All`.
+- Fixed `find` missing elements named only by `aria-label` or another accessible-name source; `text` now matches the accessible name as well as visible text.
+- `find` without `selector`, `text`, or `role` now returns `invalid_input` instead of an empty result that looks like a failed match.
 - Fixed `snapshot` crashing on SVG elements with non-string `type` properties.
 - Retried trace startup once after an interceptor timeout so a transient `start_trace interceptor did not respond` failure no longer aborts the traced action.
 
