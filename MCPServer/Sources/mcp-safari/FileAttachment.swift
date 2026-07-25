@@ -36,7 +36,15 @@ enum FileAttachmentLoader {
         var totalBytes = 0
 
         for path in paths {
-            let url = try resolve(path)
+            let (url, name, reportedSize) = try resolve(path)
+            // Reject on the reported size before reading so an oversized path cannot be
+            // loaded into memory first.
+            guard reportedSize <= maxTotalBytes - totalBytes else {
+                throw FileAttachmentError(
+                    "Files exceed the \(maxTotalBytes / (1024 * 1024)) MB total limit for one call"
+                )
+            }
+
             let data: Data
             do {
                 data = try Data(contentsOf: url)
@@ -44,6 +52,7 @@ enum FileAttachmentLoader {
                 throw FileAttachmentError("Cannot read file: \(url.path) (\(error.localizedDescription))")
             }
 
+            // Re-check after reading in case the file grew between the two checks.
             totalBytes += data.count
             guard totalBytes <= maxTotalBytes else {
                 throw FileAttachmentError(
@@ -53,8 +62,8 @@ enum FileAttachmentLoader {
 
             attachments.append(
                 FileAttachment(
-                    name: url.lastPathComponent,
-                    mimeType: mimeTypeOverride ?? mimeType(for: url),
+                    name: name,
+                    mimeType: mimeTypeOverride ?? mimeType(forName: name),
                     base64: data.base64EncodedString()
                 )
             )
@@ -63,26 +72,42 @@ enum FileAttachmentLoader {
         return attachments
     }
 
-    private static func resolve(_ path: String) throws -> URL {
+    /// Resolves a caller path to a regular file, its attachment name, and its reported size.
+    ///
+    /// Checks and reads follow symlinks so they describe the file that is actually read,
+    /// while the attachment keeps the name the caller asked for. Only regular files are
+    /// accepted: a FIFO, socket, or device path would otherwise block or stream without
+    /// end once `Data(contentsOf:)` opened it.
+    private static func resolve(_ path: String) throws -> (url: URL, name: String, size: Int) {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FileAttachmentError("File path must not be empty")
         }
 
         let expanded = (trimmed as NSString).expandingTildeInPath
-        let url = URL(fileURLWithPath: expanded).standardizedFileURL
+        let requested = URL(fileURLWithPath: expanded).standardizedFileURL
+        let url = requested.resolvingSymlinksInPath()
 
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            throw FileAttachmentError("File not found: \(url.path)")
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey])
+        } catch {
+            throw FileAttachmentError("Cannot access file: \(url.path) (\(error.localizedDescription))")
         }
-        guard !isDirectory.boolValue else {
+
+        if values.isDirectory == true {
             throw FileAttachmentError("Path is a directory, not a file: \(url.path)")
         }
-        return url
+        guard values.isRegularFile == true else {
+            throw FileAttachmentError("Path is not a regular file: \(url.path)")
+        }
+        guard let size = values.fileSize else {
+            throw FileAttachmentError("Cannot determine file size: \(url.path)")
+        }
+        return (url, requested.lastPathComponent, size)
     }
 
-    private static func mimeType(for url: URL) -> String {
-        UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+    private static func mimeType(forName name: String) -> String {
+        UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }
 }

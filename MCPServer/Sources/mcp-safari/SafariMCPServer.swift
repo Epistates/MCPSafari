@@ -620,17 +620,27 @@ actor SafariMCPServer {
     /// Reads the caller's local files, then runs the interaction with them attached.
     private func handleFileAction(_ action: String, _ args: [String: Value]) async throws -> CallTool.Result {
         var paths: [String] = []
-        if let path = args["filePath"]?.stringValue { paths.append(path) }
-        if let values = args["filePaths"]?.arrayValue {
+        if let filePath = args["filePath"] {
+            guard let path = filePath.stringValue else { throw ToolInputError("filePath must be a string") }
+            paths.append(path)
+        }
+        if let filePaths = args["filePaths"] {
+            guard let values = filePaths.arrayValue else { throw ToolInputError("filePaths must be an array of strings") }
             for value in values {
                 guard let path = value.stringValue else { throw ToolInputError("filePaths must be an array of strings") }
                 paths.append(path)
             }
         }
 
+        var mimeTypeOverride: String?
+        if let mimeType = args["mimeType"] {
+            guard let value = mimeType.stringValue else { throw ToolInputError("mimeType must be a string") }
+            mimeTypeOverride = value
+        }
+
         let attachments: [FileAttachment]
         do {
-            attachments = try FileAttachmentLoader.load(paths: paths, mimeTypeOverride: args["mimeType"]?.stringValue)
+            attachments = try FileAttachmentLoader.load(paths: paths, mimeTypeOverride: mimeTypeOverride)
         } catch let error as FileAttachmentError {
             throw ToolInputError(error.description)
         }
