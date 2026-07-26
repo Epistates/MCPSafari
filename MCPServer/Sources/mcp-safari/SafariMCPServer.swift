@@ -288,7 +288,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "find",
-                description: "Find elements by selector, visible text or accessible name, or ARIA role. Returns UIDs.",
+                description: "Find elements by selector, visible text or accessible name, or ARIA role. Returns up to 50 UIDs.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([

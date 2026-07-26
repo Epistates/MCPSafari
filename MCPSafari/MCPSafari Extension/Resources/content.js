@@ -24,6 +24,14 @@
         return error;
     }
 
+    // Escapes a value for use inside a quoted CSS attribute selector.
+    function escapeCssString(value) {
+        if (window.CSS && typeof window.CSS.escape === "function") {
+            return window.CSS.escape(value);
+        }
+        return String(value).replace(/["\\]/g, "\\$&");
+    }
+
     function getUid(element) {
         if (uidMap.has(element)) return uidMap.get(element);
         const uid = `e${++uidCounter}`;
@@ -180,9 +188,10 @@
 
         if (name) node.name = name;
 
-        // Value for inputs
+        // Value for inputs. Secrets report their presence, not their contents,
+        // so a snapshot of a filled login or payment form is safe to hand to a model.
         if (element.value !== undefined && element.value !== "") {
-            node.value = String(element.value);
+            node.value = isSensitiveInput(element) ? REDACTED : String(element.value);
         }
 
         // States
@@ -286,6 +295,33 @@
         return implicitRoles[tag] || null;
     }
 
+    // Inputs whose contents must never reach a snapshot. Covers the explicit
+    // password type plus the autocomplete tokens browsers use for secrets.
+    const REDACTED = "[redacted]";
+    const SENSITIVE_AUTOCOMPLETE = new Set([
+        "current-password",
+        "new-password",
+        "one-time-code",
+        "cc-number",
+        "cc-csc",
+        "cc-exp",
+        "cc-exp-month",
+        "cc-exp-year",
+    ]);
+
+    function isSensitiveInput(element) {
+        const tag = element.tagName ? element.tagName.toLowerCase() : "";
+        if (tag !== "input") return false;
+        if ((element.type || "").toLowerCase() === "password") return true;
+
+        const autocomplete = element.getAttribute("autocomplete");
+        if (!autocomplete) return false;
+        return autocomplete
+            .toLowerCase()
+            .split(/\s+/)
+            .some((token) => SENSITIVE_AUTOCOMPLETE.has(token));
+    }
+
     function getInputRole(element) {
         const type = (element.type || "text").toLowerCase();
         const inputRoles = {
@@ -311,16 +347,29 @@
         const ariaLabel = element.getAttribute("aria-label");
         if (ariaLabel) return ariaLabel;
 
-        // aria-labelledby
+        // aria-labelledby takes a space-separated list of ids, joined in order.
         const labelledBy = element.getAttribute("aria-labelledby");
         if (labelledBy) {
-            const labelEl = document.getElementById(labelledBy);
-            if (labelEl) return labelEl.textContent.trim();
+            const labelText = labelledBy
+                .split(/\s+/)
+                .filter(Boolean)
+                .map((id) => document.getElementById(id))
+                .filter(Boolean)
+                .map((labelEl) => labelEl.textContent.trim())
+                .filter(Boolean)
+                .join(" ");
+            if (labelText) return labelText;
         }
 
-        // Label element for inputs
+        // Label element for inputs. `labels` covers labelable controls directly;
+        // the selector fallback must escape the id, because a raw id containing
+        // a quote builds a malformed selector that throws and fails the snapshot.
+        if (element.labels && element.labels.length > 0) {
+            const labelText = element.labels[0].textContent.trim();
+            if (labelText) return labelText;
+        }
         if (element.id) {
-            const label = document.querySelector(`label[for="${element.id}"]`);
+            const label = document.querySelector(`label[for="${escapeCssString(element.id)}"]`);
             if (label) return label.textContent.trim();
         }
 
@@ -338,6 +387,10 @@
 
     // ─── Element Finding ─────────────────────────────────────────────
 
+    // One cap for every match strategy, so a broad selector cannot return an
+    // unbounded result set and swamp the caller's context.
+    const MAX_FIND_RESULTS = 50;
+
     function findElements(params) {
         if (!params.selector && !params.text && !params.role) {
             throw toolError(
@@ -353,6 +406,7 @@
         if (params.selector) {
             const elements = document.querySelectorAll(params.selector);
             for (const el of elements) {
+                if (results.length >= MAX_FIND_RESULTS) break;
                 results.push(describeElement(el));
             }
         }
@@ -375,7 +429,7 @@
                 }
             );
             let node;
-            while ((node = walker.nextNode()) && results.length < 20) {
+            while ((node = walker.nextNode()) && results.length < MAX_FIND_RESULTS) {
                 // Only include leaf-ish elements (avoid returning <body> etc.)
                 if (
                     node.children.length === 0 ||
@@ -389,7 +443,7 @@
         if (params.role) {
             const allElements = document.querySelectorAll("*");
             for (const el of allElements) {
-                if (results.length >= 50) break;
+                if (results.length >= MAX_FIND_RESULTS) break;
                 if (getRole(el) === params.role && isVisible(el)) {
                     results.push(describeElement(el));
                 }
@@ -524,7 +578,14 @@
 
         // Click by selector or text
         const el = resolveElement(params);
-        if (!el) throw new Error("No element specified to click");
+        if (!el) {
+            throw toolError(
+                "invalid_input",
+                "click requires uid, selector, text, or x and y",
+                false,
+                "fix_input"
+            );
+        }
 
         simulateClick(el, params.doubleClick);
         const desc = el.tagName.toLowerCase();
@@ -679,18 +740,40 @@
     // ─── Form Input ──────────────────────────────────────────────────
 
     function formInput(params) {
-        const fields = params.fields || {};
-        const results = [];
+        const entries = Object.entries(params.fields || {});
+        if (entries.length === 0) {
+            throw toolError(
+                "invalid_input",
+                "form_input requires at least one CSS selector and value",
+                false,
+                "fix_input"
+            );
+        }
 
-        for (const [selector, value] of Object.entries(fields)) {
+        const results = [];
+        const missing = [];
+
+        for (const [selector, value] of entries) {
             const el = document.querySelector(selector);
             if (!el) {
+                missing.push(selector);
                 results.push(`${selector}: not found`);
                 continue;
             }
             el.focus();
             setInputValue(el, value, false);
             results.push(`${selector}: filled`);
+        }
+
+        // A partial fill still reports per-field results, but filling nothing is a
+        // failure rather than a success whose body happens to say "not found".
+        if (missing.length === entries.length) {
+            throw toolError(
+                "target_not_found",
+                `No form fields matched: ${missing.join(", ")}`,
+                false,
+                "take_snapshot"
+            );
         }
 
         return results.join("\n");
@@ -700,19 +783,57 @@
 
     function selectOption(params) {
         const el = resolveElement(params);
-        if (!el) throw new Error(`Select element not found`);
+        if (!el) {
+            throw toolError(
+                "invalid_input",
+                "select_option requires uid or selector",
+                false,
+                "fix_input"
+            );
+        }
         if (el.tagName.toLowerCase() !== "select") {
-            throw new Error(`Element is not a <select>: ${el.tagName}`);
+            throw toolError(
+                "target_not_found",
+                `Element is not a <select>: <${el.tagName.toLowerCase()}>`,
+                false,
+                "take_snapshot"
+            );
+        }
+        if (params.value === undefined && !params.label) {
+            throw toolError(
+                "invalid_input",
+                "select_option requires value or label",
+                false,
+                "fix_input"
+            );
         }
 
         if (params.value !== undefined) {
+            // Assigning an unmatched value clears the selection instead of
+            // throwing, so verify it took rather than reporting a silent no-op.
+            const previous = el.value;
             el.value = params.value;
-        } else if (params.label) {
+            if (el.value !== String(params.value)) {
+                el.value = previous;
+                throw toolError(
+                    "target_not_found",
+                    `No option with value "${params.value}" in <select>`,
+                    false,
+                    "take_snapshot"
+                );
+            }
+        } else {
             const option = Array.from(el.options).find(
                 (o) => o.textContent.trim() === params.label
             );
-            if (!option)
-                throw new Error(`Option with label "${params.label}" not found`);
+            if (!option) {
+                throw toolError(
+                    "target_not_found",
+                    `Option with label "${params.label}" not found`,
+                    false,
+                    "take_snapshot"
+                );
+            }
             el.value = option.value;
         }
 
@@ -730,7 +851,8 @@
             if (!target) throw new Error("Scroll target not found");
         }
 
-        const amount = params.amount || window.innerHeight * 0.8;
+        // Explicit null check: `amount: 0` is a caller-meant no-op, not "unset".
+        const amount = params.amount == null ? window.innerHeight * 0.8 : params.amount;
         const directionMap = {
             up: { top: -amount, left: 0 },
             down: { top: amount, left: 0 },
@@ -739,7 +861,14 @@
         };
 
         const scroll = directionMap[params.direction];
-        if (!scroll) throw new Error(`Invalid direction: ${params.direction}`);
+        if (!scroll) {
+            throw toolError(
+                "invalid_input",
+                `scroll requires direction up, down, left, or right; received ${params.direction}`,
+                false,
+                "fix_input"
+            );
+        }
 
         if (target === window) {
             window.scrollBy({ ...scroll, behavior: "smooth" });
@@ -752,15 +881,31 @@
 
     // ─── Press Key ───────────────────────────────────────────────────
 
+    // KeyboardEvent.code is physical-key based: letters are KeyX, digits Digit0-9.
+    function keyCode(key) {
+        if (key.length !== 1) return key;
+        if (key >= "0" && key <= "9") return `Digit${key}`;
+        if (/[a-z]/i.test(key)) return `Key${key.toUpperCase()}`;
+        return key;
+    }
+
     function pressKey(params) {
         const keyString = params.key;
+        if (typeof keyString !== "string" || keyString === "") {
+            throw toolError(
+                "invalid_input",
+                "press_key requires a non-empty key such as Enter, Tab, or Meta+a",
+                false,
+                "fix_input"
+            );
+        }
         const parts = keyString.split("+");
         const key = parts.pop();
         const modifiers = parts.map((m) => m.toLowerCase());
 
         const eventOpts = {
             key,
-            code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
+            code: keyCode(key),
             bubbles: true,
             cancelable: true,
             ctrlKey: modifiers.includes("control") || modifiers.includes("ctrl"),
@@ -781,7 +926,14 @@
 
     function hoverElement(params) {
         const el = resolveElement(params);
-        if (!el) throw new Error("No element specified to hover");
+        if (!el) {
+            throw toolError(
+                "invalid_input",
+                "hover requires uid, selector, or text",
+                false,
+                "fix_input"
+            );
+        }
 
         el.scrollIntoView({ behavior: "instant", block: "center" });
 
@@ -813,8 +965,14 @@
             selector: params.toSelector,
         });
 
-        if (!fromEl) throw new Error("No source element specified for drag");
-        if (!toEl) throw new Error("No target element specified for drag");
+        if (!fromEl || !toEl) {
+            throw toolError(
+                "invalid_input",
+                "drag requires fromUid or fromSelector, and toUid or toSelector",
+                false,
+                "fix_input"
+            );
+        }
 
         fromEl.scrollIntoView({ behavior: "instant", block: "center" });
         const fromRect = fromEl.getBoundingClientRect();
