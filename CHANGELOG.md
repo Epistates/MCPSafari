@@ -12,6 +12,7 @@
 - `press_key`, `click`, `hover`, `scroll`, `drag`, `select_option`, and `form_input` now return `invalid_input` for missing or empty required arguments instead of a raw JavaScript error.
 - `getAccessibleName` now escapes element ids before building a `label[for=...]` selector, so an id containing a quote no longer fails the whole page's snapshot, and resolves every id in an `aria-labelledby` list rather than only the first.
 - `press_key` now reports `Digit1`-style codes for digits instead of `Key1`, and `scroll` treats `amount: 0` as an explicit distance rather than falling back to the viewport height.
+- `screenshot` now returns `internal_error` when Safari hands back an empty or non-PNG payload, instead of emitting it as base64 image content and leaving the client to reject the whole result as malformed.
 - Fixed `snapshot` dropping an element's own text when that element also has element children, so mixed content such as `<button><span>9</span>All</button>` no longer loses `All`.
 - Fixed `find` missing elements named only by `aria-label` or another accessible-name source; `text` now matches the accessible name as well as visible text.
 - `find` without `selector`, `text`, or `role` now returns `invalid_input` instead of an empty result that looks like a failed match.
@@ -35,6 +36,7 @@
 - `type_text` now supports opt-in native macOS keyboard events for contenteditable and framework-managed editors.
 - Added `upload_file` and `drop_file` for attaching explicit local files to a file input or dropping them onto an element.
 - Added `run_steps` for bounded sequential interaction and wait batches with ordered results, first-failure stopping, one optional trace, and one optional final snapshot.
+- `screenshot` now reports the viewport size, device pixel ratio, page visibility, and window focus at capture time, so callers can tell device pixels from CSS pixels and can detect a frame captured while Safari was neither repainting the page nor applying `:focus`.
 
 ### Bug Fixes
 - Stop stale per-port token files from causing endless extension reconnect attempts and popup state cycling.

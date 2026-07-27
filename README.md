@@ -277,7 +277,7 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 
 | Tool | Description |
 |------|-------------|
-| `screenshot` | Capture the visible tab area as a PNG image |
+| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus |
 
 ### JavaScript
 

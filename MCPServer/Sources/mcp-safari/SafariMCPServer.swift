@@ -1076,12 +1076,105 @@ actor SafariMCPServer {
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         let response = try await bridge.send(action: "screenshot", params: params)
 
-        if response.success, let imageData = response.data?.stringValue {
-            return CallTool.Result(content: [
-                Self.imageContent(data: imageData, mimeType: "image/png"),
-            ])
+        guard response.success, let raw = response.data?.stringValue else {
+            return textResult(response)
         }
-        return textResult(response)
+
+        // Current extensions send the image plus its capture context; older
+        // ones send the base64 image on its own.
+        let capture = Self.decodeCapture(raw)
+        let imageData = capture?["image"]?.stringValue ?? raw
+
+        if let failure = Self.captureFailure(imageData) {
+            return Self.failureResult(failure)
+        }
+
+        var content: [Tool.Content] = [
+            Self.imageContent(data: imageData, mimeType: "image/png"),
+        ]
+        if let capture, let note = Self.captureNote(capture) {
+            content.append(Self.textContent(note))
+        }
+        return CallTool.Result(content: content)
+    }
+
+    /// Safari resolves a failed capture to an empty or non-image payload, and
+    /// the extension forwards whatever it gets. Emitting that as base64 image
+    /// content makes the whole tool result unparseable for the client, which
+    /// reads as "this tool is broken" rather than as a recoverable failure.
+    static func captureFailure(_ image: String) -> ToolFailure? {
+        // Every extension version asks captureVisibleTab for PNG, so anything
+        // without the signature is a failed capture rather than another format.
+        let bytes = Data(base64Encoded: image)
+        if let bytes, bytes.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return nil
+        }
+
+        // debugDescription quotes and escapes the prefix, so an HTML or data-URL
+        // payload cannot break the error message across lines.
+        let head = String(image.prefix(48)).debugDescription
+        let payload: String
+        if image.isEmpty {
+            payload = "an empty payload"
+        } else if bytes == nil {
+            payload = "\(image.utf8.count) bytes that are not base64: \(head)"
+        } else {
+            payload = "\(image.utf8.count) base64 bytes with no PNG signature: \(head)"
+        }
+        return ToolFailure(
+            code: "internal_error",
+            message: "Safari returned \(payload) instead of PNG image data. "
+                + "Re-enable the MCPSafari extension for this page in Safari Settings > "
+                + "Extensions, or relaunch Safari, then retry.",
+            retryable: false,
+            recoveryAction: "inspect_error"
+        )
+    }
+
+    /// The extension serializes non-string tool data, so a capture arrives as
+    /// JSON text. Base64 image data never parses as JSON.
+    static func decodeCapture(_ raw: String) -> [String: AnyCodable]? {
+        guard raw.hasPrefix("{"), let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([String: AnyCodable].self, from: data)
+    }
+
+    /// Describes the captured frame: pixel space, and what state Safari withheld
+    /// from a page it was not presenting when the capture was taken.
+    static func captureNote(_ capture: [String: AnyCodable]) -> String? {
+        var parts: [String] = []
+        if let viewport = capture["viewport"]?.objectValue,
+           let width = number(viewport["width"]),
+           let height = number(viewport["height"]) {
+            let scale = number(capture["devicePixelRatio"]) ?? 1
+            parts.append(
+                "Viewport \(Int(width))x\(Int(height)) CSS px, devicePixelRatio \(formatScale(scale)). "
+                + "The PNG is in device pixels; click(x, y) takes CSS pixels."
+            )
+        }
+        if capture["visible"]?.boolValue == false {
+            // A hidden page is also unfocused, so the focus note would add noise.
+            parts.append(
+                "Page visibility: hidden. Safari does not repaint an occluded page or run its "
+                + "requestAnimationFrame callbacks, so this frame may predate your last action "
+                + "and any rAF-scheduled work has not run."
+            )
+        } else if capture["hasFocus"]?.boolValue == false {
+            parts.append(
+                "Window not focused. Safari does not match :focus or :focus-within while its "
+                + "window is not key, so focus states are missing from this frame even though "
+                + "document.activeElement is set."
+            )
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// JSON numbers arrive as Int or Double depending on the value.
+    private static func number(_ value: AnyCodable?) -> Double? {
+        value?.doubleValue ?? value?.intValue.map(Double.init)
+    }
+
+    private static func formatScale(_ scale: Double) -> String {
+        scale == scale.rounded() ? String(Int(scale)) : String(scale)
     }
 
     private func handleJavaScript(_ args: [String: Value]) async throws -> CallTool.Result {
