@@ -625,8 +625,7 @@
 
     function setInputValue(el, value, append = false) {
         if (el.isContentEditable) {
-            el.textContent = append ? el.textContent + value : value;
-            el.dispatchEvent(new Event("input", { bubbles: true }));
+            setEditableText(el, value, append);
             return;
         }
 
@@ -649,6 +648,44 @@
         // Dispatch events that React and other frameworks listen for
         el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    // Model-backed editors (ProseMirror, Lexical, Slate) apply edits from the
+    // inputType/data on beforeinput/input and re-render from their own
+    // document, discarding direct DOM mutation. execCommand("insertText")
+    // produces those events, so the edit survives; a bare `input` carrying
+    // neither field does not.
+    function setEditableText(el, value, append) {
+        if (append && value === "") return;
+
+        const selection = window.getSelection();
+        const caretInside = selection.rangeCount > 0
+            && el.contains(selection.getRangeAt(0).startContainer);
+        if (!append || !caretInside) {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            if (append) range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }
+
+        const applied = value === ""
+            ? document.execCommand("delete", false)
+            : document.execCommand("insertText", false, value);
+        if (applied) return;
+
+        // execCommand returns false when the edit is refused (e.g. a canceled
+        // beforeinput); synthesize the same edit shape ourselves.
+        const detail = {
+            bubbles: true,
+            inputType: value === "" ? "deleteContentBackward" : "insertText",
+            data: value || null,
+        };
+        const before = new InputEvent("beforeinput", { ...detail, cancelable: true });
+        if (el.dispatchEvent(before)) {
+            el.textContent = append ? el.textContent + value : value;
+        }
+        el.dispatchEvent(new InputEvent("input", detail));
     }
 
     // ─── Type Text ───────────────────────────────────────────────────
@@ -709,12 +746,32 @@
 
         el.focus();
 
+        const readBack = () => (el.isContentEditable ? el.textContent : el.value);
+        const before = readBack();
+
         if (params.clearFirst) {
             setInputValue(el, "", false);
         }
 
         const text = params.text || "";
         setInputValue(el, text, !params.clearFirst);
+
+        // An editor that re-renders from its own model can discard the edit
+        // after reporting nothing; success must mean the content changed.
+        // A detached element cannot be re-read meaningfully, and clearFirst
+        // with identical text legitimately produces no difference.
+        const unchanged = text !== ""
+            && el.isConnected !== false
+            && readBack() === before
+            && !(params.clearFirst && text === before);
+        if (unchanged) {
+            throw toolError(
+                "input_not_applied",
+                `Typing did not change <${el.tagName.toLowerCase()}>; the page discarded or blocked the input`,
+                false,
+                "use_native_input"
+            );
+        }
 
         // Press a key after typing (e.g., Enter, Tab)
         if (params.submitKey) {

@@ -327,7 +327,7 @@ actor SafariMCPServer {
                         "clearFirst": .object(["type": .string("boolean")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Use real macOS key events; foregrounds Safari and requires Accessibility permission"),
+                            "description": .string("Use real macOS key events; requires Safari to already be the frontmost application and Accessibility permission"),
                         ]),
                         "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
@@ -945,13 +945,16 @@ actor SafariMCPServer {
         }
         for character in input.text {
             try checkDeadline()
-            try ensureSafariIsFrontmost()
             try postText(String(character), source: source)
         }
         if let submitKeyCode = input.submitKeyCode {
             try checkDeadline()
             try postKey(code: submitKeyCode, source: source)
         }
+        // One check before and one after typing: a per-keystroke re-check
+        // would abort mid-word on any transient focus blip without saying
+        // how much was delivered.
+        try ensureSafariIsFrontmost(afterTyping: true)
 
         let suffix = input.submitKey.map { " then pressed \($0)" } ?? ""
         return "Typed \(input.text.count) character(s) with native input\(suffix)"
@@ -966,11 +969,27 @@ actor SafariMCPServer {
         }
     }
 
-    private nonisolated static func ensureSafariIsFrontmost() throws {
+    private nonisolated static func ensureSafariIsFrontmost(afterTyping: Bool = false) throws {
+        // NSWorkspace's frontmost state is notification-backed and never
+        // updates in a process that does not pump the main run loop, so
+        // without this the value stays frozen at whatever was frontmost when
+        // the server first touched NSWorkspace — usually the MCP client's
+        // terminal — and the guard can never pass. Pumping the current
+        // (pool) thread's run loop is not enough; the notifications are
+        // delivered through the main run loop's sources.
+        if Thread.isMainThread {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        } else {
+            DispatchQueue.main.sync {
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+            }
+        }
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Safari" else {
             throw NativeInputError(failure: ToolFailure(
                 code: "native_input_focus_lost",
-                message: "Safari lost focus before native typing completed. Input may be partial; focus the target and retry.",
+                message: afterTyping
+                    ? "Safari lost focus during native typing. Some keystrokes may have gone to another application; verify the target and retry."
+                    : "Safari is not the frontmost application. Native key events go to whichever app has focus; activate Safari and retry. Nothing was typed.",
                 retryable: true,
                 recoveryAction: "retry"
             ))
@@ -1007,7 +1026,6 @@ actor SafariMCPServer {
         flags: CGEventFlags = [],
         source: CGEventSource
     ) throws {
-        try ensureSafariIsFrontmost()
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
         else {
