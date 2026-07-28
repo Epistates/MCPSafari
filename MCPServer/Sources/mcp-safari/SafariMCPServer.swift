@@ -970,21 +970,12 @@ actor SafariMCPServer {
     }
 
     private nonisolated static func ensureSafariIsFrontmost(afterTyping: Bool = false) throws {
-        // NSWorkspace's frontmost state is notification-backed and never
-        // updates in a process that does not pump the main run loop, so
-        // without this the value stays frozen at whatever was frontmost when
-        // the server first touched NSWorkspace — usually the MCP client's
-        // terminal — and the guard can never pass. Pumping the current
-        // (pool) thread's run loop is not enough; the notifications are
-        // delivered through the main run loop's sources.
-        if Thread.isMainThread {
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-        } else {
-            DispatchQueue.main.sync {
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-            }
-        }
-        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Safari" else {
+        // NSWorkspace.frontmostApplication freezes at first touch in this
+        // run-loop-less process; a fresh fetch reads current state.
+        let safariIsActive = NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.apple.Safari")
+            .contains { $0.isActive }
+        guard safariIsActive else {
             throw NativeInputError(failure: ToolFailure(
                 code: "native_input_focus_lost",
                 message: afterTyping
