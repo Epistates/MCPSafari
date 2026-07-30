@@ -465,7 +465,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "javascript_tool",
-                description: "Execute JS in page context. Returns expression results.",
+                description: "Execute JS in page context. A single expression returns its value; a multi-statement body must end in an explicit `return` to produce a value.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([

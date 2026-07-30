@@ -283,7 +283,7 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 
 | Tool | Description |
 |------|-------------|
-| `javascript_tool` | Execute arbitrary JS in the page context and return expression results |
+| `javascript_tool` | Execute arbitrary JS in the page context and return expression results; multi-statement code must end in an explicit `return` to produce a value |
 
 ### Debugging
 
