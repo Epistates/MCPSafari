@@ -5,6 +5,9 @@
 - `snapshot` no longer reports the contents of password inputs, or of inputs whose `autocomplete` marks them as a one-time code or payment card field; those values come back as `[redacted]`.
 
 ### Bug Fixes
+- `type_text` now inserts into model-backed editors (ProseMirror, Lexical, Slate) by driving `document.execCommand("insertText")`, falling back to `beforeinput`/`input` events carrying `inputType` and `data`, instead of a direct DOM mutation with a bare `input` event those editors discard on the next render.
+- `type_text` now fails with `input_not_applied` when non-empty text left the target unchanged, instead of reporting success.
+- Fixed native typing (`native: true`) always failing with `native_input_focus_lost` while Safari was frontmost: the frontmost check now reads activation state fresh on every call instead of an NSWorkspace value cached at first touch, and runs once before and once after typing instead of per keystroke, and the tool description no longer claims native input foregrounds Safari.
 - `select_option` now fails with `target_not_found` instead of reporting success when the requested value matches no option, and restores the previous selection.
 - `form_input` now fails with `target_not_found` when no field matched, instead of returning a successful result whose body reads `not found`.
 - `read_console` with `clear` now removes only the messages the call returned, so a level- or pattern-filtered read no longer discards unread messages.

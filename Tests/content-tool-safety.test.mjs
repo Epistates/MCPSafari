@@ -45,7 +45,7 @@ function el(tag, options = {}, children = []) {
     return node;
 }
 
-function loadContent(body, documentOverrides = {}) {
+function loadContent(body, documentOverrides = {}, windowOverrides = {}) {
     let listener;
     const document = {
         body,
@@ -54,6 +54,8 @@ function loadContent(body, documentOverrides = {}) {
         getElementById: () => null,
         querySelector: () => null,
         querySelectorAll: () => [],
+        execCommand: () => false,
+        createRange: () => ({ selectNodeContents() {}, collapse() {} }),
         createTreeWalker(root, _show, filter) {
             const queue = [];
             const collect = (n) => { for (const c of n.children) { queue.push(c); collect(c); } };
@@ -90,6 +92,7 @@ function loadContent(body, documentOverrides = {}) {
         Event: FakeEvent,
         KeyboardEvent: FakeEvent,
         MouseEvent: FakeEvent,
+        InputEvent: FakeEvent,
         // No native `value` descriptor, so setInputValue takes its direct-assign path.
         HTMLInputElement: class {},
         HTMLTextAreaElement: class {},
@@ -100,6 +103,13 @@ function loadContent(body, documentOverrides = {}) {
             innerHeight: 800,
             scrollBy: (options) => scrolls.push(options),
             getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+            getSelection: () => ({
+                rangeCount: 0,
+                removeAllRanges() {},
+                addRange() {},
+                getRangeAt() { return null; },
+            }),
+            ...windowOverrides,
         },
     });
 
@@ -298,6 +308,86 @@ test("press_key reports physical key codes for digits and letters", async () => 
     assert.equal(events[0].code, "Digit1");
     assert.equal(events[3].code, "KeyA");
     assert.equal(events[6].code, "Enter");
+});
+
+// ─── type_text ───────────────────────────────────────────────────────
+
+function editableHarness({ execCommand } = {}) {
+    const events = [];
+    const target = el("div", {
+        id: "ce",
+        extra: {
+            isContentEditable: true,
+            textContent: "",
+            contains: () => false,
+            dispatchEvent(event) {
+                events.push(event);
+                return true;
+            },
+        },
+    });
+    const commands = [];
+    const call = loadContent(el("body", {}, [target]), {
+        querySelector: () => target,
+        execCommand: (command, _ui, value) => {
+            commands.push({ command, value });
+            return execCommand ? execCommand(target, command, value) : false;
+        },
+    });
+    return { target, events, commands, call };
+}
+
+test("type_text drives contenteditable through execCommand insertText", async () => {
+    const { target, commands, call } = editableHarness({
+        execCommand: (el2, command, value) => {
+            if (command === "insertText") el2.textContent += value;
+            return true;
+        },
+    });
+
+    const response = await call("type_text", { selector: "#ce", text: "hello" });
+
+    assert.equal(response.error, null);
+    assert.deepEqual(commands, [{ command: "insertText", value: "hello" }]);
+    assert.equal(target.textContent, "hello");
+});
+
+test("type_text falls back to beforeinput/input carrying inputType and data", async () => {
+    const { target, events, call } = editableHarness();
+
+    const response = await call("type_text", { selector: "#ce", text: "abc" });
+
+    assert.equal(response.error, null);
+    assert.equal(target.textContent, "abc");
+    const [beforeInput, input] = events;
+    assert.equal(beforeInput.type, "beforeinput");
+    assert.equal(beforeInput.inputType, "insertText");
+    assert.equal(beforeInput.data, "abc");
+    assert.equal(beforeInput.cancelable, true);
+    assert.equal(input.type, "input");
+    assert.equal(input.inputType, "insertText");
+    assert.equal(input.data, "abc");
+});
+
+test("type_text fails when the editor discards the input", async () => {
+    // execCommand claims success but the content never changes — the
+    // model-backed-editor case that used to report a false success.
+    const { call } = editableHarness({ execCommand: () => true });
+
+    const response = await call("type_text", { selector: "#ce", text: "hello" });
+
+    assert.equal(response.errorCode, "input_not_applied");
+    assert.equal(response.recoveryAction, "use_native_input");
+});
+
+test("type_text accepts clearFirst retyping the identical value", async () => {
+    const field = el("input", { id: "a", extra: { type: "text", value: "abc" } });
+    const call = loadContent(el("body", {}, [field]), { querySelector: () => field });
+
+    const response = await call("type_text", { selector: "#a", text: "abc", clearFirst: true });
+
+    assert.equal(response.error, null);
+    assert.equal(field.value, "abc");
 });
 
 test("scroll treats amount 0 as an explicit no-op distance", async () => {
