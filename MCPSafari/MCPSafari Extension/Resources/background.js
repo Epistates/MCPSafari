@@ -645,7 +645,9 @@ async function handleJavaScript(params) {
                 } catch (_) {
                     fn = new Function(`return (async () => { ${code} })()`);
                 }
-                return fn();
+                return fn().catch((e) => ({
+                    __error: e && e.message ? e.message : String(e),
+                }));
             } catch (e) {
                 return { __error: e.message };
             }

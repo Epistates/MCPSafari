@@ -18,6 +18,7 @@
 - `find` without `selector`, `text`, or `role` now returns `invalid_input` instead of an empty result that looks like a failed match.
 - Fixed `snapshot` crashing on SVG elements with non-string `type` properties.
 - Retried trace startup once after an interceptor timeout so a transient `start_trace interceptor did not respond` failure no longer aborts the traced action.
+- `javascript_tool` now surfaces runtime throws and rejected promises as tool errors instead of returning `null`; the tool description documents that multi-statement code needs an explicit `return` to produce a value.
 
 ### Build
 - Updated SwiftPM dependencies, including MCP Swift SDK 0.12.1, SwiftLog 1.14.0, and SwiftNIO 2.101.3.
