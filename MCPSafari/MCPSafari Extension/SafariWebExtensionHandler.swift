@@ -88,20 +88,30 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         return TokenLoadResult(tokens: [:], legacyToken: nil, checkedPaths: checkedPaths)
     }
 
+    /// Token roots to search, most preferred first.
+    ///
+    /// Application Support comes first: this extension is sandboxed, and its
+    /// read exception is evaluated against the *resolved* path, so a `~/.config`
+    /// symlinked into a dotfiles repo puts the token outside the granted path
+    /// and makes it unreadable. `~/.config/mcp-safari` stays in the list so a
+    /// server predating the move still authenticates.
+    private static let tokenRootRelativePaths = [
+        "Library/Application Support/MCPSafari",
+        ".config/mcp-safari",
+    ]
+
     private static func tokenConfigDirectories() -> [URL] {
         var directories: [URL] = []
 
-        if let realHomeDirectory {
+        for relativePath in tokenRootRelativePaths {
+            if let realHomeDirectory {
+                appendUnique(realHomeDirectory.appendingPathComponent(relativePath), to: &directories)
+            }
             appendUnique(
-                realHomeDirectory.appendingPathComponent(".config/mcp-safari"),
+                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(relativePath),
                 to: &directories
             )
         }
-
-        appendUnique(
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/mcp-safari"),
-            to: &directories
-        )
 
         return directories
     }
