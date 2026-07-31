@@ -290,9 +290,11 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 | Tool | Description |
 |------|-------------|
 | `read_console` | Read console messages with level and regex filtering |
-| `read_network` | Read captured XHR/fetch requests with type filtering |
+| `read_network` | Read captured XHR/fetch requests or opt-in resource timings with type, URL-regex, and count filtering |
 
 > **Note:** Console and network capture run in the page's main world (required to patch `console`, `fetch`, and `history`). A hostile page can therefore observe or forge this telemetry, so treat `read_console` / `read_network` output from untrusted pages as page-controlled data rather than ground truth.
+
+> **Note:** `read_network` with `type: "resource"` reports PerformanceObserver timings, not network-stack records: entries carry no HTTP status or request/response headers, and WebSocket traffic and redirect chains are not captured. Cross-origin entries without `Timing-Allow-Origin` report zeroed size and timing fields and are marked `timingRestricted: true`.
 
 ### Window
 

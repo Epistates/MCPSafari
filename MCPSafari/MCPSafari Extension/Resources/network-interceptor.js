@@ -1,8 +1,8 @@
 /**
  * MCPSafari Network Interceptor
  *
- * Patches XMLHttpRequest and fetch to capture network requests
- * for the read_network tool. Injected at document_start.
+ * Captures XMLHttpRequest, fetch, and resource timings for the
+ * read_network tool. Injected at document_start.
  */
 (() => {
     if (window.__mcpNetworkInterceptorLoaded) return;
@@ -10,6 +10,7 @@
 
     const MAX_REQUESTS = 500;
     const requests = [];
+    const resources = [];
 
     function recordTraceEvent(type, request) {
         try {
@@ -26,6 +27,42 @@
             }
         } catch (_) { /* trace capture must not affect network behavior */ }
     }
+
+    // Cross-origin entries without Timing-Allow-Origin report zeroed size and
+    // timing fields; mark them so zeros read as "not permitted", not "cache hit".
+    function isTimingRestricted(entry) {
+        try {
+            if (new URL(entry.name).origin === location.origin) return false;
+        } catch {
+            return false;
+        }
+        return entry.transferSize === 0
+            && entry.encodedBodySize === 0
+            && entry.decodedBodySize === 0
+            && entry.duration === 0;
+    }
+
+    function recordResources(entries) {
+        for (const entry of entries) {
+            if (resources.length >= MAX_REQUESTS) resources.shift();
+            const record = {
+                type: "resource",
+                url: entry.name,
+                initiatorType: entry.initiatorType,
+                transferSize: entry.transferSize,
+                encodedBodySize: entry.encodedBodySize,
+                decodedBodySize: entry.decodedBodySize,
+                startTime: entry.startTime,
+                duration: entry.duration,
+                timestamp: performance.timeOrigin + entry.startTime,
+            };
+            if (isTimingRestricted(entry)) record.timingRestricted = true;
+            resources.push(record);
+        }
+    }
+
+    const resourceObserver = new PerformanceObserver((list) => recordResources(list.getEntries()));
+    resourceObserver.observe({ type: "resource", buffered: true });
 
     // ─── XMLHttpRequest Interception ─────────────────────────────────
 
@@ -119,14 +156,40 @@
     // ─── API for content script ──────────────────────────────────────
 
     window.__mcpGetNetworkRequests = (params = {}) => {
-        let filtered = [...requests];
+        recordResources(resourceObserver.takeRecords());
+        const selected = params.type === "resource" ? resources : requests;
+        let filtered = [...selected];
 
         if (params.type && params.type !== "all") {
             filtered = filtered.filter((r) => r.type === params.type);
         }
 
+        if (params.urlPattern) {
+            try {
+                const regex = new RegExp(params.urlPattern);
+                filtered = filtered.filter((r) => regex.test(r.url));
+            } catch {
+                // Invalid regex, ignore filter
+            }
+        }
+
+        if (params.status != null) {
+            filtered = filtered.filter((r) => r.status === params.status);
+        }
+
+        if (params.maxResults > 0) {
+            filtered = filtered.slice(-params.maxResults);
+        }
+
         if (params.clear) {
-            requests.length = 0;
+            // Clear exactly what this call returned, so a filtered read
+            // never discards entries the caller never saw.
+            const returned = new Set(filtered);
+            for (let i = selected.length - 1; i >= 0; i--) {
+                if (returned.has(selected[i])) {
+                    selected.splice(i, 1);
+                }
+            }
         }
 
         return filtered;

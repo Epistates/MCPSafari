@@ -303,6 +303,9 @@ async function handleRequest(request) {
                     action: "get_network_requests",
                     params: {
                         type: params.type || "all",
+                        urlPattern: params.urlPattern || null,
+                        status: params.status ?? null,
+                        maxResults: params.maxResults || 0,
                         clear: params.clear || false,
                     },
                 });
