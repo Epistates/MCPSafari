@@ -41,8 +41,10 @@
 - Added `upload_file` and `drop_file` for attaching explicit local files to a file input or dropping them onto an element.
 - Added `run_steps` for bounded sequential interaction and wait batches with ordered results, first-failure stopping, one optional trace, and one optional final snapshot.
 - `screenshot` now reports the viewport size, device pixel ratio, page visibility, and window focus at capture time, so callers can tell device pixels from CSS pixels and can detect a frame captured while Safari was neither repainting the page nor applying `:focus`.
+- `read_network` now accepts `type: "resource"` to report PerformanceResourceTiming entries without changing the default XHR/fetch feed, plus `urlPattern` (regex) and `maxResults` filters on any feed and a `status` filter on the XHR/fetch feed. Cross-origin resource entries with zeroed size and timing fields are marked `timingRestricted: true`.
 
 ### Bug Fixes
+- `read_network` with `clear` now removes only the entries the call returned, so a type- or URL-filtered clear no longer discards requests the caller never saw (matching `read_console`).
 - Stop stale per-port token files from causing endless extension reconnect attempts and popup state cycling.
 - Read the popup version from its manifest, keep ports ordered, and use adaptive system colors for legibility on Safari glass.
 - Reinject the content script when Safari returns no message-listener response instead of reporting a successful `null` result.

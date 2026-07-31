@@ -491,11 +491,14 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "read_network",
-                description: "Read captured XHR/fetch requests.",
+                description: "Read captured XHR/fetch requests; use type resource for resource timings (no status or headers). Filter with urlPattern (regex), status, and maxResults (most recent N).",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "type": .object(["type": .string("string"), "enum": .array([.string("all"), .string("xhr"), .string("fetch")])]),
+                        "type": .object(["type": .string("string"), "enum": .array([.string("all"), .string("xhr"), .string("fetch"), .string("resource")])]),
+                        "urlPattern": .object(["type": .string("string"), "description": .string("Regex filter on URL")]),
+                        "status": .object(["type": .string("integer"), "description": .string("Filter by HTTP status code (fetch/xhr only; 0 means network error)")]),
+                        "maxResults": .object(["type": .string("integer"), "description": .string("Return at most this many most recent entries")]),
                         "clear": .object(["type": .string("boolean")]),
                         "tabId": Self.tab,
                     ]),
@@ -676,7 +679,7 @@ actor SafariMCPServer {
     private static let allowedNavActions: Set<String> = ["goto", "back", "forward", "reload"]
     private static let allowedPageFormats: Set<String> = ["text", "html", "snapshot"]
     private static let allowedConsoleLevels: Set<String> = ["all", "log", "warn", "error", "info", "debug"]
-    private static let allowedNetworkTypes: Set<String> = ["all", "xhr", "fetch"]
+    private static let allowedNetworkTypes: Set<String> = ["all", "xhr", "fetch", "resource"]
 
     private func handleNavigate(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
@@ -1233,11 +1236,44 @@ actor SafariMCPServer {
         if let type = args["type"]?.stringValue {
             guard Self.allowedNetworkTypes.contains(type) else {
                 return CallTool.Result(
-                    content: [Self.textContent("Invalid network type: \(type). Use all, xhr, or fetch.")],
+                    content: [Self.textContent("Invalid network type: \(type). Use all, xhr, fetch, or resource.")],
                     isError: true
                 )
             }
             params["type"] = AnyCodable(type)
+        }
+        if let urlPattern = args["urlPattern"]?.stringValue {
+            guard urlPattern.count <= 200 else {
+                return CallTool.Result(
+                    content: [Self.textContent("URL pattern too long (max 200 characters)")],
+                    isError: true
+                )
+            }
+            guard (try? NSRegularExpression(pattern: urlPattern)) != nil else {
+                return CallTool.Result(
+                    content: [Self.textContent("Invalid regex pattern: \(urlPattern)")],
+                    isError: true
+                )
+            }
+            params["urlPattern"] = AnyCodable(urlPattern)
+        }
+        if let status = args["status"]?.intValue {
+            guard (0...599).contains(status) else {
+                return CallTool.Result(
+                    content: [Self.textContent("Invalid status: \(status). Use an HTTP status code (0-599; 0 means network error).")],
+                    isError: true
+                )
+            }
+            params["status"] = AnyCodable(status)
+        }
+        if let maxResults = args["maxResults"]?.intValue {
+            guard maxResults > 0 else {
+                return CallTool.Result(
+                    content: [Self.textContent("Invalid maxResults: \(maxResults). Use a positive integer.")],
+                    isError: true
+                )
+            }
+            params["maxResults"] = AnyCodable(maxResults)
         }
         if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
         let response = try await bridge.send(action: "read_network", params: params)
