@@ -260,12 +260,12 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 | `select_option` | Select a dropdown option by value or label |
 | `scroll` | Scroll page or element in any direction |
 | `press_key` | Press key combinations (e.g., `Enter`, `Meta+a`, `Control+c`) |
-| `hover` | Hover to trigger tooltips, menus, or hover states |
-| `drag` | Drag and drop between elements |
+| `hover` | Hover to trigger tooltips, menus, or hover handlers (pointer + mouse events) |
+| `drag` | Drag and drop between elements along an interpolated pointer path |
 | `upload_file` | Attach local files to an `<input type="file">` |
 | `drop_file` | Drop local files onto an element |
 
-> **Note:** Interaction tools drive elements via synthetic DOM events (and React-compatible value setting for text), which works across the vast majority of sites. Because the events are synthetic, `press_key` modifier combos (e.g. `Meta+a`, `Control+c`) and `drag` reach page-level JS handlers but do **not** trigger native browser actions — clipboard copy/paste, select-all, or HTML5 native drag-and-drop. Use `type_text`/`form_input` for text entry and `javascript_tool` when a true native action is required.
+> **Note:** Interaction tools drive elements via synthetic DOM events (and React-compatible value setting for text), which works across the vast majority of sites. Because the events are synthetic, `press_key` modifier combos (e.g. `Meta+a`, `Control+c`) and `drag` reach page-level JS handlers but do **not** trigger native browser actions — clipboard copy/paste, select-all, or HTML5 native drag-and-drop. Synthetic events also never apply CSS `:hover`, so `hover` can verify hover *handlers* (including `onPointerEnter`) but not hover *styling*. Use `type_text`/`form_input` for text entry and `javascript_tool` when a true native action is required.
 
 ### Dialogs
 
