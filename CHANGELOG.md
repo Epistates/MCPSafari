@@ -5,6 +5,9 @@
 - `snapshot` no longer reports the contents of password inputs, or of inputs whose `autocomplete` marks them as a one-time code or payment card field; those values come back as `[redacted]`.
 
 ### Bug Fixes
+- `press_key` and `type_text`'s `submitKey` no longer emit `keypress` for keys that produce no character (Escape, Tab, arrow keys) or for Ctrl/Meta combos, matching the UI Events spec; single characters and Enter still fire it.
+- `hover` now dispatches the pointer-event family (`pointerover`/`pointerenter`/`pointermove`) alongside the mouse events in real pointer order, so Pointer Events handlers such as React's `onPointerEnter` run; accepts `x`/`y` coordinates like `click`; and reports that synthetic events never apply CSS `:hover`.
+- `drag` now moves along an interpolated pointer-event path with dwell instead of jumping from source to target, so distance-threshold drag libraries (e.g. dnd-kit's `PointerSensor`) start a drag; it fails with `input_not_applied` when the gesture produced no DOM change instead of reporting a silent no-op.
 - `type_text` now inserts into model-backed editors (ProseMirror, Lexical, Slate) by driving `document.execCommand("insertText")`, falling back to `beforeinput`/`input` events carrying `inputType` and `data`, instead of a direct DOM mutation with a bare `input` event those editors discard on the next render.
 - `type_text` now fails with `input_not_applied` when non-empty text left the target unchanged, instead of reporting success.
 - Fixed native typing (`native: true`) always failing with `native_input_focus_lost` while Safari was frontmost: the frontmost check now reads activation state fresh on every call instead of an NSWorkspace value cached at first touch, and runs once before and once after typing instead of per keystroke, and the tool description no longer claims native input foregrounds Safari.
