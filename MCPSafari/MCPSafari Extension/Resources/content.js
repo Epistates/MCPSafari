@@ -24,6 +24,11 @@
         return error;
     }
 
+    function pointerEvent(type, opts) {
+        const Ctor = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
+        return new Ctor(type, opts);
+    }
+
     // Escapes a value for use inside a quoted CSS attribute selector.
     function escapeCssString(value) {
         if (window.CSS && typeof window.CSS.escape === "function") {
@@ -782,7 +787,9 @@
                 cancelable: true,
             };
             el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
-            el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
+            if (firesKeypress(params.submitKey, keyOpts)) {
+                el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
+            }
             el.dispatchEvent(new KeyboardEvent("keyup", keyOpts));
 
             // For Enter, also submit the form if present
@@ -938,6 +945,12 @@
 
     // ─── Press Key ───────────────────────────────────────────────────
 
+    // UI Events: keypress fires only for character-producing keys (Enter maps
+    // to \r), and never for Ctrl/Meta combos.
+    function firesKeypress(key, opts) {
+        return (key.length === 1 || key === "Enter") && !opts.ctrlKey && !opts.metaKey;
+    }
+
     // KeyboardEvent.code is physical-key based: letters are KeyX, digits Digit0-9.
     function keyCode(key) {
         if (key.length !== 1) return key;
@@ -973,7 +986,9 @@
 
         const target = document.activeElement || document.body;
         target.dispatchEvent(new KeyboardEvent("keydown", eventOpts));
-        target.dispatchEvent(new KeyboardEvent("keypress", eventOpts));
+        if (firesKeypress(key, eventOpts)) {
+            target.dispatchEvent(new KeyboardEvent("keypress", eventOpts));
+        }
         target.dispatchEvent(new KeyboardEvent("keyup", eventOpts));
 
         return `Pressed ${keyString}`;
@@ -982,11 +997,24 @@
     // ─── Hover ───────────────────────────────────────────────────────
 
     function hoverElement(params) {
-        const el = resolveElement(params);
+        let el = null;
+        if (params.x !== undefined && params.y !== undefined) {
+            el = document.elementFromPoint(params.x, params.y);
+            if (!el) {
+                throw toolError(
+                    "target_not_found",
+                    `No element at coordinates (${params.x}, ${params.y})`,
+                    false,
+                    "take_snapshot"
+                );
+            }
+        } else {
+            el = resolveElement(params);
+        }
         if (!el) {
             throw toolError(
                 "invalid_input",
-                "hover requires uid, selector, or text",
+                "hover requires uid, selector, text, or x and y",
                 false,
                 "fix_input"
             );
@@ -1001,18 +1029,25 @@
             view: window,
             clientX: rect.left + rect.width / 2,
             clientY: rect.top + rect.height / 2,
+            button: 0,
+            buttons: 0,
         };
+        const pointerOpts = { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true };
 
-        el.dispatchEvent(new MouseEvent("mouseenter", eventOpts));
+        // Real pointer order: pointer family first, over before enter.
+        el.dispatchEvent(pointerEvent("pointerover", pointerOpts));
+        el.dispatchEvent(pointerEvent("pointerenter", pointerOpts));
         el.dispatchEvent(new MouseEvent("mouseover", eventOpts));
+        el.dispatchEvent(new MouseEvent("mouseenter", eventOpts));
+        el.dispatchEvent(pointerEvent("pointermove", pointerOpts));
         el.dispatchEvent(new MouseEvent("mousemove", eventOpts));
 
-        return `Hovered over <${el.tagName.toLowerCase()}>`;
+        return `Hovered over <${el.tagName.toLowerCase()}> (synthetic events; CSS :hover is not applied)`;
     }
 
     // ─── Drag ────────────────────────────────────────────────────────
 
-    function dragElement(params) {
+    async function dragElement(params) {
         const fromEl = resolveElement({
             uid: params.fromUid,
             selector: params.fromSelector,
@@ -1041,24 +1076,57 @@
         const toY = toRect.top + toRect.height / 2;
 
         const baseOpts = { bubbles: true, cancelable: true, view: window };
+        const pointerBase = { ...baseOpts, pointerId: 1, pointerType: "mouse", isPrimary: true };
 
-        // Start drag
-        fromEl.dispatchEvent(new MouseEvent("mousedown", { ...baseOpts, clientX: fromX, clientY: fromY }));
-        fromEl.dispatchEvent(new MouseEvent("mousemove", { ...baseOpts, clientX: fromX, clientY: fromY }));
+        let mutated = false;
+        const observer = new MutationObserver((records) => {
+            if (records.length > 0) mutated = true;
+        });
+        observer.observe(document.body || document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            characterData: true,
+        });
 
-        // Create and dispatch dragstart
+        fromEl.dispatchEvent(pointerEvent("pointerdown", { ...pointerBase, clientX: fromX, clientY: fromY, button: 0, buttons: 1 }));
+        fromEl.dispatchEvent(new MouseEvent("mousedown", { ...baseOpts, clientX: fromX, clientY: fromY, button: 0, buttons: 1 }));
+
+        // Distance-threshold drag libraries (dnd-kit PointerSensor) only start
+        // a drag after real movement; a single jump at the source never begins one.
         const dataTransfer = new DataTransfer();
-        fromEl.dispatchEvent(new DragEvent("dragstart", { ...baseOpts, clientX: fromX, clientY: fromY, dataTransfer }));
+        const steps = 8;
+        for (let i = 1; i <= steps; i++) {
+            const x = fromX + ((toX - fromX) * i) / steps;
+            const y = fromY + ((toY - fromY) * i) / steps;
+            fromEl.dispatchEvent(pointerEvent("pointermove", { ...pointerBase, clientX: x, clientY: y, button: 0, buttons: 1 }));
+            fromEl.dispatchEvent(new MouseEvent("mousemove", { ...baseOpts, clientX: x, clientY: y, button: 0, buttons: 1 }));
+            if (i === 1) {
+                fromEl.dispatchEvent(new DragEvent("dragstart", { ...baseOpts, clientX: fromX, clientY: fromY, dataTransfer }));
+            }
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
 
-        // Move to target
         toEl.dispatchEvent(new DragEvent("dragenter", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
         toEl.dispatchEvent(new DragEvent("dragover", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
-
-        // Drop
         toEl.dispatchEvent(new DragEvent("drop", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
+        toEl.dispatchEvent(pointerEvent("pointerup", { ...pointerBase, clientX: toX, clientY: toY, button: 0, buttons: 0 }));
+        toEl.dispatchEvent(new MouseEvent("mouseup", { ...baseOpts, clientX: toX, clientY: toY, button: 0, buttons: 0 }));
         fromEl.dispatchEvent(new DragEvent("dragend", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
 
-        fromEl.dispatchEvent(new MouseEvent("mouseup", { ...baseOpts, clientX: toX, clientY: toY }));
+        // A gesture nothing reacted to is a silent no-op: give the page a
+        // frame to respond, then fail rather than claim a drag that never started.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const pending = observer.takeRecords();
+        observer.disconnect();
+        if (!mutated && pending.length === 0) {
+            throw toolError(
+                "input_not_applied",
+                `Drag from <${fromEl.tagName.toLowerCase()}> to <${toEl.tagName.toLowerCase()}> produced no DOM change; the page may not have recognized the synthetic gesture`,
+                false,
+                "use_native_input"
+            );
+        }
 
         return `Dragged <${fromEl.tagName.toLowerCase()}> to <${toEl.tagName.toLowerCase()}>`;
     }
