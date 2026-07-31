@@ -191,18 +191,20 @@ enum Doctor {
                 code: "token_file",
                 status: permissions == 0o600 ? .ok : .warning,
                 message: permissions == 0o600
-                    ? "Authentication token file exists with mode 0600 for port \(port)."
-                    : "Authentication token file exists for port \(port), but its permissions are not 0600.",
+                    ? "Authentication token file exists with mode 0600 at \(tokenURL.path)."
+                    : "Authentication token file exists at \(tokenURL.path), but its permissions are not 0600.",
                 recovery: permissions == 0o600 ? nil : "Restart mcp-safari to recreate the token file securely."
             ))
         } else {
             checks.append(.init(
                 code: "token_file",
                 status: .warning,
-                message: "No authentication token file exists for port \(port).",
+                message: "No authentication token file exists at \(tokenURL.path).",
                 recovery: "Start an MCP client configured to run mcp-safari."
             ))
         }
+
+        checks.append(tokenPathCheck(for: paths.tokenDirectoryURL))
 
         let overall: DiagnosticStatus = checks.contains { $0.status == .error }
             ? .error
@@ -255,6 +257,35 @@ enum Doctor {
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// The extension reads tokens through a sandbox exception granted on a
+    /// literal home-relative path, which the sandbox evaluates against the
+    /// resolved path. A symlink anywhere in the token directory puts the real
+    /// file outside that grant: the server writes it, the extension cannot read
+    /// it, and nothing else in the system reports why.
+    static func tokenPathCheck(for tokenDirectoryURL: URL) -> DiagnosticCheck {
+        let literal = tokenDirectoryURL.standardizedFileURL.path
+        let resolved = tokenDirectoryURL.resolvingSymlinksInPath().standardizedFileURL.path
+
+        guard literal != resolved else {
+            return .init(
+                code: "token_path",
+                status: .ok,
+                message: "Token directory is a real path the extension sandbox can read.",
+                recovery: nil
+            )
+        }
+
+        return .init(
+            code: "token_path",
+            status: .warning,
+            message: "Token directory \(literal) resolves to \(resolved). "
+                + "The Safari extension is sandboxed and can only read the unresolved path, "
+                + "so it will not find the token and will stay disconnected.",
+            recovery: "Replace the symlink with a real directory, "
+                + "or symlink the sibling directories you manage instead of the parent."
+        )
     }
 
     private static func check(
