@@ -3,6 +3,8 @@
 </div>
 
 # MCPSafari: Native Safari MCP Server for AI Agents
+
+[![MCP Toplist](https://mcptoplist.com/badge/pulsemcp%2Fepistates-safari.svg)](https://mcptoplist.com/server/pulsemcp%2Fepistates-safari)
 ![Stars](https://img.shields.io/github/stars/Epistates/MCPSafari)
 ![MCP](https://img.shields.io/badge/MCP-2025-blue)
 ![macOS](https://img.shields.io/badge/macOS-14+-orange)
