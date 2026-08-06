@@ -259,6 +259,14 @@ async function handleRequest(request) {
                 data = await handleNativeTypeText(params);
                 break;
 
+            case "native_press_key":
+                data = await handleNativePressKey(params);
+                break;
+
+            case "native_pointer":
+                data = await handleNativePointer(params);
+                break;
+
             // Page reading (delegated to content script)
             case "read_page":
             case "get_page_text":
@@ -405,17 +413,39 @@ async function handleSelectTab(params) {
     };
 }
 
-async function handleNativeTypeText(params) {
-    const tabId = params.tabId || (await getActiveTabId());
+async function focusTabForNativeInput(tabIdParam) {
+    const tabId = tabIdParam || (await getActiveTabId());
     const tab = await browser.tabs.get(tabId);
     await browser.tabs.update(tabId, { active: true });
     await browser.windows.update(tab.windowId, { focused: true });
     await delay(100);
+    return tabId;
+}
+
+async function handleNativeTypeText(params) {
+    const tabId = await focusTabForNativeInput(params.tabId);
     await sendToContentScript(tabId, {
         action: "prepare_native_input",
         params,
     });
     return "Safari is ready for native input";
+}
+
+async function handleNativePressKey(params) {
+    const tabId = await focusTabForNativeInput(params.tabId);
+    await sendToContentScript(tabId, {
+        action: "prepare_native_key",
+        params,
+    });
+    return "Safari is ready for native input";
+}
+
+async function handleNativePointer(params) {
+    const tabId = await focusTabForNativeInput(params.tabId);
+    return sendToContentScript(tabId, {
+        action: "native_pointer_points",
+        params,
+    });
 }
 
 function persistSelectedTab(tabId) {
