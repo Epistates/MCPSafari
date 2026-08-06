@@ -125,6 +125,10 @@
                 return hoverElement(params);
             case "drag":
                 return dragElement(params);
+            case "native_pointer_points":
+                return nativePointerPoints(params);
+            case "prepare_native_key":
+                return prepareNativeKey(params);
             case "upload_file":
                 return uploadFile(params);
             case "drop_file":
@@ -1061,6 +1065,91 @@
         fromEl.dispatchEvent(new MouseEvent("mouseup", { ...baseOpts, clientX: toX, clientY: toY }));
 
         return `Dragged <${fromEl.tagName.toLowerCase()}> to <${toEl.tagName.toLowerCase()}>`;
+    }
+
+    // ─── Native Pointer ──────────────────────────────────────────────
+
+    // CGEvent posts in global screen points. window.screenX/screenY use the
+    // same origin (top-left of the primary display, menu bar included).
+    // Safari's only side chrome is the left sidebar, so the full
+    // outerWidth-innerWidth difference sits on the left of the content area.
+    // Assumes 100% page zoom.
+    function nativePointerPoints(params) {
+        const toScreen = (cssX, cssY) => ({
+            x: window.screenX + (window.outerWidth - window.innerWidth) + cssX,
+            y: window.screenY + (window.outerHeight - window.innerHeight) + cssY,
+        });
+        const checked = (css) => {
+            if (!Number.isFinite(css.x) || !Number.isFinite(css.y)
+                || css.x < 0 || css.x >= window.innerWidth
+                || css.y < 0 || css.y >= window.innerHeight) {
+                throw toolError(
+                    "invalid_input",
+                    `Point (${Math.round(css.x)}, ${Math.round(css.y)}) is outside the viewport; native events at screen coordinates could hit another application`,
+                    false,
+                    "fix_input"
+                );
+            }
+            return toScreen(css.x, css.y);
+        };
+        const centerOf = (element) => {
+            const rect = element.getBoundingClientRect();
+            return checked({
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2,
+            });
+        };
+
+        const fromEl = params.fromUid || params.fromSelector
+            ? resolveElement({ uid: params.fromUid, selector: params.fromSelector })
+            : (params.uid || params.selector || params.text)
+                ? resolveElement(params)
+                : null;
+        const toEl = params.toUid || params.toSelector
+            ? resolveElement({ uid: params.toUid, selector: params.toSelector })
+            : null;
+
+        // Scroll only when an endpoint is off-viewport, before any
+        // measurement: scrolling shifts every rect, so measuring between two
+        // scrolls returns a stale point. A drag whose endpoints cannot share
+        // one scroll position fails the bounds check instead of dragging
+        // whatever happens to sit at the stale point.
+        const ensureVisible = (element) => {
+            const r = element.getBoundingClientRect();
+            const visible = r.top >= 0 && r.bottom <= window.innerHeight
+                && r.left >= 0 && r.right <= window.innerWidth;
+            if (!visible) element.scrollIntoView({ behavior: "instant", block: "center" });
+        };
+        if (fromEl) ensureVisible(fromEl);
+        if (toEl) ensureVisible(toEl);
+
+        let from;
+        if (fromEl) {
+            from = centerOf(fromEl);
+        } else if (params.x !== undefined && params.y !== undefined) {
+            from = checked({ x: Number(params.x), y: Number(params.y) });
+        } else {
+            throw toolError(
+                "invalid_input",
+                "native pointer requires uid, selector, text, or x/y",
+                false,
+                "fix_input"
+            );
+        }
+
+        const to = toEl ? centerOf(toEl) : undefined;
+        return to ? { from, to } : { from };
+    }
+
+    // A native key reaches whatever Safari has focused; when the chrome (e.g.
+    // the address bar) holds focus the page never sees it. Pull focus into
+    // the document unless the page already has it.
+    function prepareNativeKey() {
+        if (!document.hasFocus() && document.body) {
+            document.body.setAttribute("tabindex", "-1");
+            document.body.focus({ preventScroll: true });
+        }
+        return "Page ready for native key";
     }
 
     // ─── File Attachment ─────────────────────────────────────────────

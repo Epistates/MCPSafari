@@ -259,13 +259,15 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 | `form_input` | Batch fill form fields (CSS selector → value map) |
 | `select_option` | Select a dropdown option by value or label |
 | `scroll` | Scroll page or element in any direction |
-| `press_key` | Press key combinations (e.g., `Enter`, `Meta+a`, `Control+c`) |
-| `hover` | Hover to trigger tooltips, menus, or hover states |
-| `drag` | Drag and drop between elements |
+| `press_key` | Press key combinations (e.g., `Enter`, `Meta+a`, `Control+c`); `native: true` sends a real macOS key event |
+| `hover` | Hover to trigger tooltips, menus, or hover states; `native: true` moves the real OS pointer for true `:hover` |
+| `drag` | Drag and drop between elements; `native: true` performs a real macOS mouse drag |
 | `upload_file` | Attach local files to an `<input type="file">` |
 | `drop_file` | Drop local files onto an element |
 
 > **Note:** Interaction tools drive elements via synthetic DOM events (and React-compatible value setting for text), which works across the vast majority of sites. Because the events are synthetic, `press_key` modifier combos (e.g. `Meta+a`, `Control+c`) and `drag` reach page-level JS handlers but do **not** trigger native browser actions — clipboard copy/paste, select-all, or HTML5 native drag-and-drop. Use `type_text`/`form_input` for text entry and `javascript_tool` when a true native action is required.
+>
+> `press_key`, `hover`, and `drag` with `native: true` send real macOS events instead: trusted keys that trigger default actions, a pointer path that produces true `:hover` and boundary events, and drags that threshold-based libraries (pointer sensors) accept. They require Safari to be frontmost and Accessibility permission for the app running the server, and move the user's real pointer. Screen coordinates assume 100% page zoom.
 
 ### Dialogs
 
