@@ -28,8 +28,10 @@
         } catch (_) { /* trace capture must not affect network behavior */ }
     }
 
-    // Cross-origin entries without Timing-Allow-Origin report zeroed size and
-    // timing fields; mark them so zeros read as "not permitted", not "cache hit".
+    // Cross-origin entries without Timing-Allow-Origin report zeroed byte counts;
+    // mark them so zeros read as "not permitted", not "cache hit". `duration` is
+    // deliberately not part of the test: the spec leaves startTime and responseEnd
+    // readable for these entries, so a restricted resource still times normally.
     function isTimingRestricted(entry) {
         try {
             if (new URL(entry.name).origin === location.origin) return false;
@@ -38,8 +40,7 @@
         }
         return entry.transferSize === 0
             && entry.encodedBodySize === 0
-            && entry.decodedBodySize === 0
-            && entry.duration === 0;
+            && entry.decodedBodySize === 0;
     }
 
     function recordResources(entries) {
@@ -61,8 +62,15 @@
         }
     }
 
-    const resourceObserver = new PerformanceObserver((list) => recordResources(list.getEntries()));
-    resourceObserver.observe({ type: "resource", buffered: true });
+    // Resource timing is an opt-in extra, so it must not be able to take the
+    // XHR and fetch patching below down with it if the observer is unavailable.
+    let resourceObserver = null;
+    try {
+        resourceObserver = new PerformanceObserver((list) => recordResources(list.getEntries()));
+        resourceObserver.observe({ type: "resource", buffered: true });
+    } catch (_) {
+        resourceObserver = null;
+    }
 
     // ─── XMLHttpRequest Interception ─────────────────────────────────
 
@@ -156,7 +164,7 @@
     // ─── API for content script ──────────────────────────────────────
 
     window.__mcpGetNetworkRequests = (params = {}) => {
-        recordResources(resourceObserver.takeRecords());
+        if (resourceObserver) recordResources(resourceObserver.takeRecords());
         const selected = params.type === "resource" ? resources : requests;
         let filtered = [...selected];
 

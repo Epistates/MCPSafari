@@ -8,7 +8,7 @@ const source = readFileSync(
     "utf8"
 );
 
-function loadInterceptor() {
+function loadInterceptor({ observerThrows = false } = {}) {
     let observer;
 
     class XMLHttpRequest {
@@ -19,6 +19,7 @@ function loadInterceptor() {
     class PerformanceObserver {
         constructor() {
             observer = { options: null, records: [] };
+            if (observerThrows) throw new TypeError("PerformanceObserver unavailable");
         }
 
         observe(options) {
@@ -188,4 +189,36 @@ test("cross-origin entries with zeroed fields are marked timingRestricted", () =
     assert.equal(entries[0].timingRestricted, true);
     assert.equal(entries[1].timingRestricted, undefined);
     assert.equal(entries[2].timingRestricted, undefined);
+});
+
+test("a restricted entry is marked even though its duration is real", () => {
+    const { observer, window } = loadInterceptor();
+    // The timing allow check zeroes the byte counts and the connection-phase
+    // fields, but leaves startTime and responseEnd readable — so the ordinary
+    // uncached restricted resource has a real duration. Requiring duration === 0
+    // would mark only the cached ones and let this case read as a cache hit.
+    observer.records.push({
+        name: "https://cdn.other.test/uncached.png",
+        initiatorType: "img",
+        transferSize: 0,
+        encodedBodySize: 0,
+        decodedBodySize: 0,
+        startTime: 10,
+        duration: 143,
+    });
+
+    const [entry] = readNetwork(window, { type: "resource" });
+    assert.equal(entry.timingRestricted, true);
+    assert.equal(entry.duration, 143);
+});
+
+test("XHR and fetch capture still install when PerformanceObserver is unavailable", async () => {
+    const { window } = loadInterceptor({ observerThrows: true });
+
+    await window.fetch("https://example.test/api/feed");
+
+    assert.deepEqual(readNetwork(window, { type: "fetch" }).map((r) => r.url), [
+        "https://example.test/api/feed",
+    ]);
+    assert.deepEqual(readNetwork(window, { type: "resource" }), []);
 });
