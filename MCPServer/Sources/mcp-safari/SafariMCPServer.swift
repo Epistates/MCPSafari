@@ -391,18 +391,20 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "hover",
-                description: "Hover element to trigger tooltips/menus.",
+                description: "Hover element to trigger tooltips/menus. Dispatches pointer and mouse events; synthetic events never apply CSS :hover.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
                         "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
+                        "x": .object(["type": .string("number")]),
+                        "y": .object(["type": .string("number")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
                 ])
             ),
             Tool(
                 name: "drag",
-                description: "Drag and drop between elements.",
+                description: "Drag and drop between elements along an interpolated pointer-event path plus HTML5 drag events.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
