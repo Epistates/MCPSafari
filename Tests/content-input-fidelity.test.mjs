@@ -252,14 +252,18 @@ test("hover accepts x and y like click", async () => {
 
 // ─── drag pointer path and no-op detection ───────────────────────────
 
-function dragHarness() {
+function dragHarness({ throwOn } = {}) {
     const fromEvents = [];
     const toEvents = [];
     const fromEl = el("div", {
         id: "from",
         extra: {
             getBoundingClientRect: () => ({ left: 0, top: 0, x: 0, y: 0, width: 10, height: 10 }),
-            dispatchEvent(event) { fromEvents.push(event); return true; },
+            dispatchEvent(event) {
+                if (event.type === throwOn) throw new Error(`dispatch failed on ${event.type}`);
+                fromEvents.push(event);
+                return true;
+            },
         },
     });
     const toEl = el("div", {
@@ -317,4 +321,15 @@ test("drag fails with input_not_applied when nothing reacts to the gesture", asy
     assert.equal(response.errorCode, "input_not_applied");
     assert.equal(response.recoveryAction, "use_native_input");
     assert.match(response.error, /no DOM change/);
+});
+
+test("drag disconnects its observer even when the gesture throws partway", async () => {
+    // The observer watches the whole document with subtree, attributes, and
+    // characterData; leaking one would keep firing for the life of the page.
+    const { call } = dragHarness({ throwOn: "dragstart" });
+
+    const response = await call("drag", { fromSelector: "#from", toSelector: "#to" });
+
+    assert.match(response.error, /dispatch failed on dragstart/);
+    assert.equal(FakeMutationObserver.active, null, "the observer is disconnected on the throwing path");
 });
