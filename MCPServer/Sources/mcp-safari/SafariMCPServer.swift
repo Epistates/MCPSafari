@@ -148,6 +148,8 @@ actor SafariMCPServer {
     private static let sel: Value = .object(["type": .string("string"), "description": .string("CSS selector")])
     private static let txt: Value = .object(["type": .string("string"), "description": .string("Visible text to match")])
     private static let snap: Value = .object(["type": .string("boolean"), "description": .string("Return snapshot after action")])
+    private static let coordX: Value = .object(["type": .string("number"), "description": .string("Viewport x in CSS px; events dispatch at this exact point (overrides uid/selector/text)")])
+    private static let coordY: Value = .object(["type": .string("number"), "description": .string("Viewport y in CSS px")])
     private static let waitSel: Value = .object(["type": .string("string"), "description": .string("Wait for CSS selector after action")])
     private static let waitTxt: Value = .object(["type": .string("string"), "description": .string("Wait for visible text after action")])
     private static let waitTimeout: Value = .object(["type": .string("number"), "description": .string("Post-action wait timeout seconds (default: 10)")])
@@ -310,8 +312,8 @@ actor SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
                         "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
-                        "x": .object(["type": .string("number")]),
-                        "y": .object(["type": .string("number")]),
+                        "x": Self.coordX,
+                        "y": Self.coordY,
                         "doubleClick": .object(["type": .string("boolean")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -401,8 +403,8 @@ actor SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
                         "uid": Self.uid, "selector": Self.sel, "text": Self.txt,
-                        "x": .object(["type": .string("number")]),
-                        "y": .object(["type": .string("number")]),
+                        "x": Self.coordX,
+                        "y": Self.coordY,
                         "native": .object([
                             "type": .string("boolean"),
                             "description": .string("Move the real OS pointer; requires Safari to already be the frontmost application and Accessibility permission"),

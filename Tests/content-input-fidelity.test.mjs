@@ -250,6 +250,76 @@ test("hover accepts x and y like click", async () => {
     assert.equal(missing.errorCode, "target_not_found");
 });
 
+// ─── point targeting: x/y dispatches at the requested point ──────────
+
+function pointTarget() {
+    const events = [];
+    const target = el("canvas", {
+        extra: {
+            getBoundingClientRect: () => ({ left: 100, top: 100, x: 100, y: 100, width: 200, height: 100 }),
+            dispatchEvent(event) { events.push(event); return true; },
+        },
+    });
+    return { events, target };
+}
+
+test("click with x/y dispatches at the requested point, not the element center", async () => {
+    const { events, target } = pointTarget();
+    let scrolled = false;
+    target.scrollIntoView = () => { scrolled = true; };
+    const call = loadContent(el("body", {}, [target]), { elementFromPoint: () => target });
+
+    assert.equal((await call("click", { x: 110, y: 105 })).error, null);
+    assert.equal((await call("click", { x: 250, y: 180 })).error, null);
+
+    const clicks = events.filter((e) => e.type === "click");
+    assert.deepEqual(
+        clicks.map((e) => [e.clientX, e.clientY]),
+        [[110, 105], [250, 180]],
+        "two requested points produce two distinct dispatch points"
+    );
+    assert.equal(scrolled, false, "the hit-tested point is already visible; scrolling would move it");
+});
+
+test("click without x/y still dispatches at the element center", async () => {
+    const { events, target } = pointTarget();
+    const call = loadContent(el("body", {}, [target]), { querySelector: () => target });
+
+    const response = await call("click", { selector: "canvas" });
+
+    assert.equal(response.error, null);
+    const click = events.find((e) => e.type === "click");
+    assert.equal(click.clientX, 200);
+    assert.equal(click.clientY, 150);
+});
+
+test("hover with x/y dispatches at the requested point, not the element center", async () => {
+    const { events, target } = pointTarget();
+    let scrolled = false;
+    target.scrollIntoView = () => { scrolled = true; };
+    const call = loadContent(el("body", {}, [target]), { elementFromPoint: () => target });
+
+    const response = await call("hover", { x: 130, y: 190 });
+
+    assert.equal(response.error, null);
+    const move = events.find((e) => e.type === "pointermove");
+    assert.equal(move.clientX, 130);
+    assert.equal(move.clientY, 190);
+    assert.equal(scrolled, false, "the hit-tested point is already visible; scrolling would move it");
+});
+
+test("hover without x/y still dispatches at the element center", async () => {
+    const { events, target } = pointTarget();
+    const call = loadContent(el("body", {}, [target]), { querySelector: () => target });
+
+    const response = await call("hover", { selector: "canvas" });
+
+    assert.equal(response.error, null);
+    const move = events.find((e) => e.type === "pointermove");
+    assert.equal(move.clientX, 200);
+    assert.equal(move.clientY, 150);
+});
+
 // ─── drag pointer path and no-op detection ───────────────────────────
 
 function dragHarness({ throwOn } = {}) {

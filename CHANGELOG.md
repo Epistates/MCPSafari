@@ -9,6 +9,7 @@
 - `snapshot` no longer reports the contents of password inputs, or of inputs whose `autocomplete` marks them as a one-time code or payment card field; those values come back as `[redacted]`.
 
 ### Bug Fixes
+- `click` and `hover` with `x`/`y` now dispatch events at the requested point instead of the target element's center, so a specific point inside a large element (e.g. a canvas) can be targeted.
 - `press_key` and `type_text`'s `submitKey` no longer emit `keypress` for keys that produce no character (Escape, Tab, arrow keys) or for Ctrl/Meta combos, matching the UI Events spec; single characters and Enter still fire it.
 - `hover` now dispatches the pointer-event family (`pointerover`/`pointerenter`/`pointermove`) alongside the mouse events in real pointer order, so Pointer Events handlers such as React's `onPointerEnter` run; accepts `x`/`y` coordinates like `click`; and reports that synthetic events never apply CSS `:hover`.
 - `drag` now moves along an interpolated pointer-event path with dwell instead of jumping from source to target, so distance-threshold drag libraries (e.g. dnd-kit's `PointerSensor`) start a drag; it fails with `input_not_applied` when the gesture produced no DOM change instead of reporting a silent no-op.
