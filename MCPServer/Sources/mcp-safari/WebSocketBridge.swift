@@ -152,20 +152,38 @@ actor WebSocketBridge {
 
     /// Authentication token that the extension must send as its first message.
     let authToken: String
-    /// Directory where per-port auth tokens are written for the extension to read.
-    static let tokenDirectoryURL: URL = {
+    /// Primary token root. The sandboxed extension reads tokens through a
+    /// home-relative-path exception that the sandbox evaluates against the
+    /// *resolved* path, and `~/.config` is commonly symlinked into a dotfiles
+    /// repo — which puts the real file outside the granted path and makes it
+    /// unreadable. `~/Library/Application Support` is effectively never
+    /// symlinked, so tokens live there.
+    static let applicationSupportDirectoryURL: URL = {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Application Support")
+            .appendingPathComponent("MCPSafari")
+    }()
+
+    /// Legacy token root, still written so extension builds that predate the
+    /// move keep authenticating.
+    static let configDirectoryURL: URL = {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config")
             .appendingPathComponent("mcp-safari")
-            .appendingPathComponent("tokens")
     }()
+
+    /// Token roots to populate, most preferred first.
+    static let tokenRootURLs: [URL] = [applicationSupportDirectoryURL, configDirectoryURL]
+
+    /// Directory where per-port auth tokens are written for the extension to read.
+    static let tokenDirectoryURL: URL = applicationSupportDirectoryURL
+        .appendingPathComponent("tokens")
+
     /// Legacy single-token path kept for older extension builds.
-    static let legacyTokenFilePath: String = {
-        tokenDirectoryURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("token")
-            .path
-    }()
+    static let legacyTokenFilePath: String = configDirectoryURL
+        .appendingPathComponent("token")
+        .path
 
     static func tokenFilePath(for port: UInt16) -> String {
         tokenDirectoryURL.appendingPathComponent(String(port)).path
@@ -279,33 +297,33 @@ actor WebSocketBridge {
     }
 
     private func writeAuthTokenFile(for port: UInt16) throws {
+        // The preferred root must succeed; the legacy root is best effort so a
+        // broken or unwritable `~/.config` cannot stop the server from starting.
+        try writeToken(for: port, under: Self.applicationSupportDirectoryURL)
+        do {
+            try writeToken(for: port, under: Self.configDirectoryURL)
+        } catch {
+            logger.debug("Could not write legacy token under \(Self.configDirectoryURL.path): \(error)")
+        }
+    }
+
+    private func writeToken(for port: UInt16, under root: URL) throws {
         let fileManager = FileManager.default
-        let configDirectory = Self.tokenDirectoryURL.deletingLastPathComponent()
+        let tokenDirectory = root.appendingPathComponent("tokens")
 
-        try fileManager.createDirectory(at: Self.tokenDirectoryURL, withIntermediateDirectories: true)
-        try fileManager.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: configDirectory.path
-        )
-        try fileManager.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: Self.tokenDirectoryURL.path
-        )
+        try fileManager.createDirectory(at: tokenDirectory, withIntermediateDirectories: true)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenDirectory.path)
 
-        let tokenFilePath = Self.tokenFilePath(for: port)
+        let tokenFilePath = tokenDirectory.appendingPathComponent(String(port)).path
         try authToken.write(toFile: tokenFilePath, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: tokenFilePath
-        )
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFilePath)
 
-        // Keep the legacy path populated for older extension builds. Current
-        // builds prefer the per-port token map and avoid this single-token race.
-        try authToken.write(toFile: Self.legacyTokenFilePath, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: Self.legacyTokenFilePath
-        )
+        // Keep the single-token path populated for older extension builds.
+        // Current builds prefer the per-port map and avoid its rewrite race.
+        let singleTokenPath = root.appendingPathComponent("token").path
+        try authToken.write(toFile: singleTokenPath, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: singleTokenPath)
     }
 
     func start() async {
