@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import CoreGraphics
 import Foundation
 import Logging
@@ -1120,16 +1121,9 @@ actor SafariMCPServer {
         let label: String
     }
 
-    // macOS virtual keycodes (ANSI layout). Single characters map to the
-    // physical key; Shift in the combo produces the shifted character.
-    nonisolated static let nativeKeyCodes: [String: CGKeyCode] = [
-        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7,
-        "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15,
-        "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22,
-        "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29,
-        "]": 30, "o": 31, "u": 32, "[": 33, "i": 34, "p": 35, "l": 37,
-        "j": 38, "'": 39, "k": 40, ";": 41, "\\": 42, ",": 43, "/": 44,
-        "n": 45, "m": 46, ".": 47, "`": 50,
+    // Virtual keycodes name a physical key position, not a character, so these
+    // are the same on every layout.
+    nonisolated static let namedKeyCodes: [String: CGKeyCode] = [
         "enter": 36, "return": 36, "tab": 48, "space": 49, "spacebar": 49,
         " ": 49, "backspace": 51, "escape": 53, "esc": 53,
         "delete": 117, "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
@@ -1138,7 +1132,89 @@ actor SafariMCPServer {
         "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
     ]
 
-    nonisolated static func nativeKeyCombo(_ keyString: String) throws -> NativeKeyCombo {
+    struct ResolvedCharacter: Equatable, Sendable {
+        let keyCode: CGKeyCode
+        let needsShift: Bool
+    }
+
+    /// Which physical key produces `character` on the keyboard layout that is
+    /// active right now.
+    ///
+    /// A character key cannot be a fixed keycode. Keycode 0 is `a` on QWERTY but
+    /// `q` on AZERTY, so a hardcoded table turns `Meta+a` into Command-Q — Quit
+    /// Safari — for a French or Belgian user. Ask the layout instead.
+    nonisolated static func currentLayoutKeyCode(for character: String) -> ResolvedCharacter? {
+        guard let layout = currentKeyboardLayout() else { return nil }
+        for shifted in [false, true] {
+            // Ascending, so the main block wins over the numeric keypad, which
+            // produces the same digits from a different position.
+            for code in CGKeyCode(0)...CGKeyCode(127)
+            where self.character(forKeyCode: code, shifted: shifted, layout: layout.data) == character {
+                return ResolvedCharacter(keyCode: code, needsShift: shifted)
+            }
+        }
+        return nil
+    }
+
+    nonisolated static func currentKeyboardLayoutName() -> String? {
+        currentKeyboardLayout()?.name
+    }
+
+    /// HIToolbox aborts the whole process if the Text Input Sources API is
+    /// entered from two threads at once, and it offers no main-thread shortcut
+    /// for a non-UI tool like this one. Tool calls run on the concurrency pool
+    /// and several clients can be served at the same time, so every TIS call
+    /// goes through this lock.
+    private nonisolated static let keyboardLayoutLock = NSLock()
+
+    private nonisolated static func currentKeyboardLayout() -> (data: Data, name: String)? {
+        keyboardLayoutLock.lock()
+        defer { keyboardLayoutLock.unlock() }
+
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let dataPointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+        else { return nil }
+
+        // Copied, not referenced: the layout outlives the input source it came from.
+        let data = Data(Unmanaged<CFData>.fromOpaque(dataPointer).takeUnretainedValue() as Data)
+        let name = TISGetInputSourceProperty(source, kTISPropertyLocalizedName).map {
+            Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String
+        }
+        return (data, name ?? "the active keyboard layout")
+    }
+
+    private nonisolated static func character(
+        forKeyCode code: CGKeyCode,
+        shifted: Bool,
+        layout: Data
+    ) -> String? {
+        let capacity = 4
+        var characters = [UniChar](repeating: 0, count: capacity)
+        var length = 0
+        var deadKeyState: UInt32 = 0
+        let status = layout.withUnsafeBytes { raw -> OSStatus in
+            guard let base = raw.baseAddress else { return OSStatus(-1) }
+            return UCKeyTranslate(
+                base.assumingMemoryBound(to: UCKeyboardLayout.self),
+                UInt16(code),
+                UInt16(kUCKeyActionDown),
+                shifted ? UInt32(shiftKey >> 8) : 0,
+                UInt32(LMGetKbdType()),
+                OptionBits(kUCKeyTranslateNoDeadKeysBit),
+                &deadKeyState,
+                capacity,
+                &length,
+                &characters
+            )
+        }
+        guard status == noErr, length > 0 else { return nil }
+        return String(utf16CodeUnits: characters, count: length)
+    }
+
+    nonisolated static func nativeKeyCombo(
+        _ keyString: String,
+        resolveCharacter: (String) -> ResolvedCharacter? = currentLayoutKeyCode(for:)
+    ) throws -> NativeKeyCombo {
         var parts = keyString.split(separator: "+", omittingEmptySubsequences: true).map(String.init)
         guard let key = parts.popLast(), !key.isEmpty else {
             throw ToolInputError("press_key requires a non-empty key such as Enter, Tab, or Meta+a")
@@ -1154,10 +1230,21 @@ actor SafariMCPServer {
                 throw ToolInputError("Unknown modifier \(modifier). Use Control, Shift, Alt, or Meta.")
             }
         }
-        guard let code = nativeKeyCodes[key.lowercased()] else {
+
+        let normalized = key.lowercased()
+        if let code = namedKeyCodes[normalized] {
+            return NativeKeyCombo(keyCode: code, flags: flags, label: keyString)
+        }
+
+        guard normalized.count == 1 else {
             throw ToolInputError("Native press_key does not support \(key). Use Enter, Tab, Escape, Space, Backspace, Delete, arrows, Home, End, PageUp, PageDown, F1-F12, or a single character.")
         }
-        return NativeKeyCombo(keyCode: code, flags: flags, label: keyString)
+        guard let resolved = resolveCharacter(normalized) else {
+            let layout = currentKeyboardLayoutName().map { " on \($0)" } ?? ""
+            throw ToolInputError("Native press_key cannot type \(key)\(layout). Switch the keyboard layout, or use a named key such as Enter, Tab, or the arrows.")
+        }
+        if resolved.needsShift { flags.insert(.maskShift) }
+        return NativeKeyCombo(keyCode: resolved.keyCode, flags: flags, label: keyString)
     }
 
     private nonisolated static func pressNativeKey(_ combo: NativeKeyCombo, deadline: Double? = nil) throws -> String {
