@@ -208,7 +208,13 @@ For ports outside the default range, add them manually in the extension popup or
 | Flag | Description |
 |------|-------------|
 | `--port <n>` / `-p <n>` | WebSocket port (default: `8089`) |
-| `--verbose` | Debug-level logging to stderr |
+| `--log-level <level>` | `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `critical` (default: `notice`) |
+| `--verbose` | Shorthand for `--log-level debug` |
+
+Logs go to stderr, which MCP clients typically surface to the user, so only
+warnings and errors appear by default. Use `--log-level info` for startup and
+connection lines. Clients that pass environment variables but not arguments can
+set `MCP_SAFARI_LOG_LEVEL` instead; an explicit flag takes precedence.
 
 Diagnose an installation without starting the MCP server:
 

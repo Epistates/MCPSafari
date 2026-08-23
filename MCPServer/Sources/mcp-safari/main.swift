@@ -17,12 +17,12 @@ case .doctor(let port, let json):
     print(output)
     exit(report.exitCode)
 
-case .serve(let port, let verbose):
+case .serve(let port, let logLevel):
     // Log to stderr so stdout is reserved for MCP stdio transport
     var logger = Logger(label: "mcp-safari") { label in
         StreamLogHandler.standardError(label: label)
     }
-    logger.logLevel = verbose ? .debug : .info
+    logger.logLevel = logLevel
 
     logger.info("Starting Safari MCP server on WebSocket port \(port)")
 
