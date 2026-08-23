@@ -581,7 +581,7 @@
                     false,
                     "take_snapshot"
                 );
-            simulateClick(el, params.doubleClick);
+            simulateClick(el, params.doubleClick, { x: params.x, y: params.y });
             return `Clicked element at (${params.x}, ${params.y}): <${el.tagName.toLowerCase()}>`;
         }
 
@@ -601,12 +601,19 @@
         return `Clicked <${desc}>${el.textContent ? ': "' + el.textContent.trim().substring(0, 50) + '"' : ""}`;
     }
 
-    function simulateClick(element, doubleClick) {
-        element.scrollIntoView({ behavior: "instant", block: "center" });
-
-        const rect = element.getBoundingClientRect();
-        const x = rect.left + rect.width / 2;
-        const y = rect.top + rect.height / 2;
+    function simulateClick(element, doubleClick, point) {
+        let x, y;
+        if (point) {
+            // elementFromPoint already proved the point is visible; scrolling
+            // would move the element out from under the requested coordinates.
+            x = point.x;
+            y = point.y;
+        } else {
+            element.scrollIntoView({ behavior: "instant", block: "center" });
+            const rect = element.getBoundingClientRect();
+            x = rect.left + rect.width / 2;
+            y = rect.top + rect.height / 2;
+        }
 
         const eventOpts = {
             bubbles: true,
@@ -1002,6 +1009,7 @@
 
     function hoverElement(params) {
         let el = null;
+        let x, y;
         if (params.x !== undefined && params.y !== undefined) {
             el = document.elementFromPoint(params.x, params.y);
             if (!el) {
@@ -1012,27 +1020,32 @@
                     "take_snapshot"
                 );
             }
+            // elementFromPoint already proved the point is visible; scrolling
+            // would move the element out from under the requested coordinates.
+            x = params.x;
+            y = params.y;
         } else {
             el = resolveElement(params);
-        }
-        if (!el) {
-            throw toolError(
-                "invalid_input",
-                "hover requires uid, selector, text, or x and y",
-                false,
-                "fix_input"
-            );
+            if (!el) {
+                throw toolError(
+                    "invalid_input",
+                    "hover requires uid, selector, text, or x and y",
+                    false,
+                    "fix_input"
+                );
+            }
+            el.scrollIntoView({ behavior: "instant", block: "center" });
+            const rect = el.getBoundingClientRect();
+            x = rect.left + rect.width / 2;
+            y = rect.top + rect.height / 2;
         }
 
-        el.scrollIntoView({ behavior: "instant", block: "center" });
-
-        const rect = el.getBoundingClientRect();
         const eventOpts = {
             bubbles: true,
             cancelable: true,
             view: window,
-            clientX: rect.left + rect.width / 2,
-            clientY: rect.top + rect.height / 2,
+            clientX: x,
+            clientY: y,
             button: 0,
             buttons: 0,
         };
@@ -1175,9 +1188,12 @@
             });
         };
 
+        // x/y wins over uid/selector/text here exactly as it does for the
+        // synthetic path, so native and synthetic hover land on the same point.
+        const pointRequested = params.x !== undefined && params.y !== undefined;
         const fromEl = params.fromUid || params.fromSelector
             ? resolveElement({ uid: params.fromUid, selector: params.fromSelector })
-            : (params.uid || params.selector || params.text)
+            : (!pointRequested && (params.uid || params.selector || params.text))
                 ? resolveElement(params)
                 : null;
         const toEl = params.toUid || params.toSelector
@@ -1201,7 +1217,7 @@
         let from;
         if (fromEl) {
             from = centerOf(fromEl);
-        } else if (params.x !== undefined && params.y !== undefined) {
+        } else if (pointRequested) {
             from = checked({ x: Number(params.x), y: Number(params.y) });
         } else {
             throw toolError(
