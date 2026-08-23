@@ -86,6 +86,54 @@ struct DoctorTests {
         #expect(throws: CLIError.self) {
             try parseCommand(arguments: ["doctor", "--verbose"])
         }
+        #expect(throws: CLIError.self) {
+            try parseCommand(arguments: ["doctor", "--log-level", "debug"])
+        }
+    }
+
+    @Test func serveDefaultsToQuietLogging() throws {
+        // stderr is the only channel a stdio server has and clients show it to
+        // the user, so routine lifecycle lines stay off unless asked for.
+        #expect(try parseCommand(arguments: [], environment: [:]) == .serve(port: 8089, logLevel: .notice))
+    }
+
+    @Test func logLevelComesFromFlagVerboseOrEnvironment() throws {
+        #expect(
+            try parseCommand(arguments: ["--log-level", "warning"], environment: [:])
+                == .serve(port: 8089, logLevel: .warning)
+        )
+        #expect(
+            try parseCommand(arguments: ["--log-level", "INFO"], environment: [:])
+                == .serve(port: 8089, logLevel: .info)
+        )
+        #expect(
+            try parseCommand(arguments: ["--verbose"], environment: [:])
+                == .serve(port: 8089, logLevel: .debug)
+        )
+        #expect(
+            try parseCommand(arguments: [], environment: ["MCP_SAFARI_LOG_LEVEL": "trace"])
+                == .serve(port: 8089, logLevel: .trace)
+        )
+        // An explicit flag wins over both --verbose and the environment.
+        #expect(
+            try parseCommand(
+                arguments: ["--verbose", "--log-level", "error"],
+                environment: ["MCP_SAFARI_LOG_LEVEL": "trace"]
+            ) == .serve(port: 8089, logLevel: .error)
+        )
+        #expect(
+            try parseCommand(arguments: ["--verbose"], environment: ["MCP_SAFARI_LOG_LEVEL": "trace"])
+                == .serve(port: 8089, logLevel: .debug)
+        )
+    }
+
+    @Test func rejectsAnUnknownLogLevel() {
+        #expect(throws: CLIError.self) {
+            try parseCommand(arguments: ["--log-level", "chatty"], environment: [:])
+        }
+        #expect(throws: CLIError.self) {
+            try parseCommand(arguments: ["--log-level"], environment: [:])
+        }
     }
 
     @Test func missingInstallationHasActionableErrors() throws {

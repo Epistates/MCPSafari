@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 ### Changed
+- Added `--log-level` and the `MCP_SAFARI_LOG_LEVEL` environment variable, and lowered the default from `info` to `notice`. Logs go to stderr, which MCP clients surface to the user, so routine startup and connection lines no longer appear unless asked for. `--verbose` is unchanged as a shorthand for `debug`.
 - Auth tokens are now written to `~/Library/Application Support/MCPSafari/tokens/<port>` in addition to the previous `~/.config/mcp-safari/tokens/<port>`, and the extension prefers the new location. A `~/.config` symlinked into a dotfiles repo resolves outside the sandboxed extension's read grant, which left the extension permanently disconnected with no diagnostic.
 - `mcp-safari doctor` reports a new `token_path` check that warns when the token directory resolves somewhere other than its literal path, and now names the token file path it checked.
 

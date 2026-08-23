@@ -1,18 +1,28 @@
 import Foundation
+import Logging
 
 enum CLICommand: Equatable {
-    case serve(port: UInt16, verbose: Bool)
+    case serve(port: UInt16, logLevel: Logger.Level)
     case doctor(port: UInt16, json: Bool)
 }
+
+/// Routine lifecycle chatter is not worth surfacing by default: stderr is the
+/// only channel a stdio server has, and MCP clients show it to the user.
+/// Warnings and errors still come through; `--log-level info` brings the rest back.
+let defaultLogLevel: Logger.Level = .notice
 
 struct CLIError: Error, CustomStringConvertible {
     let description: String
 }
 
-func parseCommand(arguments: [String]) throws -> CLICommand {
+func parseCommand(
+    arguments: [String],
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) throws -> CLICommand {
     let doctorMode = arguments.first == "doctor"
     let options = doctorMode ? Array(arguments.dropFirst()) : arguments
     var port: UInt16 = 8089
+    var logLevel: Logger.Level?
     var verbose = false
     var json = false
     var index = 0
@@ -25,6 +35,15 @@ func parseCommand(arguments: [String]) throws -> CLICommand {
             }
             port = parsed
             index += 2
+        case "--log-level" where !doctorMode:
+            guard index + 1 < options.count else {
+                throw CLIError(description: logLevelUsage)
+            }
+            guard let parsed = Logger.Level(rawValue: options[index + 1].lowercased()) else {
+                throw CLIError(description: "Unknown log level: \(options[index + 1]). \(logLevelUsage)")
+            }
+            logLevel = parsed
+            index += 2
         case "--verbose" where !doctorMode:
             verbose = true
             index += 1
@@ -36,8 +55,18 @@ func parseCommand(arguments: [String]) throws -> CLICommand {
         }
     }
 
-    return doctorMode ? .doctor(port: port, json: json) : .serve(port: port, verbose: verbose)
+    if doctorMode { return .doctor(port: port, json: json) }
+
+    // An explicit flag beats --verbose, which beats the environment. MCP client
+    // configs can set env but not always argv, so both need to work.
+    let fromEnvironment = environment["MCP_SAFARI_LOG_LEVEL"].map { value -> Logger.Level in
+        Logger.Level(rawValue: value.lowercased()) ?? defaultLogLevel
+    }
+    let resolved = logLevel ?? (verbose ? .debug : nil) ?? fromEnvironment ?? defaultLogLevel
+    return .serve(port: port, logLevel: resolved)
 }
+
+let logLevelUsage = "Use trace, debug, info, notice, warning, error, or critical."
 
 enum MCPSafariProduct {
     static let version = "0.2.9"
