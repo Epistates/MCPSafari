@@ -155,3 +155,17 @@ test("native_pointer_points rejects points outside the viewport", async () => {
     assert.equal(response.data, null);
     assert.equal(response.errorCode, "invalid_input");
 });
+
+test("x/y overrides a resolvable selector, matching the synthetic path", async () => {
+    // The schema states x/y takes precedence over uid/selector/text. Synthetic
+    // hover honours that; the native path must land on the same point rather
+    // than the element's centre.
+    const target = el({ left: 10, top: 10, x: 10, y: 10, width: 100, height: 100 });
+    const call = loadContent({ target });
+
+    const { data } = await call("native_pointer_points", { selector: "#target", x: 400, y: 300 });
+
+    assert.deepEqual(JSON.parse(JSON.stringify(data)), {
+        from: { x: 100 + 400, y: 125 + 100 + 300 },
+    });
+});

@@ -1188,9 +1188,12 @@
             });
         };
 
+        // x/y wins over uid/selector/text here exactly as it does for the
+        // synthetic path, so native and synthetic hover land on the same point.
+        const pointRequested = params.x !== undefined && params.y !== undefined;
         const fromEl = params.fromUid || params.fromSelector
             ? resolveElement({ uid: params.fromUid, selector: params.fromSelector })
-            : (params.uid || params.selector || params.text)
+            : (!pointRequested && (params.uid || params.selector || params.text))
                 ? resolveElement(params)
                 : null;
         const toEl = params.toUid || params.toSelector
@@ -1214,7 +1217,7 @@
         let from;
         if (fromEl) {
             from = centerOf(fromEl);
-        } else if (params.x !== undefined && params.y !== undefined) {
+        } else if (pointRequested) {
             from = checked({ x: Number(params.x), y: Number(params.y) });
         } else {
             throw toolError(
