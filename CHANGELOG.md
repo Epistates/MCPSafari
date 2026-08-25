@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.3.0] - 2026-08-25
 ### Added
 - Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
 - Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
@@ -50,7 +52,8 @@
 - Reinject the content script when Safari returns no message-listener response instead of reporting a successful `null` result.
 
 ### Build
-- Updated SwiftPM dependencies, including MCP Swift SDK 0.12.1, SwiftLog 1.14.0, and SwiftNIO 2.101.3.
+- Bumped app, extension, and server versions to `0.3.0`.
+- Updated SwiftPM dependencies, including MCP Swift SDK 0.12.1, SwiftLog 1.15.0, and SwiftNIO 2.101.3.
 - Updated CI and release builds to Xcode 26.6 and the latest supported major versions of their GitHub Actions.
 
 ### CI

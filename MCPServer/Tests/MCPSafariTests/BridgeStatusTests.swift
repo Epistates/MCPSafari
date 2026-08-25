@@ -17,10 +17,12 @@ struct BridgeStatusTests {
                 == .accept(.init(version: "0.2.9", protocolVersion: 1))
         )
 
-        let incompatible = Data(#"{"auth":"secret","extensionVersion":"0.3.0","protocolVersion":2}"#.utf8)
+        // Deliberately not a real release: the rejection turns on protocolVersion,
+        // and a shipped version number here reads as though that release is refused.
+        let incompatible = Data(#"{"auth":"secret","extensionVersion":"99.0.0","protocolVersion":2}"#.utf8)
         #expect(
             BridgeHandshake.decision(for: incompatible, expectedToken: "secret")
-                == .rejectProtocol(extensionVersion: "0.3.0", protocolVersion: 2)
+                == .rejectProtocol(extensionVersion: "99.0.0", protocolVersion: 2)
         )
 
         #expect(
