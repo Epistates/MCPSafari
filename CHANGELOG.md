@@ -1,6 +1,18 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
+- Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
+- Added a backward-compatible versioned extension/server handshake with explicit protocol mismatch errors.
+- Tool failures now include stable error codes, retry guidance, and recovery actions for disconnected bridges, stale element UIDs, missing targets, and wait timeouts.
+- `type_text` now supports opt-in native macOS keyboard events for contenteditable and framework-managed editors.
+- Added `upload_file` and `drop_file` for attaching explicit local files to a file input or dropping them onto an element.
+- Added `run_steps` for bounded sequential interaction and wait batches with ordered results, first-failure stopping, one optional trace, and one optional final snapshot.
+- `screenshot` now reports the viewport size, device pixel ratio, page visibility, and window focus at capture time, so callers can tell device pixels from CSS pixels and can detect a frame captured while Safari was neither repainting the page nor applying `:focus`.
+- `read_network` now accepts `type: "resource"` to report PerformanceResourceTiming entries without changing the default XHR/fetch feed, plus `urlPattern` (regex) and `maxResults` filters on any feed and a `status` filter on the XHR/fetch feed. Cross-origin resource entries whose byte counts are withheld are marked `timingRestricted: true`.
+- `press_key`, `hover`, and `drag` now accept `native: true` for real macOS events, the same opt-in `type_text` already had: keys that trigger default actions such as focus moves and dialog dismissal, a pointer path that produces true CSS `:hover` and boundary events, and drags that threshold-based libraries accept. Character keys resolve against the active keyboard layout, so `Meta+a` is Command-A on AZERTY rather than Command-Q.
+
 ### Changed
 - Added `--log-level` and the `MCP_SAFARI_LOG_LEVEL` environment variable, and lowered the default from `info` to `notice`. Logs go to stderr, which MCP clients surface to the user, so routine startup and connection lines no longer appear unless asked for. `--verbose` is unchanged as a shorthand for `debug`.
 - Auth tokens are now written to `~/Library/Application Support/MCPSafari/tokens/<port>` in addition to the previous `~/.config/mcp-safari/tokens/<port>`, and the extension prefers the new location. A `~/.config` symlinked into a dotfiles repo resolves outside the sandboxed extension's read grant, which left the extension permanently disconnected with no diagnostic.
@@ -10,6 +22,7 @@
 - `snapshot` no longer reports the contents of password inputs, or of inputs whose `autocomplete` marks them as a one-time code or payment card field; those values come back as `[redacted]`.
 
 ### Bug Fixes
+- `run_steps` now accepts `upload_file` and `drop_file`, so a batch that attaches a file no longer has to be split around that step.
 - `click` and `hover` with `x`/`y` now dispatch events at the requested point instead of the target element's center, so a specific point inside a large element (e.g. a canvas) can be targeted.
 - `press_key` and `type_text`'s `submitKey` no longer emit `keypress` for keys that produce no character (Escape, Tab, arrow keys) or for Ctrl/Meta combos, matching the UI Events spec; single characters and Enter still fire it.
 - `hover` now dispatches the pointer-event family (`pointerover`/`pointerenter`/`pointermove`) alongside the mouse events in real pointer order, so Pointer Events handlers such as React's `onPointerEnter` run; accepts `x`/`y` coordinates like `click`; and reports that synthetic events never apply CSS `:hover`.
@@ -31,6 +44,10 @@
 - Fixed `snapshot` crashing on SVG elements with non-string `type` properties.
 - Retried trace startup once after an interceptor timeout so a transient `start_trace interceptor did not respond` failure no longer aborts the traced action.
 - `javascript_tool` now surfaces runtime throws and rejected promises as tool errors instead of returning `null`; the tool description documents that multi-statement code needs an explicit `return` to produce a value.
+- `read_network` with `clear` now removes only the entries the call returned, so a type- or URL-filtered clear no longer discards requests the caller never saw (matching `read_console`).
+- Stop stale per-port token files from causing endless extension reconnect attempts and popup state cycling.
+- Read the popup version from its manifest, keep ports ordered, and use adaptive system colors for legibility on Safari glass.
+- Reinject the content script when Safari returns no message-listener response instead of reporting a successful `null` result.
 
 ### Build
 - Updated SwiftPM dependencies, including MCP Swift SDK 0.12.1, SwiftLog 1.14.0, and SwiftNIO 2.101.3.
@@ -40,24 +57,6 @@
 - Added the Swift test suite to the main CI workflow.
 - Added weekly Dependabot updates for SwiftPM and GitHub Actions dependencies.
 - Fixed Swift package URLs generated by the OSV audit so dependency scans no longer fail with invalid requests.
-
-### Added
-- Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
-- Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
-- Added a backward-compatible versioned extension/server handshake with explicit protocol mismatch errors.
-- Tool failures now include stable error codes, retry guidance, and recovery actions for disconnected bridges, stale element UIDs, missing targets, and wait timeouts.
-- `type_text` now supports opt-in native macOS keyboard events for contenteditable and framework-managed editors.
-- Added `upload_file` and `drop_file` for attaching explicit local files to a file input or dropping them onto an element.
-- Added `run_steps` for bounded sequential interaction and wait batches with ordered results, first-failure stopping, one optional trace, and one optional final snapshot.
-- `screenshot` now reports the viewport size, device pixel ratio, page visibility, and window focus at capture time, so callers can tell device pixels from CSS pixels and can detect a frame captured while Safari was neither repainting the page nor applying `:focus`.
-- `read_network` now accepts `type: "resource"` to report PerformanceResourceTiming entries without changing the default XHR/fetch feed, plus `urlPattern` (regex) and `maxResults` filters on any feed and a `status` filter on the XHR/fetch feed. Cross-origin resource entries whose byte counts are withheld are marked `timingRestricted: true`.
-- `press_key`, `hover`, and `drag` now accept `native: true` for real macOS events, the same opt-in `type_text` already had: keys that trigger default actions such as focus moves and dialog dismissal, a pointer path that produces true CSS `:hover` and boundary events, and drags that threshold-based libraries accept. Character keys resolve against the active keyboard layout, so `Meta+a` is Command-A on AZERTY rather than Command-Q.
-
-### Bug Fixes
-- `read_network` with `clear` now removes only the entries the call returned, so a type- or URL-filtered clear no longer discards requests the caller never saw (matching `read_console`).
-- Stop stale per-port token files from causing endless extension reconnect attempts and popup state cycling.
-- Read the popup version from its manifest, keep ports ordered, and use adaptive system colors for legibility on Safari glass.
-- Reinject the content script when Safari returns no message-listener response instead of reporting a successful `null` result.
 
 ## [0.2.9] - 2026-06-06
 ### Added
