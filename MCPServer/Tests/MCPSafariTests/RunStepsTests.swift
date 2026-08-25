@@ -20,6 +20,20 @@ struct RunStepsTests {
         #expect(plan.timeout == 60)
     }
 
+    @Test func acceptsTheFileAttachmentTools() throws {
+        // They route through the same handler a direct call does; excluding them
+        // forced callers to split a batch around the one step that attaches a file.
+        let plan = try RunStepsPlan(arguments: [
+            "steps": [
+                ["tool": "upload_file", "arguments": ["selector": "#file", "paths": ["/tmp/a.png"]]],
+                ["tool": "drop_file", "arguments": ["selector": "#drop", "paths": ["/tmp/b.png"]]],
+            ],
+        ])
+
+        #expect(plan.steps.map(\.tool) == ["upload_file", "drop_file"])
+        #expect(RunStepsPlan.allowedTools.isSuperset(of: ["upload_file", "drop_file"]))
+    }
+
     @Test func rejectsEmptyOversizedAndUnsupportedBatches() {
         #expect(errorMessage([:]) == "steps must contain at least one step")
         #expect(errorMessage(["steps": []]) == "steps must contain at least one step")

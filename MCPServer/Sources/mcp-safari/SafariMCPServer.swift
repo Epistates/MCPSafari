@@ -15,6 +15,7 @@ struct RunStepsPlan: Equatable, Sendable {
     static let allowedTools: Set<String> = [
         "navigate", "click", "type_text", "form_input", "select_option",
         "press_key", "hover", "scroll", "drag", "wait",
+        "upload_file", "drop_file",
     ]
     static let maxSteps = 10
     static let maxTimeout = 60.0
