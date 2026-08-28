@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Bug Fixes
+- `javascript_tool` no longer fails outright on sites whose Content Security Policy omits `'unsafe-eval'`. Those pages refuse to compile a string in their own realm, which is how the tool runs submitted code; it now reruns in the extension's isolated world, where the DOM is shared but the page's own JavaScript globals are not, and says so in the result. When both worlds refuse, the error names the tools to use instead rather than surfacing the raw browser message.
 
 ## [0.3.0] - 2026-08-25
 ### Added

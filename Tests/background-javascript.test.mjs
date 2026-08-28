@@ -8,7 +8,20 @@ const backgroundSource = readFileSync(
     "utf8"
 );
 
-function backgroundHarness() {
+// Built inside the vm so the thrown EvalError belongs to that realm, the way a
+// real page's refusal does; a cross-realm one would defeat `instanceof`.
+function refusingFunction(context) {
+    return vm.runInContext(
+        `(function () {
+            throw new EvalError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the following Content Security Policy directive: \\"script-src 'self'\\".");
+        })`,
+        context
+    );
+}
+
+function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
+    let context;
+
     class FakeWebSocket {
         static CONNECTING = 0;
         constructor(url) {
@@ -29,7 +42,23 @@ function backgroundHarness() {
             sendNativeMessage: async () => ({ tokens: {} }),
         },
         scripting: {
-            executeScript: async ({ func, args }) => [{ result: await func(...args) }],
+            // A world whose CSP forbids 'unsafe-eval' refuses to compile a
+            // string, which is what `new Function` does inside the injected code.
+            executeScript: async ({ func, args, world }) => {
+                if (!cspBlockedWorlds.includes(world)) {
+                    return [{ result: await func(...args) }];
+                }
+                // Read from inside: intrinsics live on the vm global, not on the
+                // sandbox object, so `context.Function` here would be undefined
+                // and restoring it would erase the real one.
+                const realFunction = vm.runInContext("Function", context);
+                context.Function = refusingFunction(context);
+                try {
+                    return [{ result: await func(...args) }];
+                } finally {
+                    context.Function = realFunction;
+                }
+            },
         },
         storage: {
             local: { get: async () => ({}), set() {} },
@@ -41,7 +70,7 @@ function backgroundHarness() {
         },
     };
 
-    const context = vm.createContext({
+    context = vm.createContext({
         browser,
         clearTimeout() {},
         console: { error() {}, log() {}, warn() {} },
@@ -100,4 +129,30 @@ test("async IIFE expression keeps working", async () => {
     const run = backgroundHarness();
     const code = "(async () => { const a = await Promise.resolve(41); return JSON.stringify({ b: a + 1 }) })()";
     assert.equal(await run(code), '"{\\"b\\":42}"');
+});
+
+test("a page CSP that blocks eval falls back to the isolated world", async () => {
+    const run = backgroundHarness({ cspBlockedWorlds: ["MAIN"] });
+
+    const output = await run("1 + 1");
+
+    assert.match(output, /^2\n/, "the value still comes back");
+    assert.match(output, /isolated world/i, "and the caller is told where it ran");
+    assert.match(output, /globals/i, "including what is not visible there");
+});
+
+test("CSP in both worlds reports what to use instead", async () => {
+    const run = backgroundHarness({ cspBlockedWorlds: ["MAIN", "ISOLATED"] });
+
+    await assert.rejects(run("1 + 1"), (err) => {
+        assert.match(err.message, /Content Security Policy/);
+        assert.match(err.message, /snapshot|find|read_page/);
+        assert.doesNotMatch(err.message, /unsafe-eval/, "the raw browser text is replaced with guidance");
+        return true;
+    });
+});
+
+test("an ordinary page still runs in the page world with no note", async () => {
+    const run = backgroundHarness();
+    assert.equal(await run("1 + 1"), "2");
 });

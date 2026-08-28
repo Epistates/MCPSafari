@@ -293,6 +293,8 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 |------|-------------|
 | `javascript_tool` | Execute arbitrary JS in the page context and return expression results; multi-statement code must end in an explicit `return` to produce a value |
 
+> **Note:** Sites whose Content Security Policy omits `'unsafe-eval'` refuse to compile a string in their own realm, which is how this tool runs your code. When that happens it reruns in the extension's isolated world and says so in the result. The DOM is shared there, so querying and manipulating the page still works, but the site's own JavaScript globals (framework instances, anything the page assigned to `window`) are not visible. Retrying is safe — a CSP refusal happens before any of the submitted code runs.
+
 ### Debugging
 
 | Tool | Description |
