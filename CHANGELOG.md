@@ -1,10 +1,8 @@
 # Changelog
 
 ## [Unreleased]
-### Bug Fixes
-- `javascript_tool` no longer fails outright on sites whose Content Security Policy omits `'unsafe-eval'`. Those pages refuse to compile a string in their own realm, which is how the tool runs submitted code; it now reruns in the extension's isolated world, where the DOM is shared but the page's own JavaScript globals are not, and says so in the result. When both worlds refuse, the error names the tools to use instead rather than surfacing the raw browser message.
 
-## [0.3.0] - 2026-08-25
+## [0.3.0] - 2026-08-28
 ### Added
 - Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
 - Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
@@ -26,6 +24,7 @@
 - `snapshot` no longer reports the contents of password inputs, or of inputs whose `autocomplete` marks them as a one-time code or payment card field; those values come back as `[redacted]`.
 
 ### Bug Fixes
+- `javascript_tool` no longer fails outright on sites whose Content Security Policy omits `'unsafe-eval'`. Those pages refuse to compile a string in their own realm, which is how the tool runs submitted code, so it now reruns in the extension's isolated world, where the DOM is shared but the page's own JavaScript globals are not, and says so in the result. When both worlds refuse, the error names the tools to use instead of surfacing the raw browser message.
 - `run_steps` now accepts `upload_file` and `drop_file`, so a batch that attaches a file no longer has to be split around that step.
 - `click` and `hover` with `x`/`y` now dispatch events at the requested point instead of the target element's center, so a specific point inside a large element (e.g. a canvas) can be targeted.
 - `press_key` and `type_text`'s `submitKey` no longer emit `keypress` for keys that produce no character (Escape, Tab, arrow keys) or for Ctrl/Meta combos, matching the UI Events spec; single characters and Enter still fire it.
