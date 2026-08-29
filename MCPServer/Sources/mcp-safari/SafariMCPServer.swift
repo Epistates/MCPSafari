@@ -483,7 +483,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "javascript_tool",
-                description: "Execute JS in page context. A single expression returns its value; a multi-statement body must end in an explicit `return` to produce a value.",
+                description: "Execute JS in page context. A single expression returns its value; a multi-statement body must end in an explicit `return` to produce a value. If the page's Content Security Policy forbids evaluating strings, this reruns in the extension's isolated world, where the DOM is shared but the page's own JavaScript globals are not visible; the result says so when that happens.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([

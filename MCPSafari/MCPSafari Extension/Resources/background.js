@@ -665,38 +665,73 @@ async function capturePageContext(tabId) {
 
 // ─── JavaScript Execution Handler ────────────────────────────────────
 
+// Injected into the target world, so it must not close over anything here.
+function evaluateUserCode(code) {
+    const describe = (e) => {
+        const message = e && e.message ? e.message : String(e);
+        // A page whose script-src omits 'unsafe-eval' refuses to compile a
+        // string in its own realm, which is what new Function does here.
+        const blocked = (typeof EvalError !== "undefined" && e instanceof EvalError)
+            || /unsafe-eval|trusted-types-eval|Content Security Policy/i.test(message);
+        return blocked ? { __error: message, __cspBlocked: true } : { __error: message };
+    };
+
+    try {
+        const expressionCode = String(code).trim().replace(/;+$/, "");
+        let fn;
+        try {
+            fn = new Function(`return (async () => (${expressionCode}))()`);
+        } catch (e) {
+            // A syntax error means it is not a bare expression; a CSP refusal
+            // means neither form will compile, so do not retry it as one.
+            if (typeof EvalError !== "undefined" && e instanceof EvalError) return describe(e);
+            fn = new Function(`return (async () => { ${code} })()`);
+        }
+        return fn().catch((e) => describe(e));
+    } catch (e) {
+        return describe(e);
+    }
+}
+
 async function handleJavaScript(params) {
     const tabId = params.tabId || (await getActiveTabId());
-    const results = await browser.scripting.executeScript({
-        target: { tabId },
-        func: (code) => {
-            try {
-                const expressionCode = String(code).trim().replace(/;+$/, "");
-                let fn;
-                try {
-                    fn = new Function(`return (async () => (${expressionCode}))()`);
-                } catch (_) {
-                    fn = new Function(`return (async () => { ${code} })()`);
-                }
-                return fn().catch((e) => ({
-                    __error: e && e.message ? e.message : String(e),
-                }));
-            } catch (e) {
-                return { __error: e.message };
-            }
-        },
-        args: [params.code],
-        world: "MAIN",
-    });
+    const runIn = async (world) => {
+        const results = await browser.scripting.executeScript({
+            target: { tabId },
+            func: evaluateUserCode,
+            args: [params.code],
+            world,
+        });
+        return results && results.length > 0 ? results[0].result : undefined;
+    };
 
-    if (results && results.length > 0) {
-        const result = results[0].result;
-        if (result && result.__error) {
-            throw new Error(result.__error);
+    let result = await runIn("MAIN");
+    let isolated = false;
+
+    if (result && result.__cspBlocked) {
+        // The isolated world does not inherit the page's CSP and still shares
+        // the DOM, so DOM-based code survives a strict script-src. Page
+        // JavaScript globals do not exist there, which the caller is told.
+        // Retrying is safe because a CSP refusal happens at compile time, so
+        // nothing in the submitted code has run yet and side effects cannot double.
+        const fallback = await runIn("ISOLATED");
+        if (fallback && fallback.__cspBlocked) {
+            throw new Error(
+                "The page's Content Security Policy blocks evaluating code as a string, "
+                + "in both the page world and the extension's isolated world. "
+                + "Use snapshot, find, or read_page to inspect the page, and click or "
+                + "type_text to drive it."
+            );
         }
-        return result !== undefined ? JSON.stringify(result) : "undefined";
+        result = fallback;
+        isolated = true;
     }
-    return "undefined";
+
+    if (result && result.__error) throw new Error(result.__error);
+    const value = result !== undefined ? JSON.stringify(result) : "undefined";
+    return isolated
+        ? `${value}\n\n[Ran in the extension's isolated world: the page's CSP blocked evaluation in the page world. The DOM is shared, but page JavaScript globals such as window properties set by the site are not visible.]`
+        : value;
 }
 
 // ─── Window Resize Handler ───────────────────────────────────────────
