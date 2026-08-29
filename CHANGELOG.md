@@ -13,6 +13,7 @@
 - Added `run_steps` for bounded sequential interaction and wait batches with ordered results, first-failure stopping, one optional trace, and one optional final snapshot.
 - `screenshot` now reports the viewport size, device pixel ratio, page visibility, and window focus at capture time, so callers can tell device pixels from CSS pixels and can detect a frame captured while Safari was neither repainting the page nor applying `:focus`.
 - `read_network` now accepts `type: "resource"` to report PerformanceResourceTiming entries without changing the default XHR/fetch feed, plus `urlPattern` (regex) and `maxResults` filters on any feed and a `status` filter on the XHR/fetch feed. Cross-origin resource entries whose byte counts are withheld are marked `timingRestricted: true`.
+- `snapshot` is capped at 2000 nodes and accepts `maxNodes`; a cut tree marks the root `truncated` and each parent whose children were dropped `childrenTruncated`, so a clipped snapshot is distinguishable from a complete one. `read_page` text and html are capped at 100000 characters, accept `maxChars`, and report the full size when they cut.
 - `press_key`, `hover`, and `drag` now accept `native: true` for real macOS events, the same opt-in `type_text` already had: keys that trigger default actions such as focus moves and dialog dismissal, a pointer path that produces true CSS `:hover` and boundary events, and drags that threshold-based libraries accept. Character keys resolve against the active keyboard layout, so `Meta+a` is Command-A on AZERTY rather than Command-Q.
 
 ### Changed
