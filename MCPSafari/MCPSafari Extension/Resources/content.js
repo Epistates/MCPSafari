@@ -120,7 +120,7 @@
             case "get_page_text":
                 return getPageText();
             case "snapshot":
-                return takeSnapshot();
+                return takeSnapshot(params);
             case "find":
                 return findElements(params);
             case "click":
@@ -168,15 +168,29 @@
 
     // ─── Page Reading ────────────────────────────────────────────────
 
+    // A big application page runs to hundreds of kilobytes, which either
+    // overruns the client's output limit or spends the model's context on one
+    // call. Cut it and say so, rather than returning a clipped page that reads
+    // like the whole thing.
+    const MAX_PAGE_CHARS = 100000;
+
+    function clampText(value, limit) {
+        const max = limit > 0 ? limit : MAX_PAGE_CHARS;
+        if (value.length <= max) return value;
+        return `${value.slice(0, max)}\n\n[truncated: ${value.length} characters total, `
+            + `${max} returned. Raise maxChars, or use find or snapshot to target a region.]`;
+    }
+
     function readPage(params) {
         const format = params.format || "text";
+        const maxChars = Number(params.maxChars) > 0 ? Number(params.maxChars) : 0;
         switch (format) {
             case "html":
-                return document.documentElement.outerHTML;
+                return clampText(document.documentElement.outerHTML, maxChars);
             case "text":
-                return document.body ? document.body.innerText : "";
+                return clampText(document.body ? document.body.innerText : "", maxChars);
             case "snapshot":
-                return takeSnapshot();
+                return takeSnapshot(params);
             default:
                 throw new Error(`Unknown format: ${format}. Use 'text', 'html', or 'snapshot'.`);
         }
@@ -189,15 +203,27 @@
     // ─── Accessibility Snapshot ──────────────────────────────────────
 
     const MAX_TREE_DEPTH = 30;
+    const MAX_SNAPSHOT_NODES = 2000;
 
-    function takeSnapshot() {
+    function takeSnapshot(params = {}) {
         const root = document.body || document.documentElement;
-        return buildTree(root, 0);
+        const requested = Number(params.maxNodes);
+        const budget = { remaining: requested > 0 ? requested : MAX_SNAPSHOT_NODES, cut: false };
+        const tree = buildTree(root, 0, budget);
+        // Marked on the root as well, so a caller reading the top of a large
+        // tree can tell a cut snapshot from a complete one without scanning it.
+        if (tree && budget.cut) tree.truncated = true;
+        return tree;
     }
 
-    function buildTree(element, depth) {
+    function buildTree(element, depth, budget) {
         if (depth > MAX_TREE_DEPTH) return null;
         if (!isVisible(element)) return null;
+        if (budget.remaining <= 0) {
+            budget.cut = true;
+            return null;
+        }
+        budget.remaining -= 1;
 
         const role = getRole(element);
         const name = getAccessibleName(element);
@@ -229,10 +255,13 @@
 
         // Children
         const children = [];
+        let droppedChildren = false;
         for (const child of element.children) {
-            const childNode = buildTree(child, depth + 1);
+            const childNode = buildTree(child, depth + 1, budget);
             if (childNode) children.push(childNode);
+            else if (budget.remaining <= 0) droppedChildren = true;
         }
+        if (droppedChildren) node.childrenTruncated = true;
 
         // Leaf nodes report their whole text content. Nodes that also have
         // element children report their own direct text nodes, so mixed
