@@ -37,17 +37,28 @@
         return String(value).replace(/["\\]/g, "\\$&");
     }
 
+    // The WeakRef lets the element go, but its entry here would outlive it.
+    // A long agent session re-snapshotting a page that re-renders mints a fresh
+    // uid every time, so without this the map grows for the life of the page.
+    const uidFinalizer = typeof FinalizationRegistry === "function"
+        ? new FinalizationRegistry((uid) => { reverseUidMap.delete(uid); })
+        : null;
+
     function getUid(element) {
         if (uidMap.has(element)) return uidMap.get(element);
         const uid = `e${++uidCounter}`;
         uidMap.set(element, uid);
         reverseUidMap.set(uid, new WeakRef(element));
+        if (uidFinalizer) uidFinalizer.register(element, uid);
         return uid;
     }
 
     function getElementByUid(uid) {
         const ref = reverseUidMap.get(uid);
-        return ref ? ref.deref() : null;
+        const element = ref ? ref.deref() : null;
+        // Collection may have happened without the finalizer having run yet.
+        if (ref && !element) reverseUidMap.delete(uid);
+        return element;
     }
 
     function requestMainWorld(type, params = {}, timeoutMs = 3000) {
