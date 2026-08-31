@@ -271,20 +271,34 @@ actor SafariMCPServer {
 
             Tool(
                 name: "snapshot",
-                description: "Accessibility tree with element UIDs for interaction tools. UIDs change between snapshots.",
+                description: "Accessibility tree with element UIDs for interaction tools. UIDs change between snapshots. Capped at 2000 nodes by default; a cut tree marks the root `truncated` and each parent whose children were dropped `childrenTruncated`.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(["tabId": Self.tab]),
+                    "properties": .object([
+                        "maxNodes": .object([
+                            "type": .string("integer"),
+                            "description": .string("Maximum nodes to return (default 2000)"),
+                        ]),
+                        "tabId": Self.tab,
+                    ]),
                 ]),
                 annotations: .init(readOnlyHint: true)
             ),
             Tool(
                 name: "read_page",
-                description: "Page content as text, html, or snapshot.",
+                description: "Page content as text, html, or snapshot. Text and html are capped at 100000 characters by default and say so when cut; snapshot takes maxNodes.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "format": .object(["type": .string("string"), "enum": .array([.string("text"), .string("html"), .string("snapshot")])]),
+                        "maxChars": .object([
+                            "type": .string("integer"),
+                            "description": .string("Character cap for text and html (default 100000)"),
+                        ]),
+                        "maxNodes": .object([
+                            "type": .string("integer"),
+                            "description": .string("Node cap when format is snapshot (default 2000)"),
+                        ]),
                         "tabId": Self.tab,
                     ]),
                 ]),
@@ -743,6 +757,28 @@ actor SafariMCPServer {
             }
             params["format"] = AnyCodable(format)
         }
+        if let maxChars = args["maxChars"]?.intValue {
+            guard maxChars > 0 else {
+                return Self.failureResult(ToolFailure(
+                    code: "invalid_input",
+                    message: "Invalid maxChars: \(maxChars). Use a positive integer.",
+                    retryable: false,
+                    recoveryAction: "fix_input"
+                ))
+            }
+            params["maxChars"] = AnyCodable(maxChars)
+        }
+        if let maxNodes = args["maxNodes"]?.intValue {
+            guard maxNodes > 0 else {
+                return Self.failureResult(ToolFailure(
+                    code: "invalid_input",
+                    message: "Invalid maxNodes: \(maxNodes). Use a positive integer.",
+                    retryable: false,
+                    recoveryAction: "fix_input"
+                ))
+            }
+            params["maxNodes"] = AnyCodable(maxNodes)
+        }
         let response = try await bridge.send(action: "read_page", params: params)
         return textResult(response)
     }
@@ -750,6 +786,17 @@ actor SafariMCPServer {
     private func handleSnapshot(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
+        if let maxNodes = args["maxNodes"]?.intValue {
+            guard maxNodes > 0 else {
+                return Self.failureResult(ToolFailure(
+                    code: "invalid_input",
+                    message: "Invalid maxNodes: \(maxNodes). Use a positive integer.",
+                    retryable: false,
+                    recoveryAction: "fix_input"
+                ))
+            }
+            params["maxNodes"] = AnyCodable(maxNodes)
+        }
         let response = try await bridge.send(action: "snapshot", params: params)
         return textResult(response)
     }
