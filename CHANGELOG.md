@@ -7,6 +7,9 @@
 ### Security
 - `tabs_context`, `tabs_create`, `select_tab`, and `navigate` now return tab URLs with the values of `access_token`, `id_token`, `refresh_token`, `client_secret`, `api_key`, and `password` replaced by `[redacted]`; `code` is redacted when the URL also carries an OAuth `state`.
 
+### Bug Fixes
+- `click` now dispatches `pointerdown`/`pointerup` ahead of `mousedown`/`mouseup`, and skips the mouse press and focus change when a handler cancels `pointerdown`, matching real input. Pointer-driven toggles such as Radix `DropdownMenu` triggers open instead of reporting a successful click that changed nothing.
+
 ## [0.3.0] - 2026-08-28
 ### Added
 - Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
