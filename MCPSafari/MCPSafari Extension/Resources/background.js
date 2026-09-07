@@ -359,11 +359,27 @@ async function handleRequest(request) {
 
 // ─── Tab Handlers ────────────────────────────────────────────────────
 
+// Bearer and session values are redacted before a tab URL leaves the
+// extension. `code` is only treated as an OAuth code next to `state`;
+// alone it is usually a SKU or coupon.
+const SECRET_URL_PARAMS = ["access_token", "id_token", "refresh_token", "client_secret", "api_key", "password"];
+
+function redactUrlSecrets(url) {
+    if (!url) return "";
+    // Only the query and fragment carry parameters; `&` is legal in a path.
+    const start = url.search(/[?#]/);
+    if (start === -1) return url;
+    const tail = url.slice(start);
+    const names = /[?&#]state(?=[=&#]|$)/i.test(tail) ? [...SECRET_URL_PARAMS, "code"] : SECRET_URL_PARAMS;
+    const pattern = new RegExp(`([?&#](?:${names.join("|")})=)[^&#]*`, "gi");
+    return url.slice(0, start) + tail.replace(pattern, "$1[redacted]");
+}
+
 async function handleTabsQuery() {
     const tabs = await browser.tabs.query({});
     return tabs.map((t) => ({
         id: t.id,
-        url: t.url || "",
+        url: redactUrlSecrets(t.url),
         title: t.title || "",
         active: t.active,
         pinned: t.pinned || false,
@@ -381,7 +397,7 @@ async function handleTabsCreate(params) {
     const tab = await browser.tabs.create(opts);
     return {
         id: tab.id,
-        url: tab.url || params.url || "",
+        url: redactUrlSecrets(tab.url || params.url),
         title: tab.title || "",
     };
 }
@@ -410,7 +426,7 @@ async function handleSelectTab(params) {
 
     return {
         id: tab.id,
-        url: tab.url || "",
+        url: redactUrlSecrets(tab.url),
         title: tab.title || "",
         selected: true,
     };
@@ -546,7 +562,7 @@ async function handleNavigate(params) {
 
     // Return tab info so the caller knows where they landed
     tab = tab || (await browser.tabs.get(tabId));
-    return `${message} ${tab.url || ""} (${tab.title || ""})`
+    return `${message} ${redactUrlSecrets(tab.url)} (${tab.title || ""})`
 }
 
 async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000, noNavigationTimeoutMs = 1500) {
