@@ -488,12 +488,15 @@ actor SafariMCPServer {
 
             Tool(
                 name: "screenshot",
-                description: "Capture visible tab as PNG.",
+                description: "Capture visible tab as PNG. Pass filePath to save the PNG to disk and get the path back instead of inline image data.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(["tabId": Self.tab]),
+                    "properties": .object([
+                        "filePath": .object(["type": .string("string"), "description": .string("Save the PNG to this local path (~ expanded) and return the path instead of the image")]),
+                        "tabId": Self.tab,
+                    ]),
                 ]),
-                annotations: .init(readOnlyHint: true)
+                annotations: .init(readOnlyHint: false)
             ),
             Tool(
                 name: "javascript_tool",
@@ -1506,14 +1509,54 @@ actor SafariMCPServer {
         if let failure = Self.captureFailure(imageData) {
             return Self.failureResult(failure)
         }
+        let note = capture.flatMap(Self.captureNote)
+
+        if let filePath = args["filePath"], let png = Data(base64Encoded: imageData) {
+            let url: URL
+            do {
+                guard let path = filePath.stringValue else { throw FileAttachmentError("filePath must be a string") }
+                url = try Self.writeCapture(png, to: path)
+            } catch {
+                return Self.failureResult(ToolFailure(
+                    code: "invalid_input",
+                    message: "\(error)",
+                    retryable: false,
+                    recoveryAction: "fix_input"
+                ))
+            }
+            let text = ["Saved PNG to \(url.path) (\(png.count) bytes).", note]
+                .compactMap { $0 }
+                .joined(separator: "\n")
+            return CallTool.Result(content: [Self.textContent(text)])
+        }
 
         var content: [Tool.Content] = [
             Self.imageContent(data: imageData, mimeType: "image/png"),
         ]
-        if let capture, let note = Self.captureNote(capture) {
+        if let note {
             content.append(Self.textContent(note))
         }
         return CallTool.Result(content: content)
+    }
+
+    /// Writes a capture to the caller's path. A batch of full-resolution frames
+    /// does not fit through the client inline, and only the server can reach
+    /// the filesystem, so the write happens here rather than in the extension.
+    static func writeCapture(_ png: Data, to path: String) throws -> URL {
+        guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FileAttachmentError("filePath must not be empty")
+        }
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            throw FileAttachmentError("filePath is a directory, not a file: \(url.path)")
+        }
+        do {
+            try png.write(to: url, options: .atomic)
+        } catch {
+            throw FileAttachmentError("Cannot write screenshot to \(url.path) (\(error.localizedDescription))")
+        }
+        return url
     }
 
     /// Safari resolves a failed capture to an empty or non-image payload, and

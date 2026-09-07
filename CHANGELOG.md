@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- `screenshot` accepts `filePath`: the PNG is written there and the result carries the path and byte count instead of inline image data, so batch captures no longer flood the client context.
+
 ### Security
 - `tabs_context`, `tabs_create`, `select_tab`, and `navigate` now return tab URLs with the values of `access_token`, `id_token`, `refresh_token`, `client_secret`, `api_key`, and `password` replaced by `[redacted]`; `code` is redacted when the URL also carries an OAuth `state`.
 
