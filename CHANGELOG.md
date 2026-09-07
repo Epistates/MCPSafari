@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 - `click` now dispatches `pointerdown`/`pointerup` ahead of `mousedown`/`mouseup`, and skips the mouse press and focus change when a handler cancels `pointerdown`, matching real input. Pointer-driven toggles such as Radix `DropdownMenu` triggers open instead of reporting a successful click that changed nothing.
+- `drop_file` now dispatches from the page's world and gives each dropped item a `webkitGetAsEntry()` whose `file()` resolves. Safari minted an entry for the in-memory File whose `file()` rejected with `NotFoundError`, so folder-aware drop zones that walk entries collected nothing and treated the drop as empty.
 
 ## [0.3.0] - 2026-08-28
 ### Added

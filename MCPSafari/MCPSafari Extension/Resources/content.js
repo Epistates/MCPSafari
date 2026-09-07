@@ -1355,11 +1355,37 @@
         return `Attached ${describeFiles(files)} to file input`;
     }
 
+    let dropQueue = Promise.resolve();
+
+    // Drops share one target marker, so they run one at a time.
     function dropFile(params) {
+        const run = dropQueue.then(() => dropFileNow(params));
+        dropQueue = run.catch(() => {});
+        return run;
+    }
+
+    async function dropFileNow(params) {
         const target = resolveElement({ uid: params.uid, selector: params.selector });
         const files = buildFiles(params);
-        const dataTransfer = transferFor(files);
+        const dropped = `Dropped ${describeFiles(files)} on <${target.tagName.toLowerCase()}>`;
 
+        // Page listeners only see item overrides made in their own world, so
+        // file-drop.js dispatches; without it the entry API stays broken.
+        const marker = `mcp-drop-${Date.now()}-${++bridgeRequestCounter}`;
+        target.setAttribute("data-mcp-drop-target", marker);
+        try {
+            await requestMainWorld("drop_files", { marker, files });
+            return dropped;
+        } catch (err) {
+            if (!String(err.message || err).endsWith("interceptor did not respond")) throw err;
+            dispatchDrop(target, transferFor(files));
+            return `${dropped} (page bridge unavailable; entry API not patched)`;
+        } finally {
+            target.removeAttribute("data-mcp-drop-target");
+        }
+    }
+
+    function dispatchDrop(target, dataTransfer) {
         target.scrollIntoView({ behavior: "instant", block: "center" });
         const rect = target.getBoundingClientRect();
         const baseOpts = {
@@ -1374,8 +1400,6 @@
         for (const type of ["dragenter", "dragover", "drop"]) {
             target.dispatchEvent(new DragEvent(type, baseOpts));
         }
-
-        return `Dropped ${describeFiles(files)} on <${target.tagName.toLowerCase()}>`;
     }
 
     // ─── Wait ────────────────────────────────────────────────────────

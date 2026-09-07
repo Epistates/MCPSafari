@@ -20,7 +20,7 @@
     },
 
     "content_scripts": [{
-        "js": ["trace-interceptor.js", "dialog-interceptor.js", "console-interceptor.js", "network-interceptor.js"],
+        "js": ["trace-interceptor.js", "dialog-interceptor.js", "console-interceptor.js", "network-interceptor.js", "file-drop.js"],
         "matches": ["<all_urls>"],
         "run_at": "document_start",
         "all_frames": false,
