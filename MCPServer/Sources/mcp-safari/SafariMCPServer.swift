@@ -3,8 +3,10 @@ import ApplicationServices
 import Carbon
 import CoreGraphics
 import Foundation
+import ImageIO
 import Logging
 import MCP
+import UniformTypeIdentifiers
 
 struct RunStep: Equatable, Sendable {
     let tool: String
@@ -488,10 +490,13 @@ actor SafariMCPServer {
 
             Tool(
                 name: "screenshot",
-                description: "Capture visible tab as PNG. Pass filePath to save the PNG to disk and get the path back instead of inline image data.",
+                description: "Capture visible tab as PNG. Pass uid or selector to scroll that element into view and capture it with padding, scale to shrink the image, and filePath to save the PNG to disk and get the path back instead of inline image data.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
+                        "uid": Self.uid, "selector": Self.sel,
+                        "padding": .object(["type": .string("number"), "description": .string("CSS px kept around the element (default: 16)")]),
+                        "scale": .object(["type": .string("number"), "description": .string("Shrink the PNG by this factor, 0 to 1 (default: 1)")]),
                         "filePath": .object(["type": .string("string"), "description": .string("Save the PNG to this local path (~ expanded) and return the path instead of the image")]),
                         "tabId": Self.tab,
                     ]),
@@ -1495,6 +1500,17 @@ actor SafariMCPServer {
     private func handleScreenshot(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
         if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
+        if let uid = args["uid"]?.stringValue { params["uid"] = AnyCodable(uid) }
+        if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
+        // Validate before the bridge call: a targeted capture scrolls the page.
+        let padding: Double
+        let scale: Double
+        do {
+            padding = try Self.capturePadding(args)
+            scale = try Self.captureScale(args)
+        } catch {
+            return Self.failureResult(toolFailure(for: error))
+        }
         let response = try await bridge.send(action: "screenshot", params: params)
 
         guard response.success, let raw = response.data?.stringValue else {
@@ -1504,14 +1520,29 @@ actor SafariMCPServer {
         // Current extensions send the image plus its capture context; older
         // ones send the base64 image on its own.
         let capture = Self.decodeCapture(raw)
-        let imageData = capture?["image"]?.stringValue ?? raw
+        var imageData = capture?["image"]?.stringValue ?? raw
 
         if let failure = Self.captureFailure(imageData) {
             return Self.failureResult(failure)
         }
-        let note = capture.flatMap(Self.captureNote)
+        var note = capture.flatMap(Self.captureNote)
+        var png = Data(base64Encoded: imageData) ?? Data()
 
-        if let filePath = args["filePath"], let png = Data(base64Encoded: imageData) {
+        do {
+            let clip = try Self.captureClip(args, capture: capture, padding: padding)
+            if clip != nil || scale < 1 {
+                let rendered = try Self.renderCapture(png, clip: clip, scale: scale)
+                png = rendered.png
+                imageData = png.base64EncodedString()
+                note = [note, Self.renderNote(rendered, args: args, capture: capture, scale: scale)]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+            }
+        } catch {
+            return Self.failureResult(toolFailure(for: error))
+        }
+
+        if let filePath = args["filePath"] {
             let url: URL
             do {
                 guard let path = filePath.stringValue else { throw FileAttachmentError("filePath must be a string") }
@@ -1557,6 +1588,124 @@ actor SafariMCPServer {
             throw FileAttachmentError("Cannot write screenshot to \(url.path) (\(error.localizedDescription))")
         }
         return url
+    }
+
+    struct RenderedCapture {
+        let png: Data
+        let width: Int
+        let height: Int
+        /// Device-pixel rect of the source frame that the PNG covers.
+        let clip: CGRect
+    }
+
+    static func capturePadding(_ args: [String: Value]) throws -> Double {
+        for key in ["uid", "selector"] where args[key] != nil && args[key]?.stringValue == nil {
+            throw ToolInputError("\(key) must be a string")
+        }
+        guard let value = args["padding"] else { return 16 }
+        guard let padding = numberValue(value), padding >= 0, padding.isFinite else {
+            throw ToolInputError("padding must be a number of CSS px, 0 or more")
+        }
+        return padding
+    }
+
+    /// Device-pixel rect around the requested element, or nil for the whole
+    /// frame. The extension measures the element in CSS px after scrolling
+    /// it into view; padding and devicePixelRatio are applied here.
+    static func captureClip(_ args: [String: Value], capture: [String: AnyCodable]?, padding: Double) throws -> CGRect? {
+        guard args["uid"]?.stringValue != nil || args["selector"]?.stringValue != nil else { return nil }
+        guard let target = capture?["target"]?.objectValue,
+              let x = number(target["x"]), let y = number(target["y"]),
+              let width = number(target["width"]), let height = number(target["height"]) else {
+            throw ToolInputError(
+                "This MCPSafari extension does not report element bounds for screenshot; update the extension or drop uid/selector"
+            )
+        }
+        let ratio = number(capture?["devicePixelRatio"]) ?? 1
+        return CGRect(x: x - padding, y: y - padding, width: width + 2 * padding, height: height + 2 * padding)
+            .applying(CGAffineTransform(scaleX: ratio, y: ratio))
+    }
+
+    static func captureScale(_ args: [String: Value]) throws -> Double {
+        guard let value = args["scale"] else { return 1 }
+        guard let scale = numberValue(value), scale > 0, scale <= 1 else {
+            throw ToolInputError("scale must be a number above 0 and at most 1")
+        }
+        return scale
+    }
+
+    /// Crops the frame to `clip` (device px, clamped to the frame) and scales
+    /// the result. Both happen on the server because the extension only has
+    /// captureVisibleTab, which returns the whole viewport at device scale.
+    static func renderCapture(_ png: Data, clip: CGRect?, scale: Double) throws -> RenderedCapture {
+        guard let source = CGImageSourceCreateWithData(png as CFData, nil),
+              var image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw FileAttachmentError("Safari returned a PNG that cannot be decoded")
+        }
+        let frame = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        var region = frame
+        if let clip {
+            region = clip.integral.intersection(frame)
+            guard !region.isNull, region.width >= 1, region.height >= 1 else {
+                throw ToolInputError("The element lies outside the captured viewport; scroll it into view or capture without uid/selector")
+            }
+            guard let cropped = image.cropping(to: region) else {
+                throw FileAttachmentError("Cannot crop the capture to \(region)")
+            }
+            image = cropped
+        }
+        if scale < 1 {
+            let width = max(1, Int((Double(image.width) * scale).rounded()))
+            let height = max(1, Int((Double(image.height) * scale).rounded()))
+            guard let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                throw FileAttachmentError("Cannot allocate a \(width)x\(height) bitmap")
+            }
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            guard let scaled = context.makeImage() else {
+                throw FileAttachmentError("Cannot scale the capture to \(width)x\(height)")
+            }
+            image = scaled
+        }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil) else {
+            throw FileAttachmentError("Cannot encode the capture as PNG")
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw FileAttachmentError("Cannot encode the capture as PNG")
+        }
+        return RenderedCapture(png: output as Data, width: image.width, height: image.height, clip: region)
+    }
+
+    /// Tells the caller which part of the viewport the PNG covers, since the
+    /// frame note above no longer holds. With the viewport size from that
+    /// note, the PNG size is enough to map image px back to CSS px.
+    static func renderNote(
+        _ rendered: RenderedCapture, args: [String: Value], capture: [String: AnyCodable]?, scale: Double
+    ) -> String {
+        let ratio = number(capture?["devicePixelRatio"]) ?? 1
+        var parts: [String] = []
+        let target = args["uid"]?.stringValue.map { "uid \($0)" }
+            ?? args["selector"]?.stringValue.map { "selector \($0)" }
+        if let target {
+            let clip = rendered.clip
+            let css = clip.applying(CGAffineTransform(scaleX: 1 / ratio, y: 1 / ratio))
+            let at = { (value: CGFloat) in String(Int(value.rounded())) }
+            parts.append(
+                "Cropped to \(target): the PNG covers viewport CSS px "
+                + "(\(at(css.minX)), \(at(css.minY))) to (\(at(css.maxX)), \(at(css.maxY))), "
+                + "\(Int(clip.width))x\(Int(clip.height)) device px."
+            )
+        }
+        if scale < 1 {
+            parts.append("Scaled by \(scale) from device px: the PNG is \(rendered.width)x\(rendered.height) px.")
+        }
+        return parts.joined(separator: " ")
     }
 
     /// Safari resolves a failed capture to an empty or non-image payload, and

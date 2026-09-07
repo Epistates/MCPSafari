@@ -666,6 +666,14 @@ async function handleScreenshot(params) {
     // Context before the frame: a page that loses focus between the two reads
     // then produces a warning about a good frame rather than an all-clear on a
     // stale one.
+    // The target is scrolled into view before the context read so the
+    // reported viewport matches the frame.
+    const target = params.uid || params.selector
+        ? await sendToContentScript(tabId, {
+            action: "element_rect",
+            params: { uid: params.uid, selector: params.selector },
+        })
+        : null;
     const context = await capturePageContext(tabId);
     const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, {
         format: "png",
@@ -675,6 +683,7 @@ async function handleScreenshot(params) {
         // Raw base64, data URI prefix stripped
         image: dataUrl.replace(/^data:image\/\w+;base64,/, ""),
         ...context,
+        ...(target ? { target } : {}),
     };
 }
 

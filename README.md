@@ -294,7 +294,7 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 
 | Tool | Description |
 |------|-------------|
-| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `filePath` saves it to disk and returns the path instead of inline image data |
+| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `uid`/`selector` crop to one element plus `padding` CSS px, `scale` shrinks the PNG, and `filePath` saves it to disk and returns the path instead of inline image data |
 
 ### JavaScript
 
