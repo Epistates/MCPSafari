@@ -808,6 +808,7 @@ async function injectContentScripts(tabId) {
                 "dialog-interceptor.js",
                 "console-interceptor.js",
                 "network-interceptor.js",
+                "file-drop.js",
             ],
             world: "MAIN",
         });

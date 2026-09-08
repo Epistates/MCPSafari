@@ -28,6 +28,9 @@ function makeElement(overrides = {}) {
     return {
         tagName: "DIV",
         events: [],
+        attributes: {},
+        setAttribute(name, value) { this.attributes[name] = value; },
+        removeAttribute(name) { delete this.attributes[name]; },
         scrollIntoView() {},
         getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 50 }),
         querySelector: () => null,
@@ -44,8 +47,18 @@ function makeFileInput(overrides = {}) {
 }
 
 // Loads content.js against a fake document whose querySelector returns `target`.
+// Bridge requests are collected; `call.reply(request, reply)` answers one the
+// way file-drop.js would, and `call.timeout()` fires the bridge timeout.
 function loadContent(target) {
     let runtimeListener;
+    let messageListener;
+    const timers = [];
+    const bridgeRequests = [];
+    const window = {
+        addEventListener: (_type, fn) => { messageListener = fn; },
+        removeEventListener() {},
+        postMessage: (message) => bridgeRequests.push(message),
+    };
 
     vm.runInNewContext(source, {
         browser: {
@@ -54,8 +67,8 @@ function loadContent(target) {
             },
         },
         document: { querySelector: () => target },
-        window: { addEventListener() {}, postMessage() {} },
-        setTimeout: () => 0,
+        window,
+        setTimeout: (fn) => timers.push(fn),
         clearTimeout() {},
         atob,
         Uint8Array,
@@ -65,10 +78,18 @@ function loadContent(target) {
         DragEvent: FakeEvent,
     });
 
-    return (action, params) => new Promise((resolve) => {
+    const call = (action, params) => new Promise((resolve) => {
         runtimeListener({ action, params }, {}, resolve);
     });
+    call.bridgeRequests = bridgeRequests;
+    call.reply = (request, reply) => {
+        messageListener({ source: window, data: { source: "MCPSafariPage", id: request.id, ...reply } });
+    };
+    call.timeout = () => timers.shift()();
+    return call;
 }
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 const PNG = { name: "shot.png", type: "image/png", data: Buffer.from([137, 80, 78, 71]).toString("base64") };
 const TXT = { name: "note.txt", type: "text/plain", data: Buffer.from("hi").toString("base64") };
@@ -120,13 +141,76 @@ test("upload_file rejects an empty file list", async () => {
     assert.equal(response.error, "No files provided");
 });
 
-test("drop_file dispatches dragenter, dragover, and drop carrying the files", async () => {
+test("drop_file hands the decoded files to the page world and unmarks the target", async () => {
     const zone = makeElement();
     const call = loadContent(zone);
 
-    const response = await call("drop_file", { selector: "#zone", files: [PNG] });
+    const pending = call("drop_file", { selector: "#zone", files: [PNG, TXT] });
+    await tick();
+
+    assert.equal(call.bridgeRequests.length, 1);
+    const request = call.bridgeRequests[0];
+    assert.equal(request.type, "drop_files");
+    assert.deepEqual(request.params.files.map((file) => file.name), ["shot.png", "note.txt"]);
+    assert.equal(request.params.files[0].size, 4);
+    assert.match(request.params.marker, /^mcp-drop-/);
+    assert.equal(zone.attributes["data-mcp-drop-target"], request.params.marker);
+
+    call.reply(request, { data: { dropped: 2 } });
+    const response = await pending;
 
     assert.equal(response.error, null);
+    assert.equal(response.data, "Dropped shot.png, note.txt on <div>");
+    assert.equal(zone.events.length, 0);
+    assert.deepEqual(zone.attributes, {});
+});
+
+test("drop_file runs one drop at a time so markers never overlap", async () => {
+    const zone = makeElement();
+    const call = loadContent(zone);
+
+    const first = call("drop_file", { selector: "#zone", files: [PNG] });
+    const second = call("drop_file", { selector: "#zone", files: [TXT] });
+    await tick();
+
+    assert.equal(call.bridgeRequests.length, 1);
+    call.reply(call.bridgeRequests[0], { data: { dropped: 1 } });
+    await first;
+    await tick();
+
+    assert.equal(call.bridgeRequests.length, 2);
+    assert.notEqual(call.bridgeRequests[1].params.marker, call.bridgeRequests[0].params.marker);
+    assert.equal(zone.attributes["data-mcp-drop-target"], call.bridgeRequests[1].params.marker);
+    call.reply(call.bridgeRequests[1], { data: { dropped: 1 } });
+    assert.equal((await second).data, "Dropped note.txt on <div>");
+    assert.deepEqual(zone.attributes, {});
+});
+
+test("drop_file reports a page-world error instead of dispatching blind", async () => {
+    const zone = makeElement();
+    const call = loadContent(zone);
+
+    const pending = call("drop_file", { selector: "#zone", files: [PNG] });
+    await tick();
+    call.reply(call.bridgeRequests[0], { error: "Drop target not found in page" });
+    const response = await pending;
+
+    assert.equal(response.error, "Drop target not found in page");
+    assert.equal(zone.events.length, 0);
+    assert.deepEqual(zone.attributes, {});
+});
+
+test("drop_file dispatches in its own world when the page bridge does not answer", async () => {
+    const zone = makeElement();
+    const call = loadContent(zone);
+
+    const pending = call("drop_file", { selector: "#zone", files: [PNG] });
+    await tick();
+    call.timeout();
+    const response = await pending;
+
+    assert.equal(response.error, null);
+    assert.match(response.data, /^Dropped shot.png on <div> \(page bridge unavailable/);
     assert.deepEqual(zone.events.map((event) => event.type), ["dragenter", "dragover", "drop"]);
     for (const event of zone.events) {
         assert.equal(event.cancelable, true);
@@ -134,4 +218,5 @@ test("drop_file dispatches dragenter, dragover, and drop carrying the files", as
         assert.equal(event.clientX, 60);
         assert.equal(event.clientY, 45);
     }
+    assert.deepEqual(zone.attributes, {});
 });
