@@ -334,7 +334,7 @@ Tools that interact with elements accept multiple targeting strategies:
 
 | Strategy | Example | When to Use |
 |----------|---------|-------------|
-| **UID** | `uid: "e42"` | Most precise — from a `snapshot` |
+| **UID** | `uid: "f0e42"` | Most precise — from a `snapshot` |
 | **CSS selector** | `selector: "#login-btn"` | When you know the DOM structure |
 | **Text** | `text: "Sign In"` | Interactive elements are ranked higher |
 | **Coordinates** | `x: 100, y: 200` | Last resort — click at exact position |
@@ -344,6 +344,14 @@ Tools that interact with elements accept multiple targeting strategies:
 Every targeting strategy reaches into open shadow roots, so pages built on web components (Lit, Stencil, Salesforce Lightning, most design-system elements) are readable and clickable. `snapshot` follows the flattened tree the user actually sees, so content passed into a `<slot>` is reported once, where the slot places it.
 
 Closed shadow roots are unreadable by any API. Rather than reporting such an element as empty, `snapshot` marks it `"shadowClosed": true` so a missing control is distinguishable from one the tools cannot see.
+
+### Iframes
+
+Iframe content is readable and clickable. `snapshot` returns the whole tab as one tree, hanging each frame's document on the `<iframe>` that hosts it, and `find` searches every frame.
+
+No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is element 12 in frame 3), so targeting by UID routes automatically; targeting by selector or text searches frames in order, top frame first. Frames are matched to their host `<iframe>` by resolved `src`, and a frame whose host cannot be identified is attached to the parent tree and counted in `unmatchedFrames` rather than dropped.
+
+Two limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `read_console` and `read_network` report the top frame only.
 
 ### Form Filling
 

@@ -16,6 +16,12 @@
     const reverseUidMap = new Map();
     let bridgeRequestCounter = 0;
 
+    // Every frame runs its own copy of this script with its own counter, so a
+    // bare "e1" is ambiguous across frames. The background knows which frame it
+    // is addressing and stamps each request, so the id arrives with the work
+    // rather than needing a handshake that a tool call could outrun.
+    let frameId = 0;
+
     function toolError(code, message, retryable, recoveryAction) {
         const error = new Error(message);
         error.code = code;
@@ -46,7 +52,7 @@
 
     function getUid(element) {
         if (uidMap.has(element)) return uidMap.get(element);
-        const uid = `e${++uidCounter}`;
+        const uid = `f${frameId}e${++uidCounter}`;
         uidMap.set(element, uid);
         reverseUidMap.set(uid, new WeakRef(element));
         if (uidFinalizer) uidFinalizer.register(element, uid);
@@ -97,6 +103,8 @@
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Only handle messages meant for content scripts
         if (!message || !message.action) return false;
+
+        if (typeof message.frameId === "number") frameId = message.frameId;
 
         handleAction(message.action, message.params || {})
             .then((data) => sendResponse({ data, error: null }))
@@ -323,6 +331,13 @@
         // Href for links
         if (tag === "a" && element.href) {
             node.href = element.href;
+        }
+
+        // A frame's document belongs to a different content script, so the
+        // background splices it in here. It matches on the resolved src and
+        // drops this marker afterwards.
+        if (tag === "iframe" || tag === "frame") {
+            node.frameSrc = element.src || "";
         }
 
         // Children
