@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- `snapshot`, `find`, `click`, `type_text`, `form_input`, and `wait` now reach into open shadow roots, so a page built on web components no longer returns results that look complete and are not. `snapshot` follows the flattened tree, so content passed into a `<slot>` is reported once, where the slot places it. Closed shadow roots cannot be read by any API, so a custom element that occupies space while reporting no content of its own is marked `shadowClosed` instead of being reported as empty.
 
 ## [0.3.0] - 2026-09-08
 ### Added

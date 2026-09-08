@@ -200,6 +200,78 @@
         return document.body ? document.body.innerText : "";
     }
 
+    // ─── Shadow DOM Traversal ────────────────────────────────────────
+
+    // querySelector and TreeWalker each see a single tree, so anything inside
+    // a shadow root is invisible to them and a page built on web components
+    // returns results that look complete and are not. Every lookup below
+    // repeats itself against each open root instead. Closed roots stay
+    // unreachable: the page chose that, and no API reaches in.
+    function* allRoots(root = document) {
+        yield root;
+        for (const element of root.querySelectorAll("*")) {
+            if (element.shadowRoot) yield* allRoots(element.shadowRoot);
+        }
+    }
+
+    function deepQueryFirst(selector) {
+        for (const root of allRoots()) {
+            const found = root.querySelector(selector);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    function deepQueryAll(selector, limit = Infinity) {
+        const found = [];
+        for (const root of allRoots()) {
+            for (const element of root.querySelectorAll(selector)) {
+                found.push(element);
+                if (found.length >= limit) return found;
+            }
+        }
+        return found;
+    }
+
+    // A walker rooted at the document would offer <html> and <body> themselves
+    // as matches, which the leaf-ish filters downstream exist to exclude. A
+    // shadow root has no such wrapper, so it is walked as-is.
+    function walkRootFor(root) {
+        return root === document ? document.body : root;
+    }
+
+    // A shadow host renders its shadow root, and the host's own children only
+    // appear where a <slot> puts them, so walking both would report slotted
+    // content twice. This follows the flattened tree the user actually sees.
+    function renderedChildren(element) {
+        if (element.shadowRoot) return Array.from(element.shadowRoot.children);
+        if (typeof element.assignedElements === "function") {
+            // flatten resolves nested slots and falls back to the slot's own
+            // children when nothing is assigned.
+            return element.assignedElements({ flatten: true });
+        }
+        return Array.from(element.children);
+    }
+
+    // Text belongs to whichever tree renders it, so a shadow host reports its
+    // shadow content instead of light children a slot placed somewhere else.
+    function renderedTextRoot(element) {
+        return element.shadowRoot || element;
+    }
+
+    // `shadowRoot` is null both for "no shadow root" and for a closed one, so a
+    // closed root can only be inferred: a custom element that occupies space
+    // while reporting no content of its own is rendering something we cannot
+    // see. Marking it beats reporting an empty element that looks absent.
+    function hasClosedShadowRoot(element) {
+        if (element.shadowRoot) return false;
+        if (!element.tagName || !element.tagName.includes("-")) return false;
+        if (element.children.length > 0) return false;
+        if (element.textContent && element.textContent.trim()) return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
     // ─── Accessibility Snapshot ──────────────────────────────────────
 
     const MAX_TREE_DEPTH = 30;
@@ -256,18 +328,19 @@
         // Children
         const children = [];
         let droppedChildren = false;
-        for (const child of element.children) {
+        for (const child of renderedChildren(element)) {
             const childNode = buildTree(child, depth + 1, budget);
             if (childNode) children.push(childNode);
             else if (budget.remaining <= 0) droppedChildren = true;
         }
         if (droppedChildren) node.childrenTruncated = true;
+        if (children.length === 0 && hasClosedShadowRoot(element)) node.shadowClosed = true;
 
         // Leaf nodes report their whole text content. Nodes that also have
         // element children report their own direct text nodes, so mixed
         // content such as <button><span>9</span>All</button> keeps "All".
         const rawText = children.length === 0
-            ? element.textContent
+            ? renderedTextRoot(element).textContent
             : ownTextContent(element);
         if (rawText) {
             const text = rawText.trim();
@@ -286,7 +359,7 @@
     // Text of an element's direct text-node children only, in document order.
     function ownTextContent(element) {
         let text = "";
-        for (const child of element.childNodes) {
+        for (const child of renderedTextRoot(element).childNodes) {
             if (child.nodeType === Node.TEXT_NODE) text += child.textContent;
         }
         return text;
@@ -418,7 +491,10 @@
             if (labelText) return labelText;
         }
         if (element.id) {
-            const label = document.querySelector(`label[for="${escapeCssString(element.id)}"]`);
+            // `for` resolves within the element's own tree, so a control inside
+            // a shadow root is labelled from that root and not from the document.
+            const scope = element.getRootNode ? element.getRootNode() : document;
+            const label = scope.querySelector(`label[for="${escapeCssString(element.id)}"]`);
             if (label) return label.textContent.trim();
         }
 
@@ -453,9 +529,7 @@
         const results = [];
 
         if (params.selector) {
-            const elements = document.querySelectorAll(params.selector);
-            for (const el of elements) {
-                if (results.length >= MAX_FIND_RESULTS) break;
+            for (const el of deepQueryAll(params.selector, MAX_FIND_RESULTS)) {
                 results.push(describeElement(el));
             }
         }
@@ -467,31 +541,35 @@
             const matches = (node) =>
                 node.textContent?.toLowerCase().includes(needle) ||
                 getAccessibleName(node)?.toLowerCase().includes(needle);
-            const walker = document.createTreeWalker(
-                document.body,
-                NodeFilter.SHOW_ELEMENT,
-                {
-                    acceptNode: (node) =>
-                        matches(node) && isVisible(node)
-                            ? NodeFilter.FILTER_ACCEPT
-                            : NodeFilter.FILTER_SKIP,
-                }
-            );
-            let node;
-            while ((node = walker.nextNode()) && results.length < MAX_FIND_RESULTS) {
-                // Only include leaf-ish elements (avoid returning <body> etc.)
-                if (
-                    node.children.length === 0 ||
-                    node.textContent.trim().length < 200
-                ) {
-                    results.push(describeElement(node));
+            for (const root of allRoots()) {
+                if (results.length >= MAX_FIND_RESULTS) break;
+                const walkRoot = walkRootFor(root);
+                if (!walkRoot) continue;
+                const walker = document.createTreeWalker(
+                    walkRoot,
+                    NodeFilter.SHOW_ELEMENT,
+                    {
+                        acceptNode: (node) =>
+                            matches(node) && isVisible(node)
+                                ? NodeFilter.FILTER_ACCEPT
+                                : NodeFilter.FILTER_SKIP,
+                    }
+                );
+                let node;
+                while ((node = walker.nextNode()) && results.length < MAX_FIND_RESULTS) {
+                    // Only include leaf-ish elements (avoid returning <body> etc.)
+                    if (
+                        node.children.length === 0 ||
+                        node.textContent.trim().length < 200
+                    ) {
+                        results.push(describeElement(node));
+                    }
                 }
             }
         }
 
         if (params.role) {
-            const allElements = document.querySelectorAll("*");
-            for (const el of allElements) {
+            for (const el of deepQueryAll("*")) {
                 if (results.length >= MAX_FIND_RESULTS) break;
                 if (getRole(el) === params.role && isVisible(el)) {
                     results.push(describeElement(el));
@@ -550,7 +628,7 @@
 
         // By CSS selector
         if (params.selector) {
-            const el = document.querySelector(params.selector);
+            const el = deepQueryFirst(params.selector);
             if (!el)
                 throw toolError(
                     "target_not_found",
@@ -565,23 +643,28 @@
         if (params.text) {
             const searchText = params.text.toLowerCase();
             const candidates = [];
-            const walker = document.createTreeWalker(
-                document.body,
-                NodeFilter.SHOW_ELEMENT,
-                {
-                    acceptNode: (node) =>
-                        node.textContent &&
-                        node.textContent.trim().toLowerCase().includes(searchText) &&
-                        isVisible(node) &&
-                        (node.children.length === 0 ||
-                            node.textContent.trim().length < 500)
-                            ? NodeFilter.FILTER_ACCEPT
-                            : NodeFilter.FILTER_SKIP,
+            for (const root of allRoots()) {
+                if (candidates.length >= 30) break;
+                const walkRoot = walkRootFor(root);
+                if (!walkRoot) continue;
+                const walker = document.createTreeWalker(
+                    walkRoot,
+                    NodeFilter.SHOW_ELEMENT,
+                    {
+                        acceptNode: (node) =>
+                            node.textContent &&
+                            node.textContent.trim().toLowerCase().includes(searchText) &&
+                            isVisible(node) &&
+                            (node.children.length === 0 ||
+                                node.textContent.trim().length < 500)
+                                ? NodeFilter.FILTER_ACCEPT
+                                : NodeFilter.FILTER_SKIP,
+                    }
+                );
+                let node;
+                while ((node = walker.nextNode()) && candidates.length < 30) {
+                    candidates.push(node);
                 }
-            );
-            let node;
-            while ((node = walker.nextNode()) && candidates.length < 30) {
-                candidates.push(node);
             }
             if (candidates.length === 0)
                 throw toolError(
@@ -882,7 +965,7 @@
         const missing = [];
 
         for (const [selector, value] of entries) {
-            const el = document.querySelector(selector);
+            const el = deepQueryFirst(selector);
             if (!el) {
                 missing.push(selector);
                 results.push(`${selector}: not found`);
@@ -1415,7 +1498,7 @@
 
         if (params.selector) {
             while (Date.now() - start < timeout) {
-                if (document.querySelector(params.selector)) {
+                if (deepQueryFirst(params.selector)) {
                     return `Element found: ${params.selector}`;
                 }
                 await new Promise((r) => setTimeout(r, 200));

@@ -47,6 +47,19 @@ function loadContent(body) {
         documentElement: body,
         getElementById: () => null,
         querySelector: () => null,
+        // Shadow-root discovery asks each root for its elements so it can spot
+        // hosts. These fixtures are light DOM only, so every descendant counts.
+        querySelectorAll: () => {
+            const all = [];
+            const collect = (node) => {
+                for (const child of node.children) {
+                    all.push(child);
+                    collect(child);
+                }
+            };
+            collect(body);
+            return all;
+        },
         createTreeWalker(root, _whatToShow, filter) {
             const queue = [];
             const collect = (node) => {
