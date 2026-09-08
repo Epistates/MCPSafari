@@ -287,10 +287,7 @@ async function handleRequest(request) {
             case "stop_trace":
             case "get_console_messages":
             case "get_network_requests":
-                data = await sendToContentScript(params.tabId, {
-                    action,
-                    params,
-                });
+                data = await dispatchToContent(action, params);
                 break;
 
             // Console (proxy to content script)
@@ -441,7 +438,24 @@ async function focusTabForNativeInput(tabIdParam) {
     return tabId;
 }
 
+// Native input works in screen coordinates. A subframe measures elements in its
+// own viewport and cannot reach a cross-origin parent's offset, so a subframe
+// target would produce a confidently wrong click. Refusing beats guessing.
+function requireTopFrameTarget(params) {
+    const frame = frameOfUid(params.uid) ?? frameOfUid(params.fromUid);
+    if (frame) {
+        const error = new Error(
+            "Native input reaches the top frame only, and this element is inside an iframe. " +
+            "Omit native to use the synthetic path, which works in every frame."
+        );
+        error.code = "invalid_input";
+        error.recoveryAction = "fix_input";
+        throw error;
+    }
+}
+
 async function handleNativeTypeText(params) {
+    requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
     await sendToContentScript(tabId, {
         action: "prepare_native_input",
@@ -451,6 +465,7 @@ async function handleNativeTypeText(params) {
 }
 
 async function handleNativePressKey(params) {
+    requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
     await sendToContentScript(tabId, {
         action: "prepare_native_key",
@@ -460,6 +475,7 @@ async function handleNativePressKey(params) {
 }
 
 async function handleNativePointer(params) {
+    requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
     return sendToContentScript(tabId, {
         action: "native_pointer_points",
@@ -767,11 +783,182 @@ async function handleResizeWindow(params) {
 
 // ─── Content Script Communication ────────────────────────────────────
 
-async function sendToContentScript(tabId, message) {
+// ─── Frame Routing ───────────────────────────────────────────────────
+
+// content.js runs in every frame, each with its own uid counter, so a uid
+// names the frame that minted it. That keeps frames out of the tool contract:
+// nothing takes a frameId, the uid carries it.
+const UID_PATTERN = /^f(\d+)e\d+$/;
+
+function frameOfUid(value) {
+    const match = UID_PATTERN.exec(String(value ?? ""));
+    return match ? Number(match[1]) : null;
+}
+
+async function listFrames(tabId) {
+    try {
+        const frames = await browser.webNavigation.getAllFrames({ tabId });
+        if (frames && frames.length > 0) return frames;
+    } catch (err) {
+        console.warn("[MCPSafari] Frame enumeration failed:", err);
+    }
+    return [{ frameId: 0, parentFrameId: -1, url: "" }];
+}
+
+// A frame whose document refuses the content script (a sandboxed or already
+// unloaded one) must not fail the whole call, so misses are dropped.
+async function collectFromFrames(tabId, message) {
+    const frames = await listFrames(tabId);
+    const collected = [];
+    for (const frame of frames) {
+        try {
+            collected.push({
+                frameId: frame.frameId,
+                data: await sendToContentScript(tabId, message, frame.frameId),
+            });
+        } catch (err) {
+            if (frame.frameId === 0) throw err;
+        }
+    }
+    return collected;
+}
+
+// Targeting by selector or text has no frame in it, so the frames are tried in
+// order and the first that resolves the target wins. The top frame is tried
+// first, which keeps single-frame pages behaving exactly as before.
+async function sendToFirstMatchingFrame(tabId, message) {
+    const frames = await listFrames(tabId);
+    let firstFailure;
+    for (const frame of frames) {
+        try {
+            return await sendToContentScript(tabId, message, frame.frameId);
+        } catch (err) {
+            if (!firstFailure) firstFailure = err;
+        }
+    }
+    throw firstFailure || new Error("No frame handled the request");
+}
+
+// Reads the whole tab as one tree by asking each frame for its own and hanging
+// each result on the <iframe> that hosts it, so an agent sees the page the way
+// a person does instead of a top frame with holes in it.
+async function snapshotAcrossFrames(tabId, params) {
+    const frames = await listFrames(tabId);
+    const trees = new Map();
+    for (const frame of frames) {
+        try {
+            const tree = await sendToContentScript(
+                tabId,
+                { action: "snapshot", params },
+                frame.frameId
+            );
+            if (tree) trees.set(frame.frameId, tree);
+        } catch (err) {
+            if (frame.frameId === 0) throw err;
+        }
+    }
+
+    const childFrames = new Map();
+    for (const frame of frames) {
+        if (frame.frameId === 0) continue;
+        const siblings = childFrames.get(frame.parentFrameId) || [];
+        siblings.push(frame);
+        childFrames.set(frame.parentFrameId, siblings);
+    }
+
+    const root = trees.get(0);
+    if (root) spliceFrames(root, 0, childFrames, trees);
+    return root;
+}
+
+function collectFrameHosts(node, hosts = []) {
+    if (!node || typeof node !== "object") return hosts;
+    if (typeof node.frameSrc === "string") hosts.push(node);
+    for (const child of node.children || []) collectFrameHosts(child, hosts);
+    return hosts;
+}
+
+// getAllFrames reports each frame's URL but not which element hosts it, so the
+// two are matched on the resolved src. Identical srcs are matched in document
+// order, and a frame whose host cannot be identified is attached to the parent
+// tree rather than dropped.
+function spliceFrames(tree, frameId, childFrames, trees) {
+    const children = childFrames.get(frameId) || [];
+    const hosts = collectFrameHosts(tree);
+    const claimed = new Set();
+    const orphans = [];
+
+    for (const frame of children) {
+        const subtree = trees.get(frame.frameId);
+        if (!subtree) continue;
+        spliceFrames(subtree, frame.frameId, childFrames, trees);
+
+        const host = hosts.find((h) => !claimed.has(h) && h.frameSrc === frame.url);
+        if (host) {
+            claimed.add(host);
+            host.children = [subtree];
+        } else {
+            orphans.push(subtree);
+        }
+    }
+
+    if (orphans.length > 0) {
+        tree.children = (tree.children || []).concat(orphans);
+        tree.unmatchedFrames = orphans.length;
+    }
+    for (const host of hosts) delete host.frameSrc;
+}
+
+// Routes one content action. Frames are an implementation detail here: a uid
+// says which frame owns the element, a search spans them all, and everything
+// else stays on the top frame where it always ran.
+async function dispatchToContent(action, params, message) {
+    const payload = message || { action, params };
+    const targetFrame = frameOfUid(params.uid) ?? frameOfUid(params.fromUid);
+    if (targetFrame !== null) {
+        return sendToContentScript(params.tabId, payload, targetFrame);
+    }
+
+    if (action === "snapshot") return snapshotAcrossFrames(params.tabId, params);
+    if (action === "read_page" && params.format === "snapshot") {
+        return snapshotAcrossFrames(params.tabId, params);
+    }
+
+    if (action === "find") {
+        const collected = await collectFromFrames(params.tabId, payload);
+        return collected.flatMap((entry) => entry.data || []);
+    }
+
+    if (FRAME_SEARCHING_ACTIONS.has(action) && (params.selector || params.text)) {
+        return sendToFirstMatchingFrame(params.tabId, payload);
+    }
+
+    return sendToContentScript(params.tabId, payload, 0);
+}
+
+// Acting on an element the caller named by selector or text: the element can
+// live in any frame, so the search has to cross them.
+const FRAME_SEARCHING_ACTIONS = new Set([
+    "click",
+    "type_text",
+    "form_input",
+    "select_option",
+    "hover",
+    "drag",
+    "upload_file",
+    "drop_file",
+    "scroll",
+    "wait",
+]);
+
+async function sendToContentScript(tabId, message, frameId = 0) {
     const resolvedTabId = tabId || (await getActiveTabId());
+    // The frame learns its own id from the request it is answering.
+    message = { ...message, frameId };
+    const options = { frameId };
 
     try {
-        const response = await browser.tabs.sendMessage(resolvedTabId, message);
+        const response = await browser.tabs.sendMessage(resolvedTabId, message, options);
         if (!response) throw new Error("Receiving end does not exist");
         if (response && response.error) {
             throw toolErrorFromResponse(response);
@@ -787,7 +974,8 @@ async function sendToContentScript(tabId, message) {
             await injectContentScripts(resolvedTabId);
             const response = await browser.tabs.sendMessage(
                 resolvedTabId,
-                message
+                message,
+                options
             );
             if (!response) throw new Error("Content script did not respond after injection");
             if (response && response.error) {
@@ -812,8 +1000,10 @@ async function injectContentScripts(tabId) {
             ],
             world: "MAIN",
         });
+        // content.js is declared for all frames, so a re-injection has to cover
+        // them too or the frames stay unreachable until the next navigation.
         await browser.scripting.executeScript({
-            target: { tabId },
+            target: { tabId, allFrames: true },
             files: ["content.js"],
         });
         await delay(100);

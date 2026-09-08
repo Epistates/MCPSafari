@@ -108,7 +108,8 @@ test("every minted uid is registered for cleanup", async () => {
     // Registered against the element, so the token is dropped when it goes.
     assert.equal(registrations.length, 3, "body and both buttons");
     for (const node of [body, first, second]) {
-        assert.match(uidFor(registrations, node) ?? "", /^e\d+$/);
+        // Frame-qualified: the prefix names the frame that minted the uid.
+        assert.match(uidFor(registrations, node) ?? "", /^f\d+e\d+$/);
     }
 });
 

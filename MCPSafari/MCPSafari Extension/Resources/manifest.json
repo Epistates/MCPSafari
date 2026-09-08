@@ -29,7 +29,7 @@
         "js": ["content.js"],
         "matches": ["<all_urls>"],
         "run_at": "document_start",
-        "all_frames": false
+        "all_frames": true
     }],
 
     "action": {

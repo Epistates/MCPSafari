@@ -1,7 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+- Element UIDs are now frame-qualified: `e42` becomes `f0e42`, where the prefix names the frame that minted it. UIDs are read back from a `snapshot` rather than written by hand, so this only affects anything that stored one across the upgrade.
+
 ### Added
+- Iframe content is now readable and reachable. `snapshot` returns the tab as one tree, hanging each frame's document on the `<iframe>` that hosts it, and `find` searches every frame. No tool gained a frame argument: a UID routes to its own frame, and a selector or text target searches frames in order, top frame first. A frame whose host `<iframe>` cannot be matched by resolved `src` is attached to the parent tree and counted in `unmatchedFrames` instead of being dropped. Native input still reaches the top frame only, because a subframe cannot read a cross-origin parent's offset, and now fails with `invalid_input` instead of acting on the wrong point. `read_console` and `read_network` continue to report the top frame only.
 - `snapshot`, `find`, `click`, `type_text`, `form_input`, and `wait` now reach into open shadow roots, so a page built on web components no longer returns results that look complete and are not. `snapshot` follows the flattened tree, so content passed into a `<slot>` is reported once, where the slot places it. Closed shadow roots cannot be read by any API, so a custom element that occupies space while reporting no content of its own is marked `shadowClosed` instead of being reported as empty.
 
 ## [0.3.0] - 2026-09-08
