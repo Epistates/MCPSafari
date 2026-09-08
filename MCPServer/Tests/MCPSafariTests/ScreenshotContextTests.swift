@@ -75,6 +75,48 @@ struct ScreenshotContextTests {
         #expect(SafariMCPServer.decodeCapture("iVBORw0KGgoAAAANSUhEUg==") == nil)
     }
 
+    @Test func writeCaptureSavesBytesToTheRequestedPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcp-safari-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3])
+        let url = try SafariMCPServer.writeCapture(png, to: root.appendingPathComponent("shot.png").path)
+
+        #expect(url.lastPathComponent == "shot.png")
+        #expect(try Data(contentsOf: url) == png)
+
+        // A second capture to the same path replaces the first frame.
+        let next = Data([0x89, 0x50, 0x4E, 0x47, 9])
+        _ = try SafariMCPServer.writeCapture(next, to: url.path)
+        #expect(try Data(contentsOf: url) == next)
+
+        // A trailing space is part of the filename, not something to strip
+        // before picking the destination.
+        let spaced = try SafariMCPServer.writeCapture(png, to: url.path + " ")
+        #expect(spaced.lastPathComponent == "shot.png ")
+        #expect(try Data(contentsOf: url) == next)
+    }
+
+    @Test func writeCaptureRejectsEmptyDirectoryAndUnwritablePaths() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcp-safari-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        #expect(throws: FileAttachmentError.self) {
+            try SafariMCPServer.writeCapture(png, to: "   ")
+        }
+        #expect(throws: FileAttachmentError.self) {
+            try SafariMCPServer.writeCapture(png, to: root.path)
+        }
+        #expect(throws: FileAttachmentError.self) {
+            try SafariMCPServer.writeCapture(png, to: root.appendingPathComponent("missing/dir/shot.png").path)
+        }
+    }
+
     @Test func captureFailureAcceptsDecodableImageData() throws {
         #expect(SafariMCPServer.captureFailure("iVBORw0KGgoAAAANSUhEUg==") == nil)
     }
