@@ -339,6 +339,12 @@ Tools that interact with elements accept multiple targeting strategies:
 | **Text** | `text: "Sign In"` | Interactive elements are ranked higher |
 | **Coordinates** | `x: 100, y: 200` | Last resort — click at exact position |
 
+### Shadow DOM
+
+Every targeting strategy reaches into open shadow roots, so pages built on web components (Lit, Stencil, Salesforce Lightning, most design-system elements) are readable and clickable. `snapshot` follows the flattened tree the user actually sees, so content passed into a `<slot>` is reported once, where the slot places it.
+
+Closed shadow roots are unreadable by any API. Rather than reporting such an element as empty, `snapshot` marks it `"shadowClosed": true` so a missing control is distinguishable from one the tools cannot see.
+
 ### Form Filling
 
 Use `form_input` to fill multiple fields at once:

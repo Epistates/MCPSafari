@@ -18,6 +18,8 @@ function contentHarness(document = {
     createTreeWalker: () => ({ nextNode: () => null }),
     elementFromPoint: () => null,
     querySelector: () => null,
+    // Shadow-root discovery asks every root for its elements.
+    querySelectorAll: () => [],
 }) {
     let listener;
     const context = vm.createContext({
