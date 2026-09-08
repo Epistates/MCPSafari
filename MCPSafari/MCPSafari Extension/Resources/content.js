@@ -661,18 +661,31 @@
             view: window,
             clientX: x,
             clientY: y,
+            button: 0,
+            buttons: 0,
+        };
+        const pointerOpts = { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true };
+
+        // Real pointer order: pointer family first. Cancelling pointerdown
+        // suppresses the compatibility mouse events and the focus change, which
+        // is how pointer-driven toggles (Radix, Headless UI) keep a click from
+        // re-toggling what pointerdown just opened.
+        const press = () => {
+            const pressed = element.dispatchEvent(pointerEvent("pointerdown", { ...pointerOpts, buttons: 1 }));
+            if (pressed && element.dispatchEvent(new MouseEvent("mousedown", { ...eventOpts, buttons: 1 }))) {
+                element.focus();
+            }
+            element.dispatchEvent(pointerEvent("pointerup", pointerOpts));
+            if (pressed) element.dispatchEvent(new MouseEvent("mouseup", eventOpts));
+            element.dispatchEvent(new MouseEvent("click", eventOpts));
         };
 
+        element.dispatchEvent(pointerEvent("pointerover", pointerOpts));
         element.dispatchEvent(new MouseEvent("mouseover", eventOpts));
-        element.dispatchEvent(new MouseEvent("mousedown", eventOpts));
-        element.focus();
-        element.dispatchEvent(new MouseEvent("mouseup", eventOpts));
-        element.dispatchEvent(new MouseEvent("click", eventOpts));
+        press();
 
         if (doubleClick) {
-            element.dispatchEvent(new MouseEvent("mousedown", eventOpts));
-            element.dispatchEvent(new MouseEvent("mouseup", eventOpts));
-            element.dispatchEvent(new MouseEvent("click", eventOpts));
+            press();
             element.dispatchEvent(new MouseEvent("dblclick", eventOpts));
         }
     }
