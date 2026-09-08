@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Security
+- `tabs_context`, `tabs_create`, `select_tab`, and `navigate` now return tab URLs with the values of `access_token`, `id_token`, `refresh_token`, `client_secret`, `api_key`, and `password` replaced by `[redacted]`; `code` is redacted when the URL also carries an OAuth `state`.
 
 ## [0.3.0] - 2026-08-28
 ### Added
