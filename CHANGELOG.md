@@ -1,17 +1,8 @@
 # Changelog
 
 ## [Unreleased]
-### Added
-- `screenshot` accepts `filePath`: the PNG is written there and the result carries the path and byte count instead of inline image data, so batch captures no longer flood the client context.
 
-### Security
-- `tabs_context`, `tabs_create`, `select_tab`, and `navigate` now return tab URLs with the values of `access_token`, `id_token`, `refresh_token`, `client_secret`, `api_key`, and `password` replaced by `[redacted]`; `code` is redacted when the URL also carries an OAuth `state`.
-
-### Bug Fixes
-- `click` now dispatches `pointerdown`/`pointerup` ahead of `mousedown`/`mouseup`, and skips the mouse press and focus change when a handler cancels `pointerdown`, matching real input. Pointer-driven toggles such as Radix `DropdownMenu` triggers open instead of reporting a successful click that changed nothing.
-- `drop_file` now dispatches from the page's world and gives each dropped item a `webkitGetAsEntry()` whose `file()` resolves. Safari minted an entry for the in-memory File whose `file()` rejected with `NotFoundError`, so folder-aware drop zones that walk entries collected nothing and treated the drop as empty.
-
-## [0.3.0] - 2026-08-28
+## [0.3.0] - 2026-09-08
 ### Added
 - Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
 - Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
@@ -24,6 +15,7 @@
 - `read_network` now accepts `type: "resource"` to report PerformanceResourceTiming entries without changing the default XHR/fetch feed, plus `urlPattern` (regex) and `maxResults` filters on any feed and a `status` filter on the XHR/fetch feed. Cross-origin resource entries whose byte counts are withheld are marked `timingRestricted: true`.
 - `snapshot` is capped at 2000 nodes and accepts `maxNodes`; a cut tree marks the root `truncated` and each parent whose children were dropped `childrenTruncated`, so a clipped snapshot is distinguishable from a complete one. `read_page` text and html are capped at 100000 characters, accept `maxChars`, and report the full size when they cut.
 - `press_key`, `hover`, and `drag` now accept `native: true` for real macOS events, the same opt-in `type_text` already had: keys that trigger default actions such as focus moves and dialog dismissal, a pointer path that produces true CSS `:hover` and boundary events, and drags that threshold-based libraries accept. Character keys resolve against the active keyboard layout, so `Meta+a` is Command-A on AZERTY rather than Command-Q.
+- `screenshot` accepts `filePath`: the PNG is written there and the result carries the path and byte count instead of inline image data, so batch captures no longer flood the client context.
 
 ### Changed
 - Added `--log-level` and the `MCP_SAFARI_LOG_LEVEL` environment variable, and lowered the default from `info` to `notice`. Logs go to stderr, which MCP clients surface to the user, so routine startup and connection lines no longer appear unless asked for. `--verbose` is unchanged as a shorthand for `debug`.
@@ -32,12 +24,15 @@
 
 ### Security
 - `snapshot` no longer reports the contents of password inputs, or of inputs whose `autocomplete` marks them as a one-time code or payment card field; those values come back as `[redacted]`.
+- `tabs_context`, `tabs_create`, `select_tab`, and `navigate` now return tab URLs with the values of `access_token`, `id_token`, `refresh_token`, `client_secret`, `api_key`, and `password` replaced by `[redacted]`; `code` is redacted when the URL also carries an OAuth `state`.
 
 ### Bug Fixes
 - Element UIDs are now dropped once their element is collected. The reverse lookup held a uid and a `WeakRef` per element for the life of the page, so a long session re-snapshotting a page that re-renders grew it without bound.
 - `javascript_tool` no longer fails outright on sites whose Content Security Policy omits `'unsafe-eval'`. Those pages refuse to compile a string in their own realm, which is how the tool runs submitted code, so it now reruns in the extension's isolated world, where the DOM is shared but the page's own JavaScript globals are not, and says so in the result. When both worlds refuse, the error names the tools to use instead of surfacing the raw browser message.
 - `run_steps` now accepts `upload_file` and `drop_file`, so a batch that attaches a file no longer has to be split around that step.
+- `drop_file` now dispatches from the page's world and gives each dropped item a `webkitGetAsEntry()` whose `file()` resolves. Safari minted an entry for the in-memory File whose `file()` rejected with `NotFoundError`, so folder-aware drop zones that walk entries collected nothing and treated the drop as empty.
 - `click` and `hover` with `x`/`y` now dispatch events at the requested point instead of the target element's center, so a specific point inside a large element (e.g. a canvas) can be targeted.
+- `click` now dispatches `pointerdown`/`pointerup` ahead of `mousedown`/`mouseup`, and skips the mouse press and focus change when a handler cancels `pointerdown`, matching real input. Pointer-driven toggles such as Radix `DropdownMenu` triggers open instead of reporting a successful click that changed nothing.
 - `press_key` and `type_text`'s `submitKey` no longer emit `keypress` for keys that produce no character (Escape, Tab, arrow keys) or for Ctrl/Meta combos, matching the UI Events spec; single characters and Enter still fire it.
 - `hover` now dispatches the pointer-event family (`pointerover`/`pointerenter`/`pointermove`) alongside the mouse events in real pointer order, so Pointer Events handlers such as React's `onPointerEnter` run; accepts `x`/`y` coordinates like `click`; and reports that synthetic events never apply CSS `:hover`.
 - `drag` now moves along an interpolated pointer-event path with dwell instead of jumping from source to target, so distance-threshold drag libraries (e.g. dnd-kit's `PointerSensor`) start a drag; it fails with `input_not_applied` when the gesture produced no DOM change instead of reporting a silent no-op.
