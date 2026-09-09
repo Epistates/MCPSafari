@@ -5,6 +5,20 @@ import Network
 struct ExtensionMetadata: Codable, Equatable {
     let version: String?
     let protocolVersion: Int?
+    /// Which Safari profile's extension instance authenticated. Safari omits the
+    /// profile key for the default profile, and extension builds predating profile
+    /// support send nothing at all, so both land on `WebSocketBridge.defaultProfileID`.
+    let profileID: String
+
+    init(
+        version: String?,
+        protocolVersion: Int?,
+        profileID: String = WebSocketBridge.defaultProfileID
+    ) {
+        self.version = version
+        self.protocolVersion = protocolVersion
+        self.profileID = profileID
+    }
 }
 
 enum HandshakeDecision: Equatable {
@@ -18,6 +32,18 @@ enum BridgeHandshake {
         let auth: String
         let extensionVersion: String?
         let protocolVersion: Int?
+        let profileId: String?
+    }
+
+    /// Blank or absent means the default profile, which is also what Safari sends
+    /// for it and what an extension build without profile support sends for every
+    /// profile. Trimmed because it is reflected back in log lines.
+    static func normalizedProfileID(_ raw: String?) -> String {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return WebSocketBridge.defaultProfileID }
+
+        return trimmed
     }
 
     static func decision(for data: Data, expectedToken: String) -> HandshakeDecision? {
@@ -32,7 +58,8 @@ enum BridgeHandshake {
         }
         return .accept(.init(
             version: message.extensionVersion,
-            protocolVersion: message.protocolVersion
+            protocolVersion: message.protocolVersion,
+            profileID: normalizedProfileID(message.profileId)
         ))
     }
 }
@@ -71,6 +98,16 @@ actor WebSocketBridge {
         case authenticated
     }
 
+    /// One connected Safari profile. Safari exposes no profile *name* to either the
+    /// extension or the app extension, so `id` is the opaque `SFExtensionProfileKey`
+    /// UUID (or `"default"`), and `index` is this server's stable short handle for it.
+    struct ProfileStatus: Codable, Equatable {
+        let id: String
+        let index: Int
+        let extensionVersion: String?
+        let extensionProtocolVersion: Int?
+    }
+
     struct Status: Codable, Equatable {
         let serverVersion: String
         let protocolVersion: Int
@@ -82,6 +119,7 @@ actor WebSocketBridge {
         let tokenFileSecure: Bool?
         let extensionVersion: String?
         let extensionProtocolVersion: Int?
+        let profiles: [ProfileStatus]
         let lastError: Failure?
 
         enum CodingKeys: String, CodingKey {
@@ -95,6 +133,7 @@ actor WebSocketBridge {
             case tokenFileSecure
             case extensionVersion
             case extensionProtocolVersion
+            case profiles
             case lastError
         }
 
@@ -122,6 +161,7 @@ actor WebSocketBridge {
             } else {
                 try container.encodeNil(forKey: .extensionProtocolVersion)
             }
+            try container.encode(profiles, forKey: .profiles)
             if let lastError {
                 try container.encode(lastError, forKey: .lastError)
             } else {
@@ -131,10 +171,25 @@ actor WebSocketBridge {
     }
 
     private var listener: NWListener?
-    /// The authenticated extension connection currently allowed to receive MCP requests.
-    private var connection: NWConnection?
-    /// A newly accepted connection that has not completed the token handshake yet.
-    private var authenticatingConnection: NWConnection?
+    /// One authenticated connection per Safari profile.
+    ///
+    /// Safari runs a separate, complete instance of the extension in every profile:
+    /// its own background page, its own storage, its own tab ID space. They all read
+    /// the same token and dial the same port. Holding a single connection here meant
+    /// each instance evicted the last one, whose reconnect then evicted it back, and a
+    /// two-profile setup flapped instead of working (#54).
+    private var connections: [String: NWConnection] = [:]
+    /// Reverse lookup so a connection's own callbacks can find their profile.
+    private var profileIDsByConnection: [ObjectIdentifier: String] = [:]
+    private var metadataByProfile: [String: ExtensionMetadata] = [:]
+    /// Profiles in the order they first authenticated. A profile keeps its index for
+    /// this server's lifetime, including across its own reconnects, so the short
+    /// handle in `status` does not shuffle under the caller.
+    private var profileOrder: [String] = []
+    /// Accepted connections that have not completed the token handshake, oldest first.
+    /// Kept as a list rather than a single slot for the same reason as `connections`:
+    /// a second profile dialing in must not cancel the first one mid-handshake.
+    private var authenticatingConnections: [NWConnection] = []
     private struct PendingRequest {
         let connectionID: ObjectIdentifier
         let continuation: CheckedContinuation<BridgeResponse, any Error>
@@ -152,6 +207,14 @@ actor WebSocketBridge {
 
     /// Authentication token that the extension must send as its first message.
     let authToken: String
+
+    /// Stands in for Safari's default profile, which sends no `SFExtensionProfileKey`.
+    /// Must match `SafariWebExtensionHandler.defaultProfileID`.
+    static let defaultProfileID = "default"
+
+    /// Cap on connections held mid-handshake. Generous for real profile counts, and
+    /// bounds what an unauthenticated local process can pin open.
+    private static let maxAuthenticatingConnections = 8
     /// Primary token root. The sandboxed extension reads tokens through a
     /// home-relative-path exception that the sandbox evaluates against the
     /// *resolved* path, and `~/.config` is commonly symlinked into a dotfiles
@@ -248,16 +311,40 @@ actor WebSocketBridge {
         }
     }
 
-    var isConnected: Bool { connection != nil }
+    var isConnected: Bool { !connections.isEmpty }
+
+    /// The profile that tool calls target when the caller names none.
+    ///
+    /// Safari gives an extension no way to ask which profile is frontmost, so this
+    /// prefers the default profile and otherwise takes the earliest to connect. The
+    /// point is that it is deterministic and that `status` lists the others, rather
+    /// than silently picking a different winner between calls.
+    private var activeProfileID: String? {
+        if connections[Self.defaultProfileID] != nil { return Self.defaultProfileID }
+        return profileOrder.first { connections[$0] != nil }
+    }
+
+    private func profileStatuses() -> [ProfileStatus] {
+        profileOrder.enumerated().compactMap { index, profileID in
+            guard connections[profileID] != nil else { return nil }
+            let metadata = metadataByProfile[profileID]
+            return ProfileStatus(
+                id: profileID,
+                index: index,
+                extensionVersion: metadata?.version,
+                extensionProtocolVersion: metadata?.protocolVersion
+            )
+        }
+    }
 
     func status() -> Status {
         let tokenFilePath = Self.tokenFilePath(for: port)
         let fileManager = FileManager.default
         let tokenFileExists = fileManager.fileExists(atPath: tokenFilePath)
         let permissions = (try? fileManager.attributesOfItem(atPath: tokenFilePath)[.posixPermissions] as? NSNumber)?.intValue
-        let connectionStatus: ConnectionStatus = connection != nil
+        let connectionStatus: ConnectionStatus = !connections.isEmpty
             ? .authenticated
-            : authenticatingConnection != nil ? .authenticating : .disconnected
+            : authenticatingConnections.isEmpty ? .disconnected : .authenticating
 
         return Status(
             serverVersion: MCPSafariProduct.version,
@@ -270,6 +357,7 @@ actor WebSocketBridge {
             tokenFileSecure: tokenFileExists ? permissions == 0o600 : nil,
             extensionVersion: extensionVersion,
             extensionProtocolVersion: extensionProtocolVersion,
+            profiles: profileStatuses(),
             lastError: lastError
         )
     }
@@ -402,10 +490,13 @@ actor WebSocketBridge {
     func stop() {
         listener?.cancel()
         listener = nil
-        authenticatingConnection?.cancel()
-        authenticatingConnection = nil
-        connection?.cancel()
-        connection = nil
+        for pending in authenticatingConnections { pending.cancel() }
+        authenticatingConnections.removeAll()
+        for connection in connections.values { connection.cancel() }
+        connections.removeAll()
+        profileIDsByConnection.removeAll()
+        metadataByProfile.removeAll()
+        profileOrder.removeAll()
         listenerStatus = .stopped
         extensionVersion = nil
         extensionProtocolVersion = nil
@@ -415,7 +506,7 @@ actor WebSocketBridge {
 
     /// Send a request to the extension and await the correlated response.
     func send(action: String, params: [String: AnyCodable] = [:], timeout: TimeInterval = 30) async throws -> BridgeResponse {
-        guard let connection else {
+        guard let profileID = activeProfileID, let connection = connections[profileID] else {
             throw BridgeError.notConnected
         }
         let connectionID = ObjectIdentifier(connection)
@@ -480,6 +571,21 @@ actor WebSocketBridge {
         pendingRequests.removeAll()
     }
 
+    /// Fails only the work that was in flight on one connection. One profile going
+    /// away must not fail another profile's requests, which is what a blanket drain
+    /// would do now that several are held at once.
+    private func drainPendingRequests(for conn: NWConnection, error: any Error) {
+        let connectionID = ObjectIdentifier(conn)
+        for (id, pending) in pendingRequests where pending.connectionID == connectionID {
+            pendingRequests.removeValue(forKey: id)
+            pending.continuation.resume(throwing: error)
+        }
+    }
+
+    private func removeAuthenticating(_ conn: NWConnection) {
+        authenticatingConnections.removeAll { $0 === conn }
+    }
+
     private func handleListenerState(_ state: NWListener.State, listener source: NWListener) {
         guard listener === source else { return }
         switch state {
@@ -497,12 +603,13 @@ actor WebSocketBridge {
         // Accept the socket, but don't make it active until the token handshake
         // succeeds. This prevents unauthenticated local clients from receiving
         // or spoofing MCP tool traffic.
-        if let existing = authenticatingConnection {
-            logger.info("Replacing pending unauthenticated extension connection")
-            existing.cancel()
+        if authenticatingConnections.count >= Self.maxAuthenticatingConnections {
+            let oldest = authenticatingConnections.removeFirst()
+            logger.warning("Too many connections awaiting authentication — dropping the oldest")
+            oldest.cancel()
         }
 
-        authenticatingConnection = newConnection
+        authenticatingConnections.append(newConnection)
         logger.info("Safari extension connected, awaiting authentication")
 
         newConnection.stateUpdateHandler = { [weak self] state in
@@ -523,28 +630,36 @@ actor WebSocketBridge {
             logger.info("Extension connection ready")
         case .failed(let error):
             logger.error("Extension connection failed: \(error)")
-            if connection === conn {
-                connection = nil
-                extensionVersion = nil
-                extensionProtocolVersion = nil
-                drainPendingRequests(error: BridgeError.notConnected)
-            }
-            if authenticatingConnection === conn {
-                authenticatingConnection = nil
-            }
+            forget(conn)
         case .cancelled:
             logger.info("Extension connection closed")
-            if connection === conn {
-                connection = nil
-                extensionVersion = nil
-                extensionProtocolVersion = nil
-                drainPendingRequests(error: BridgeError.notConnected)
-            }
-            if authenticatingConnection === conn {
-                authenticatingConnection = nil
-            }
+            forget(conn)
         default:
             break
+        }
+    }
+
+    /// Drops every trace of one connection. Safe to call for a connection that was
+    /// never authenticated, and for one already superseded by a reconnect from the
+    /// same profile: the identity check keeps a late `.cancelled` from the old socket
+    /// from evicting the new one.
+    private func forget(_ conn: NWConnection) {
+        removeAuthenticating(conn)
+
+        guard let profileID = profileIDsByConnection.removeValue(forKey: ObjectIdentifier(conn))
+        else { return }
+
+        if connections[profileID] === conn {
+            connections.removeValue(forKey: profileID)
+            metadataByProfile.removeValue(forKey: profileID)
+            logger.info("Safari extension disconnected (profile \(profileID))")
+        }
+
+        drainPendingRequests(for: conn, error: BridgeError.notConnected)
+
+        if connections.isEmpty {
+            extensionVersion = nil
+            extensionProtocolVersion = nil
         }
     }
 
@@ -580,7 +695,8 @@ actor WebSocketBridge {
     }
 
     private func isKnownConnection(_ conn: NWConnection) -> Bool {
-        connection === conn || authenticatingConnection === conn
+        profileIDsByConnection[ObjectIdentifier(conn)] != nil
+            || authenticatingConnections.contains { $0 === conn }
     }
 
     private func handleTextMessage(_ data: Data, from conn: NWConnection) {
@@ -591,9 +707,7 @@ actor WebSocketBridge {
             case .rejectToken:
                 logger.warning("Auth token mismatch — closing connection")
                 conn.cancel()
-                if authenticatingConnection === conn {
-                    authenticatingConnection = nil
-                }
+                removeAuthenticating(conn)
             case .rejectProtocol(_, let received):
                 logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
                 sendAuthResponse([
@@ -606,12 +720,10 @@ actor WebSocketBridge {
             return
         }
 
-        guard connection === conn else {
+        guard profileIDsByConnection[ObjectIdentifier(conn)] != nil else {
             logger.warning("Closing unauthenticated WebSocket connection that sent non-auth traffic")
             conn.cancel()
-            if authenticatingConnection === conn {
-                authenticatingConnection = nil
-            }
+            removeAuthenticating(conn)
             return
         }
 
@@ -645,25 +757,35 @@ actor WebSocketBridge {
     }
 
     private func authenticate(_ conn: NWConnection, metadata: ExtensionMetadata) {
-        if let existing = connection, existing !== conn {
-            logger.info("Replacing authenticated extension connection")
+        let profileID = metadata.profileID
+
+        // Replace only this profile's own connection, which is a genuine reconnect.
+        // Evicting across profiles is what made two of them flap against each other.
+        if let existing = connections[profileID], existing !== conn {
+            logger.info("Replacing authenticated extension connection (profile \(profileID))")
+            profileIDsByConnection.removeValue(forKey: ObjectIdentifier(existing))
             existing.cancel()
-            drainPendingRequests(error: BridgeError.notConnected)
+            drainPendingRequests(for: existing, error: BridgeError.notConnected)
         }
 
-        connection = conn
+        connections[profileID] = conn
+        profileIDsByConnection[ObjectIdentifier(conn)] = profileID
+        metadataByProfile[profileID] = metadata
+        if !profileOrder.contains(profileID) {
+            profileOrder.append(profileID)
+        }
+
         extensionVersion = metadata.version
         extensionProtocolVersion = metadata.protocolVersion
         lastError = nil
-        if authenticatingConnection === conn {
-            authenticatingConnection = nil
-        }
+        removeAuthenticating(conn)
 
-        logger.info("Safari extension authenticated")
+        logger.info("Safari extension authenticated (profile \(profileID))")
         sendAuthResponse([
             "auth": "ok",
             "serverVersion": MCPSafariProduct.version,
             "protocolVersion": MCPSafariProduct.bridgeProtocolVersion,
+            "profile": profileID,
         ], to: conn)
     }
 

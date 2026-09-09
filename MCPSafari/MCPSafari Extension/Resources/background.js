@@ -13,6 +13,7 @@ const AUTO_SCAN_RANGE = 10; // Ports 8089-8098 are auto-managed
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 5000;
 const AUTO_CLEANUP_MS = 120_000;
+const DEFAULT_PROFILE_ID = "default";
 
 // ─── Multi-Connection State ──────────────────────────────────────────
 // All ports in the scan range (8089-8098) are initialized at startup.
@@ -26,6 +27,11 @@ const connections = new Map();
 const manualPorts = new Set();
 let selectedTabId = null;
 let legacyAuthToken = null;
+// Safari runs a separate instance of this extension per profile, each with its own
+// background page reading the same tokens. Without an identity in the handshake every
+// instance looks like the same client, and the server evicts whichever one connected
+// first. The appex reads it from SFExtensionProfileKey; "default" means Safari sent none.
+let profileId = DEFAULT_PROFILE_ID;
 const authTokensByPort = new Map();
 const staleTokensByPort = new Map();
 
@@ -97,6 +103,7 @@ function connectToPort(port) {
             auth: authToken,
             extensionVersion: EXTENSION_VERSION,
             protocolVersion: BRIDGE_PROTOCOL_VERSION,
+            profileId,
         }));
         console.log(`[MCPSafari:${port}] Sent auth token`);
     };
@@ -1154,6 +1161,9 @@ async function loadAuthTokens() {
             "com.epistates.MCPSafari.Extension",
             { type: "getTokens" }
         );
+        if (response && typeof response.profile === "string" && response.profile) {
+            profileId = response.profile;
+        }
         if (response && response.tokens) {
             authTokensByPort.clear();
             legacyAuthToken = null;
