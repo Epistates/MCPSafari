@@ -16,7 +16,7 @@ const popupHTML = readFileSync(
     "utf8"
 );
 
-function backgroundHarness(initialTokens) {
+function backgroundHarness(initialTokens, { profile } = {}) {
     const tokenMap = new Map(Object.entries(initialTokens));
     const sockets = [];
     const timers = [];
@@ -30,10 +30,11 @@ function backgroundHarness(initialTokens) {
         constructor(url) {
             this.url = url;
             this.readyState = FakeWebSocket.CONNECTING;
+            this.sent = [];
             sockets.push(this);
         }
 
-        send() {}
+        send(frame) { this.sent.push(frame); }
     }
 
     const browser = {
@@ -46,7 +47,10 @@ function backgroundHarness(initialTokens) {
             onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
             sendNativeMessage: async () => {
                 nativeMessageCount++;
-                return { tokens: Object.fromEntries(tokenMap) };
+                const response = { tokens: Object.fromEntries(tokenMap) };
+                // The appex omits this for extension builds without profile support.
+                if (profile !== undefined) response.profile = profile;
+                return response;
             },
         },
         storage: {
@@ -72,6 +76,13 @@ function backgroundHarness(initialTokens) {
 
     return {
         evaluate: (source) => vm.runInContext(source, context),
+        /// Returns the handshake frame the extension sends on connect.
+        openLatestSocket() {
+            const socket = sockets.at(-1);
+            socket.readyState = FakeWebSocket.OPEN;
+            socket.onopen();
+            return JSON.parse(socket.sent.at(-1));
+        },
         failLatestSocket() {
             const socket = sockets.at(-1);
             socket.readyState = 3;
@@ -105,6 +116,25 @@ test("unchanged stale tokens stop reconnecting until their value changes", async
     await harness.evaluate("loadAuthTokens()");
     assert.equal(harness.evaluate("connections.has(8091)"), true);
     assert.equal(harness.sockets.length, 5);
+});
+
+test("the handshake carries the Safari profile the appex reported", async () => {
+    // Safari runs one instance of the extension per profile, all reading the same
+    // token. Without this the server cannot tell them apart and evicts one for the
+    // other, which is what made a two-profile setup flap.
+    const harness = backgroundHarness({ 8091: "current-token" }, { profile: "WORK-UUID" });
+    await settle();
+
+    const handshake = harness.openLatestSocket();
+    assert.equal(handshake.profileId, "WORK-UUID");
+    assert.equal(handshake.auth, "current-token");
+});
+
+test("an appex that reports no profile leaves the handshake on the default", async () => {
+    const harness = backgroundHarness({ 8091: "current-token" });
+    await settle();
+
+    assert.equal(harness.openLatestSocket().profileId, "default");
 });
 
 test("popup status polling does not restart disconnected ports", async () => {

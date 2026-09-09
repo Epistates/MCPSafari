@@ -205,7 +205,7 @@ actor SafariMCPServer {
         [
             Tool(
                 name: "status",
-                description: "Report local Safari MCP listener, authentication, version, and token health. Works without an extension connection.",
+                description: "Report local Safari MCP listener, authentication, version, token health, and which Safari profiles are connected. Works without an extension connection.",
                 inputSchema: .object(["type": .string("object"), "properties": .object([:])]),
                 annotations: .init(readOnlyHint: true, openWorldHint: false)
             ),

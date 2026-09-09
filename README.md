@@ -203,6 +203,12 @@ For ports outside the default range, add them manually in the extension popup or
 }
 ```
 
+### Safari Profiles
+
+Safari runs a separate instance of the extension in every profile it is enabled for, each with its own background page and its own tabs. All of them connect to the same server. The server keeps one connection per profile and lists them under `profiles` in `status`.
+
+Tool calls drive a single profile: the default one when it is connected, otherwise the first to connect. Naming a profile in a tool call is not supported yet, so if you want to automate a non-default profile, turn the extension off in the profiles you are not driving. Safari exposes no profile *name* to extensions, so `status` identifies profiles by the opaque UUID Safari assigns them.
+
 ### CLI Options
 
 | Flag | Description |

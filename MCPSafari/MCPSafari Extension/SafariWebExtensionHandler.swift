@@ -45,6 +45,12 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             } else {
                 responseBody = ["error": "No token files found in \(result.checkedPaths.joined(separator: ", "))"]
             }
+
+            // Safari runs a separate extension instance per profile, each with its own
+            // background page. The bridge needs to tell them apart so they stop evicting
+            // one another, and this handler is the only place the identity is available.
+            // Safari omits the key for the default profile.
+            responseBody["profile"] = profile?.uuidString ?? Self.defaultProfileID
         } else {
             responseBody = ["echo": message as Any]
         }
@@ -58,6 +64,10 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
         context.completeRequest(returningItems: [ response ], completionHandler: nil)
     }
+
+    /// Reported when Safari supplies no `SFExtensionProfileKey`, which is how the
+    /// default profile presents. Must match `WebSocketBridge.defaultProfileID`.
+    static let defaultProfileID = "default"
 
     private struct TokenLoadResult {
         let tokens: [String: String]
