@@ -61,11 +61,14 @@ The MCP server communicates with clients over **stdio** and bridges tool calls t
 
 ### Homebrew (recommended)
 
-Installs the MCP server binary **and** the Safari extension app to `/Applications` in one step. Automatically cleans up any previous installation.
+Installs the MCP server binary **and** the Safari extension app to `/Applications`. Automatically cleans up any previous installation.
 
 ```bash
+brew trust epistates/tap
 brew install --cask epistates/tap/mcp-safari
 ```
+
+The `brew trust` line is needed once. Installing a cask auto-trusts the cask itself, but this cask depends on the `mcp-safari-server` formula, and a differently named dependency in the same tap is not covered by that. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`.
 
 Upgrading:
 
