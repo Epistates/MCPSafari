@@ -1,14 +1,8 @@
 # Changelog
 
 ## [Unreleased]
-### Changed
-- Element UIDs are now frame-qualified: `e42` becomes `f0e42`, where the prefix names the frame that minted it. UIDs are read back from a `snapshot` rather than written by hand, so this only affects anything that stored one across the upgrade.
 
-### Added
-- Iframe content is now readable and reachable. `snapshot` returns the tab as one tree, hanging each frame's document on the `<iframe>` that hosts it, and `find` searches every frame. No tool gained a frame argument: a UID routes to its own frame, and a selector or text target searches frames in order, top frame first. A frame whose host `<iframe>` cannot be matched by resolved `src` is attached to the parent tree and counted in `unmatchedFrames` instead of being dropped. Native input still reaches the top frame only, because a subframe cannot read a cross-origin parent's offset, and now fails with `invalid_input` instead of acting on the wrong point. `read_console` and `read_network` continue to report the top frame only.
-- `snapshot`, `find`, `click`, `type_text`, `form_input`, and `wait` now reach into open shadow roots, so a page built on web components no longer returns results that look complete and are not. `snapshot` follows the flattened tree, so content passed into a `<slot>` is reported once, where the slot places it. Closed shadow roots cannot be read by any API, so a custom element that occupies space while reporting no content of its own is marked `shadowClosed` instead of being reported as empty.
-
-## [0.3.0] - 2026-09-08
+## [0.3.0] - 2026-09-09
 ### Added
 - Added `mcp-safari doctor` with human-readable and JSON output for installation, version, extension registration, and token checks.
 - Added a bridge-independent `status` MCP tool for listener, authentication, version, and token health.
@@ -22,11 +16,14 @@
 - `snapshot` is capped at 2000 nodes and accepts `maxNodes`; a cut tree marks the root `truncated` and each parent whose children were dropped `childrenTruncated`, so a clipped snapshot is distinguishable from a complete one. `read_page` text and html are capped at 100000 characters, accept `maxChars`, and report the full size when they cut.
 - `press_key`, `hover`, and `drag` now accept `native: true` for real macOS events, the same opt-in `type_text` already had: keys that trigger default actions such as focus moves and dialog dismissal, a pointer path that produces true CSS `:hover` and boundary events, and drags that threshold-based libraries accept. Character keys resolve against the active keyboard layout, so `Meta+a` is Command-A on AZERTY rather than Command-Q.
 - `screenshot` accepts `filePath`: the PNG is written there and the result carries the path and byte count instead of inline image data, so batch captures no longer flood the client context.
+- `snapshot`, `find`, `click`, `type_text`, `form_input`, and `wait` now reach into open shadow roots, so a page built on web components no longer returns results that look complete and are not. `snapshot` follows the flattened tree, so content passed into a `<slot>` is reported once, where the slot places it. Closed shadow roots cannot be read by any API, so a custom element that occupies space while reporting no content of its own is marked `shadowClosed` instead of being reported as empty.
+- Iframe content is now readable and reachable. `snapshot` returns the tab as one tree, hanging each frame's document on the `<iframe>` that hosts it, and `find` searches every frame. No tool gained a frame argument: a UID routes to its own frame, and a selector or text target searches frames in order, top frame first. A frame whose host `<iframe>` cannot be matched by resolved `src` is attached to the parent tree and counted in `unmatchedFrames` instead of being dropped. Native input still reaches the top frame only, because a subframe cannot read a cross-origin parent's offset, and now fails with `invalid_input` instead of acting on the wrong point. `read_console` and `read_network` continue to report the top frame only.
 
 ### Changed
 - Added `--log-level` and the `MCP_SAFARI_LOG_LEVEL` environment variable, and lowered the default from `info` to `notice`. Logs go to stderr, which MCP clients surface to the user, so routine startup and connection lines no longer appear unless asked for. `--verbose` is unchanged as a shorthand for `debug`.
 - Auth tokens are now written to `~/Library/Application Support/MCPSafari/tokens/<port>` in addition to the previous `~/.config/mcp-safari/tokens/<port>`, and the extension prefers the new location. A `~/.config` symlinked into a dotfiles repo resolves outside the sandboxed extension's read grant, which left the extension permanently disconnected with no diagnostic.
 - `mcp-safari doctor` reports a new `token_path` check that warns when the token directory resolves somewhere other than its literal path, and now names the token file path it checked.
+- Element UIDs are now frame-qualified: `e42` becomes `f0e42`, where the prefix names the frame that minted it. UIDs are read back from a `snapshot` rather than written by hand, so this only affects anything that stored one across the upgrade.
 
 ### Security
 - `snapshot` no longer reports the contents of password inputs, or of inputs whose `autocomplete` marks them as a one-time code or payment card field; those values come back as `[redacted]`.
