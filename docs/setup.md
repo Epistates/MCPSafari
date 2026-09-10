@@ -17,11 +17,14 @@ brew install --cask epistates/tap/mcp-safari
 
 The `brew trust` line is needed once. Installing a cask auto-trusts the cask itself, but this cask depends on the `mcp-safari-server` formula, and a differently named dependency in the same tap is not covered by that. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`.
 
-Upgrading:
+Upgrading, both parts together:
 
 ```bash
 brew upgrade --cask epistates/tap/mcp-safari
+brew upgrade epistates/tap/mcp-safari-server
 ```
+
+Upgrading only the cask leaves the server behind, because a cask depends on a formula being present rather than being any particular version. That gives you a new app and extension against an old server, which the versioned handshake rejects. `mcp-safari doctor` reports it as a version mismatch and names the fix, so it fails loudly rather than misbehaving.
 
 Open MCPSafari.app once so Safari picks up the extension, then enable it in **Safari > Settings > Extensions > MCPSafari Extension**.
 
