@@ -1,582 +1,76 @@
+# MCPSafari: Your favorite browser, ready for agents
+
+A native Safari MCP server for your real, logged-in Safari on macOS. Works with any MCP-compatible client, including Claude Code, Codex, Cursor, OpenCode, and oh-my-pi.
+
 <div align="center">
   <video src="https://github.com/user-attachments/assets/96566f48-a7b7-468b-bf96-8ca5c5c86da7" muted autoplay loop playsinline width="100%"></video>
 </div>
 
-# MCPSafari: Native Safari MCP Server for AI Agents
-![Stars](https://img.shields.io/github/stars/Epistates/MCPSafari)
-![MCP](https://img.shields.io/badge/MCP-2025-blue)
-![macOS](https://img.shields.io/badge/macOS-14+-orange)
-![Swift](https://img.shields.io/badge/Swift-6.3+-orange)
-![Xcode](https://img.shields.io/badge/Xcode-26+-orange)
+Your agent starts with your existing logins, cookies, and history. Open a signed-in page and get to work.
 
-Give Claude, Cursor, or any MCP-compatible AI full native control of Safari on macOS. Navigate tabs, click/type/fill forms (even React), read HTML/accessibility trees, execute JS, capture screenshots, inspect console & network — all with 24 secure tools. Zero Chrome overhead, Apple Silicon optimized, token-authenticated, and built with official Swift + Manifest V3 Safari Extension.
+- Test your site in Safari. Let your agent check forms, menus, and drag-and-drop in the browser your Safari users will see.
+- Target elements by UID (from a snapshot), CSS, text, or coordinates. Fill React forms with setters that update application state.
+- Check what happened. Read console and network activity, and save screenshots to disk for review without filling the agent's context with image data.
+- Run DOM tasks in the background. Native typing, key presses, hover, and drag need Safari in front and Accessibility permission.
 
-## Why MCPSafari?
+QA on real sites has shaped the tools, including fixes for [menus that ignored clicks](https://github.com/Epistates/MCPSafari/pull/74) and [drop zones that missed files](https://github.com/Epistates/MCPSafari/pull/75).
 
-- Smarter element targeting (UID + CSS + text + coords + interactive ranking)
-- Works flawlessly with complex sites
-- Local & private (runs on your Mac)
-- Perfect drop-in for Mac-first agent workflows
+Built with Swift and a Manifest V3 Safari extension. Requires macOS 14+ and Safari 17+. Xcode is only needed to build from source.
 
-**macOS 14+** • **Safari 17+** • **Xcode 26+**
+## Quick start
 
-Built with the official [swift-sdk](https://github.com/modelcontextprotocol/swift-sdk) and a Manifest V3 Safari Web Extension.
+### 1. Install
 
-## Why Safari over Chrome?
-- 40–60% less CPU/heat on Apple Silicon  
-- Keeps your existing Safari logins/cookies  
-- Native accessibility tree (better than Playwright for complex UIs)
-
-## How It Works
-
-```
-MCP Client (Claude, etc.)
-        │ stdio
-┌───────▼──────────────┐
-│  Swift MCP Server    │
-│  (MCPSafari binary)  │
-└───────┬──────────────┘
-        │ WebSocket (localhost:8089)
-┌───────▼──────────────┐
-│  Safari Extension    │
-│  (background.js)     │
-└───────┬──────────────┘
-        │ content scripts
-┌───────▼──────────────┐
-│  Safari Browser      │
-│  (macOS 14.0+)       │
-└──────────────────────┘
-```
-
-The MCP server communicates with clients over **stdio** and bridges tool calls to the Safari extension over a local **WebSocket**. The extension executes actions via browser APIs and content scripts injected into pages.
-
-## Requirements
-
-- macOS 14.0 (Sonoma) or later
-- Safari 17+
-- Swift 6.3+ (for building from source)
-- Xcode 26+ (for building the Safari extension)
-
-## Installation
-
-### Homebrew (recommended)
-
-Installs the MCP server binary **and** the Safari extension app to `/Applications`. Automatically cleans up any previous installation.
-
-```bash
+```sh
 brew trust epistates/tap
 brew install --cask epistates/tap/mcp-safari
 ```
 
-The `brew trust` line is needed once. Installing a cask auto-trusts the cask itself, but this cask depends on the `mcp-safari-server` formula, and a differently named dependency in the same tap is not covered by that. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`.
+`brew trust` is needed once: installing a cask auto-trusts the cask, but not the `mcp-safari-server` formula it depends on, and without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`.
 
-Upgrading:
+Open MCPSafari.app once so Safari picks up the extension, then enable **MCPSafari Extension** in Safari → Settings → Extensions. Grant access to the sites you want your agent to use.
 
-```bash
-brew upgrade --cask epistates/tap/mcp-safari
-```
+Homebrew installs the published release. This README and the [tool reference](docs/tools.md) describe `main`, which may include unreleased features. Check [Releases](https://github.com/Epistates/MCPSafari/releases) for your version.
 
-After install, enable the extension in **Safari > Settings > Extensions > MCPSafari Extension**.
+### 2. Connect your client
 
-### From Release
+For Claude Code:
 
-If you don't use Homebrew, download both the CLI binary and the extension app from [GitHub Releases](https://github.com/Epistates/MCPSafari/releases):
-
-| Asset | Description |
-|-------|-------------|
-| `MCPSafari-Server-arm64-apple-darwin` | MCP server binary for Apple Silicon (M1, M2, M3, M4) |
-| `MCPSafari-Server-x86_64-apple-darwin` | MCP server binary for Intel Macs |
-| `MCPSafari-Server-universal-apple-darwin` | MCP server binary — universal, runs on any Mac |
-| `MCPSafari-Extension-arm64.tar.gz` | Safari extension app for Apple Silicon (M1, M2, M3, M4) |
-| `MCPSafari-Extension-x86_64.tar.gz` | Safari extension app for Intel Macs |
-
-```bash
-# Apple Silicon (M1/M2/M3/M4) — use x86_64 for Intel Macs
-curl -L -o /usr/local/bin/mcp-safari https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-Server-arm64-apple-darwin
-chmod +x /usr/local/bin/mcp-safari
-
-# Safari extension (must be in /Applications for macOS 26+)
-curl -L https://github.com/Epistates/MCPSafari/releases/latest/download/MCPSafari-Extension-arm64.tar.gz | tar xzf -
-mv MCPSafari.app /Applications/
-open /Applications/MCPSafari.app
-```
-
-Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extension**.
-
-### From Source
-
-```bash
-git clone https://github.com/Epistates/MCPSafari.git
-cd MCPSafari
-
-# Build the MCP server
-cd MCPServer
-swift build -c release
-# Binary is at .build/release/MCPSafari
-
-# Build and open the Safari extension
-cd ../MCPSafari
-xcodebuild -project MCPSafari.xcodeproj -scheme MCPSafari build
-open ~/Library/Developer/Xcode/DerivedData/MCPSafari-*/Build/Products/Debug/MCPSafari.app
-```
-
-Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extension**.
-
-## Configuration
-
-### Codex CLI
-
-Register the server with Codex CLI:
-
-```bash
-codex mcp add mcp-safari -- mcp-safari
-```
-
-If `mcp-safari` is not in your `$PATH`, use the full path to the server binary:
-
-```bash
-codex mcp add mcp-safari -- /usr/local/bin/mcp-safari
-```
-
-Verify the registration:
-
-```bash
-codex mcp list
-codex mcp get mcp-safari
-```
-
-Start a new Codex CLI session after registering the server. MCPSafari uses the MCP stdio transport, so use `--` before the command; `--url` is only for streamable HTTP MCP servers.
-
-### Claude Code
-
-Register the server with the Claude Code CLI (user scope, available in every project):
-
-```bash
+```sh
 claude mcp add --scope user mcp-safari mcp-safari
 ```
 
-Or, to scope it to a single repo, create `.mcp.json` at the project root:
+For Codex CLI:
 
-```json
-{
-  "mcpServers": {
-    "mcp-safari": {
-      "command": "mcp-safari"
-    }
-  }
-}
+```sh
+codex mcp add mcp-safari -- mcp-safari
 ```
 
-Verify with `claude mcp list` — you should see `mcp-safari — ✓ Connected`.
+Start a new client session after adding the server. For Claude Desktop, Cursor, and other clients, see [client configuration](docs/setup.md#configuration).
 
-> **Note:** Claude Code's CLI does not read `mcpServers` from `~/.claude/settings.json` — that's the Claude Desktop format. Pasting the JSON snippet above into `settings.json` is silently ignored (no error, no registration), and the Safari extension will appear stuck at "disconnected" because the server is never spawned. Use `claude mcp add` or `.mcp.json` as shown above.
+### 3. Try it
 
-### Claude Desktop
+Ask your agent:
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+> Open example.com in a new Safari tab, read the page heading, and take a screenshot.
 
-```json
-{
-  "mcpServers": {
-    "mcp-safari": {
-      "command": "mcp-safari"
-    }
-  }
-}
-```
+The heading should be “Example Domain”. If the connection fails, see [troubleshooting](docs/setup.md#troubleshooting). On versions that include it, `mcp-safari doctor` checks the installation without changing it.
 
-### Cursor / Windsurf / Other MCP Clients
+## Before you use it
 
-Any client that supports the MCP stdio transport can connect. Point it at `mcp-safari` (or the full path if not in `$PATH`).
+Your agent acts in your existing browser session. It can access signed-in pages where you allow the extension. Tool results go to your MCP client and may be sent to its model provider; see [browser access and data](SECURITY.md#browser-access-and-data).
 
-### Multiple Claude Instances
+Background DOM tasks do not need native input. For hover styling, real keyboard events, and native drag, Safari must be in front. Native hover and drag move your pointer, so leave the mouse alone while they run. See [synthetic and native input](docs/tools.md#synthetic-and-native-input).
 
-Multiple MCP clients work automatically. The server auto-finds a free port if the default (8089) is in use, and the extension auto-discovers all servers in the 8089-8098 range. No configuration needed — just start multiple clients and they each get their own connection.
+Console and network capture have limits. Pages can alter the captured data, and resource timings do not include HTTP status or headers. See [debugging](docs/tools.md#debugging).
 
-For ports outside the default range, add them manually in the extension popup or specify explicitly:
+## Documentation
 
-```json
-{
-  "mcpServers": {
-    "mcp-safari": {
-      "command": "mcp-safari",
-      "args": ["--port", "9090"]
-    }
-  }
-}
-```
-
-### Safari Profiles
-
-Safari runs a separate instance of the extension in every profile it is enabled for, each with its own background page and its own tabs. All of them connect to the same server. The server keeps one connection per profile and lists them under `profiles` in `status`.
-
-Tool calls drive a single profile: the default one when it is connected, otherwise the first to connect. Naming a profile in a tool call is not supported yet, so if you want to automate a non-default profile, turn the extension off in the profiles you are not driving. Safari exposes no profile *name* to extensions, so `status` identifies profiles by the opaque UUID Safari assigns them.
-
-### CLI Options
-
-| Flag | Description |
-|------|-------------|
-| `--port <n>` / `-p <n>` | WebSocket port (default: `8089`) |
-| `--log-level <level>` | `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `critical` (default: `notice`) |
-| `--verbose` | Shorthand for `--log-level debug` |
-
-Logs go to stderr, which MCP clients typically surface to the user, so only
-warnings and errors appear by default. Use `--log-level info` for startup and
-connection lines. Clients that pass environment variables but not arguments can
-set `MCP_SAFARI_LOG_LEVEL` instead; an explicit flag takes precedence.
-
-Diagnose an installation without starting the MCP server:
-
-```bash
-mcp-safari doctor
-mcp-safari doctor --json
-```
-
-The doctor checks the server executable, app and extension bundles, PlugInKit registration, matching versions, and the selected port's token file. It never returns token contents and does not change system state.
-
-## Tools (27)
-
-### Diagnostics
-
-| Tool | Description |
-|-|-|
-| `status` | Report listener, authenticated bridge, version, and token health without requiring a Safari connection |
-
-### Tab Management
-
-| Tool | Description |
-|------|-------------|
-| `tabs_context` | List all open tabs with IDs, URLs, and titles |
-| `tabs_create` | Open a new tab, optionally with a URL |
-| `close_tab` | Close a tab by ID |
-| `select_tab` | Pin a tab as the default context for future calls |
-
-### Navigation
-
-| Tool | Description |
-|------|-------------|
-| `navigate` | Go to a URL, or use `back` / `forward` / `reload` actions |
-
-### Page Reading
-
-| Tool | Description |
-|------|-------------|
-| `read_page` | Get page content as `text`, `html`, or `snapshot` |
-| `snapshot` | Accessibility tree with element UIDs for interaction |
-| `find` | Find elements by CSS selector, visible text or accessible name, or ARIA role (up to 50 matches) |
-
-### Interaction
-
-| Tool | Description |
-|------|-------------|
-| `click` | Click by UID, CSS selector, text, or coordinates |
-| `type_text` | Type into an element with optional `clearFirst` and `submitKey` |
-| `form_input` | Batch fill form fields (CSS selector → value map) |
-| `select_option` | Select a dropdown option by value or label |
-| `scroll` | Scroll page or element in any direction |
-| `press_key` | Press key combinations (e.g., `Enter`, `Meta+a`, `Control+c`); `native: true` sends a real macOS key event |
-| `hover` | Hover to trigger tooltips, menus, or hover handlers (pointer + mouse events); `native: true` moves the real OS pointer for true `:hover` |
-| `drag` | Drag and drop between elements along an interpolated pointer path; `native: true` performs a real macOS mouse drag |
-| `upload_file` | Attach local files to an `<input type="file">` |
-| `drop_file` | Drop local files onto an element |
-
-> **Note:** Interaction tools drive elements via synthetic DOM events (and React-compatible value setting for text), which works across the vast majority of sites. Because the events are synthetic, `press_key` modifier combos (e.g. `Meta+a`, `Control+c`) and `drag` reach page-level JS handlers but do **not** trigger native browser actions — clipboard copy/paste, select-all, or HTML5 native drag-and-drop. Synthetic events also never apply CSS `:hover`, so `hover` can verify hover *handlers* (including `onPointerEnter`) but not hover *styling*. Use `type_text`/`form_input` for text entry and `javascript_tool` when a true native action is required.
->
-> `press_key`, `hover`, and `drag` with `native: true` send real macOS events instead: trusted keys that trigger default actions, a pointer path that produces true `:hover` and boundary events, and drags that threshold-based libraries (pointer sensors) accept. They require Safari to be frontmost and Accessibility permission for the app running the server, and move the user's real pointer. Screen coordinates assume 100% page zoom.
-
-### Dialogs
-
-| Tool | Description |
-|------|-------------|
-| `handle_dialog` | Accept or dismiss alerts, confirms, and prompts |
-
-### Screenshots
-
-| Tool | Description |
-|------|-------------|
-| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `uid`/`selector` crop to one element plus `padding` CSS px, `scale` shrinks the PNG, and `filePath` saves it to disk and returns the path instead of inline image data |
-
-### JavaScript
-
-| Tool | Description |
-|------|-------------|
-| `javascript_tool` | Execute arbitrary JS in the page context and return expression results; multi-statement code must end in an explicit `return` to produce a value |
-
-> **Note:** Sites whose Content Security Policy omits `'unsafe-eval'` refuse to compile a string in their own realm, which is how this tool runs your code. When that happens it reruns in the extension's isolated world and says so in the result. The DOM is shared there, so querying and manipulating the page still works, but the site's own JavaScript globals (framework instances, anything the page assigned to `window`) are not visible. Retrying is safe — a CSP refusal happens before any of the submitted code runs.
-
-### Debugging
-
-| Tool | Description |
-|------|-------------|
-| `read_console` | Read console messages with level and regex filtering |
-| `read_network` | Read captured XHR/fetch requests or opt-in resource timings with type, URL-regex, and count filtering |
-
-> **Note:** Console and network capture run in the page's main world (required to patch `console`, `fetch`, and `history`). A hostile page can therefore observe or forge this telemetry, so treat `read_console` / `read_network` output from untrusted pages as page-controlled data rather than ground truth.
-
-> **Note:** `read_network` with `type: "resource"` reports PerformanceObserver timings, not network-stack records: entries carry no HTTP status or request/response headers, and WebSocket traffic and redirect chains are not captured. Cross-origin entries without `Timing-Allow-Origin` report zeroed byte counts and connection-phase timings — though `startTime` and `duration` stay accurate — and are marked `timingRestricted: true`.
-
-### Window
-
-| Tool | Description |
-|------|-------------|
-| `resize_window` | Resize the browser window to specific dimensions |
-
-### Utility
-
-| Tool | Description |
-|------|-------------|
-| `run_steps` | Run up to 10 interaction or wait steps sequentially, stopping on the first failure |
-| `wait` | Wait for a duration, CSS selector, or text to appear |
-
-## Usage
-
-### Basic Workflow
-
-1. **Start with context** — call `tabs_context` to see what's open, or `navigate` to a URL.
-2. **Take a snapshot** — call `snapshot` to get the accessibility tree with element UIDs.
-3. **Interact** — use UIDs from the snapshot with `click`, `type_text`, `hover`, etc.
-4. **Verify** — pass `includeSnapshot: true` on interaction tools to see the updated state, or take a `screenshot`.
-
-### Element Targeting
-
-Tools that interact with elements accept multiple targeting strategies:
-
-| Strategy | Example | When to Use |
-|----------|---------|-------------|
-| **UID** | `uid: "f0e42"` | Most precise — from a `snapshot` |
-| **CSS selector** | `selector: "#login-btn"` | When you know the DOM structure |
-| **Text** | `text: "Sign In"` | Interactive elements are ranked higher |
-| **Coordinates** | `x: 100, y: 200` | Last resort — click at exact position |
-
-### Shadow DOM
-
-Every targeting strategy reaches into open shadow roots, so pages built on web components (Lit, Stencil, Salesforce Lightning, most design-system elements) are readable and clickable. `snapshot` follows the flattened tree the user actually sees, so content passed into a `<slot>` is reported once, where the slot places it.
-
-Closed shadow roots are unreadable by any API. Rather than reporting such an element as empty, `snapshot` marks it `"shadowClosed": true` so a missing control is distinguishable from one the tools cannot see.
-
-### Iframes
-
-Iframe content is readable and clickable. `snapshot` returns the whole tab as one tree, hanging each frame's document on the `<iframe>` that hosts it, and `find` searches every frame.
-
-No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is element 12 in frame 3), so targeting by UID routes automatically; targeting by selector or text searches frames in order, top frame first. Frames are matched to their host `<iframe>` by resolved `src`, and a frame whose host cannot be identified is attached to the parent tree and counted in `unmatchedFrames` rather than dropped.
-
-Two limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `read_console` and `read_network` report the top frame only.
-
-### Form Filling
-
-Use `form_input` to fill multiple fields at once:
-
-```json
-{
-  "fields": {
-    "#name": "Jane Doe",
-    "#email": "jane@example.com",
-    "textarea[name=message]": "Hello!"
-  }
-}
-```
-
-This uses React-compatible value setting (`nativeInputValueSetter`) so it works with controlled inputs in React, Next.js, and similar frameworks.
-
-### File Upload and Drop
-
-`upload_file` attaches local files to a file input, and `drop_file` delivers them to a drop zone:
-
-```json
-{ "selector": "input[type=file]", "filePath": "~/Pictures/reference.png" }
-```
-
-```json
-{ "selector": "#dropzone", "filePaths": ["/tmp/a.pdf", "/tmp/b.pdf"] }
-```
-
-The server reads only the paths you name, infers each MIME type from the file extension (override with `mimeType`), and sends the bytes to the page. `upload_file` accepts the input itself, its `<label>`, or a wrapper containing it, then fires `input` and `change`; `drop_file` dispatches `dragenter`, `dragover`, and `drop` with a `DataTransfer` holding the files. Up to 10 files and 10 MB total per call.
-
-### Smart Text Matching
-
-When targeting by `text`, interactive elements (buttons, links, inputs) are ranked higher than generic containers. Clicking `text: "Submit"` will prefer a `<button>Submit</button>` over a `<div>Submit</div>`.
-
-### Post-Action Snapshots
-
-Most interaction tools support `includeSnapshot: true`, which returns the updated accessibility tree after the action — useful for verifying the result without a separate `snapshot` call.
-
-### Post-Action Waits
-
-`navigate` and interaction tools support `waitForSelector`, `waitForText`, and `waitTimeout` to wait after a successful action before returning. When combined with `includeSnapshot: true`, the snapshot is captured after the wait.
-
-### Page Traces
-
-Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Use `eventTypes` for an exact-match allowlist such as `["dom.mutation", "network.fetch"]`; omit it to capture all URL/history, console, fetch/XHR, and DOM mutation events during the action window.
-
-### Bounded Action Batches
-
-Use `run_steps` for a fixed sequence of existing interactions and waits with a shared default tab:
-
-```json
-{
-  "tabId": 42,
-  "steps": [
-    { "tool": "navigate", "arguments": { "url": "https://example.com" } },
-    { "tool": "click", "arguments": { "selector": "#continue" } },
-    { "tool": "wait", "arguments": { "text": "Done" } }
-  ],
-  "trace": true,
-  "includeSnapshot": true
-}
-```
-
-The batch stops at the first structured failure and reports `completedSteps`, `failedStep`, and ordered step results. Completed browser actions are not rolled back. Batch-level trace and snapshot options produce one trace and one final snapshot rather than one artifact per step.
-
-## Architecture
-
-### MCP Server (`MCPServer/`)
-
-A Swift executable using the official [modelcontextprotocol/swift-sdk](https://github.com/modelcontextprotocol/swift-sdk). Communicates with MCP clients via **stdio** and with the Safari extension via a **WebSocket** bridge using `Network.framework`.
-
-- `main.swift` — Entry point, parses CLI flags, starts the server
-- `SafariMCPServer.swift` — Tool definitions and handlers (actor)
-- `WebSocketBridge.swift` — WebSocket server with request/response correlation (actor)
-- `BridgeMessage.swift` — Wire protocol types and `AnyCodable` serialization
-
-### Safari Extension (`MCPSafari/`)
-
-A Manifest V3 Safari Web Extension with:
-
-- `background.js` — WebSocket client, request router, tab/navigation/screenshot handlers
-- `content.js` — DOM interaction, accessibility snapshots, element finding, click/type/scroll simulation
-- `trace-interceptor.js` — Captures action-window URL, history, console, network, and DOM mutation events
-- `dialog-interceptor.js` — Patches `window.alert/confirm/prompt` before page scripts run
-- `console-interceptor.js` — Captures console messages for `read_console`
-- `network-interceptor.js` — Captures XHR/fetch requests for `read_network`
-- `popup.html/js/css` — Extension popup showing connection status
-
-### macOS Host App
-
-A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension and provides native messaging for auth token exchange.
-
-## Security
-
-### WebSocket Authentication
-
-The server generates a random UUID token at startup, writes it to `~/Library/Application Support/MCPSafari/tokens/<port>` (mode `0600`), and requires it as the first WebSocket message before any MCP tool traffic is sent. The extension reads the per-port token map via native messaging from the host app, so multiple server instances can authenticate independently. Connections without a valid token are closed.
-
-The token is also written to the previous location, `~/.config/mcp-safari/tokens/<port>`, so an extension build predating the move keeps authenticating. Application Support is preferred because the Safari extension is sandboxed: its read access is granted on a literal home-relative path, which the sandbox checks against the *resolved* path. A `~/.config` symlinked into a dotfiles repo therefore puts the token outside the granted path, and the extension silently never connects. `mcp-safari doctor` reports this as a `token_path` warning.
-
-### Input Validation
-
-- URL schemes restricted to `http`, `https`, `about`, and `file`
-- Navigation actions validated against an allowlist
-- Regex patterns capped at 200 characters and validated before forwarding
-- Wait durations capped at 300 seconds
-- File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call
-- `find` returns at most 50 matches per call
-
-### Snapshot Redaction
-
-`snapshot` reports that a sensitive field has a value without reporting the value itself. Password inputs, and inputs whose `autocomplete` marks them as a password, one-time code, or payment card field, come back as `"value": "[redacted]"`. Everything else is reported verbatim, so a snapshot of a filled login or checkout form can be handed to a model without leaking the credential.
-
-### Permissions
-
-The extension requests these permissions in `manifest.json`:
-
-| Permission | Purpose |
-|-----------|---------|
-| `tabs` | List and manage tabs |
-| `activeTab` | Access the active tab |
-| `scripting` | Inject content scripts and execute JS |
-| `webNavigation` | Navigate tabs (back/forward/reload) |
-| `nativeMessaging` | Auth token exchange with host app |
-| `alarms` | Service worker keepalive |
-| `storage` | Persist selected tab across suspensions |
-
-## Troubleshooting
-
-### Extension shows "Disconnected"
-
-1. Make sure the MCP server is running (check your MCP client logs)
-2. Verify port 8089 is not in use: `lsof -i :8089`
-3. Click "Reconnect" in the extension popup
-4. Use `--verbose` flag on the server for debug logs
-
-### "Could not establish connection" errors
-
-The content scripts may not be injected yet. The extension auto-injects on first interaction, but you can also reload the page.
-
-### Safari permission prompts
-
-Safari prompts for per-site permissions the first time the extension interacts with a domain. Click "Always Allow on Every Website" in Safari > Settings > Extensions > MCPSafari Extension to avoid repeated prompts.
-
-### Port already in use
-
-Use `--port` to pick a different port:
-
-```json
-{
-  "mcpServers": {
-    "mcp-safari": {
-      "command": "mcp-safari",
-      "args": ["--port", "9090"]
-    }
-  }
-}
-```
-
-## Development
-
-### Build & Test
-
-```bash
-# Build the MCP server
-cd MCPServer
-swift build
-swift test
-
-# Build the Safari extension
-cd MCPSafari
-xcodebuild -project MCPSafari.xcodeproj -scheme MCPSafari build
-
-# Run the server with verbose logging
-.build/debug/MCPSafari --verbose
-```
-
-### CI
-
-The CI workflow runs on every push and PR to `main`:
-
-1. Builds the MCP server (`swift build`)
-2. Runs the MCP server test suite (`swift test`)
-3. Tests the MCP handshake (verifies the binary responds to `initialize`)
-4. Builds the Safari extension (`xcodebuild`)
-
-### Project Structure
-
-```
-MCPSafari/
-├── MCPServer/                      # Swift MCP server
-│   ├── Package.swift
-│   └── Sources/mcp-safari/
-│       ├── main.swift
-│       ├── SafariMCPServer.swift
-│       ├── WebSocketBridge.swift
-│       └── BridgeMessage.swift
-├── MCPSafari/                      # Xcode project
-│   ├── MCPSafari/                  # macOS host app
-│   ├── MCPSafari Extension/        # Safari web extension
-│   │   ├── Resources/
-│   │   │   ├── background.js
-│   │   │   ├── content.js
-│   │   │   ├── dialog-interceptor.js
-│   │   │   ├── console-interceptor.js
-│   │   │   ├── network-interceptor.js
-│   │   │   ├── manifest.json
-│   │   │   └── popup.html/js/css
-│   │   └── SafariWebExtensionHandler.swift
-│   └── MCPSafari.xcodeproj
-├── .github/workflows/
-│   ├── ci.yml
-│   └── release.yml
-└── CHANGELOG.md
-```
+- [Setup and troubleshooting](docs/setup.md): manual installation, client configuration, ports, and diagnostics.
+- [Tools and usage](docs/tools.md): tool list, targeting, forms, uploads, waits, and batches.
+- [Development](docs/development.md): source builds, tests, and architecture.
+- [Security](SECURITY.md): permissions, redaction, and vulnerability reporting.
+- [Changelog](CHANGELOG.md) and [releases](https://github.com/Epistates/MCPSafari/releases).
 
 ## License
 
