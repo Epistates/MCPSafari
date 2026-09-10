@@ -66,7 +66,7 @@ Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the pa
 
 | Tool | Description |
 |-|-|
-| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `filePath` saves it to disk and returns the path instead of inline image data |
+| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `uid`/`selector` crop to one element plus `padding` CSS px, `scale` shrinks the PNG, and `filePath` saves it to disk and returns the path instead of inline image data |
 
 ### JavaScript
 
@@ -115,10 +115,24 @@ Targeting options vary by tool. `click` accepts all four:
 
 | Strategy | Example | When to Use |
 |-|-|-|
-| **UID** | `uid: "e42"` | Most precise — from a `snapshot` |
+| **UID** | `uid: "f0e42"` | Most precise — from a `snapshot` |
 | **CSS selector** | `selector: "#login-btn"` | When you know the DOM structure |
 | **Text** | `text: "Sign In"` | Interactive elements are ranked higher |
 | **Coordinates** | `x: 100, y: 200` | Last resort — click at exact position |
+
+### Shadow DOM
+
+Every targeting strategy reaches into open shadow roots, so pages built on web components (Lit, Stencil, Salesforce Lightning, most design-system elements) are readable and clickable. `snapshot` follows the flattened tree the user actually sees, so content passed into a `<slot>` is reported once, where the slot places it.
+
+Closed shadow roots are unreadable by any API. Rather than reporting such an element as empty, `snapshot` marks it `"shadowClosed": true` so a missing control is distinguishable from one the tools cannot see.
+
+### Iframes
+
+Iframe content is readable and clickable. `snapshot` returns the whole tab as one tree, hanging each frame's document on the `<iframe>` that hosts it, and `find` searches every frame.
+
+No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is element 12 in frame 3), so targeting by UID routes automatically; targeting by selector or text searches frames in order, top frame first. Frames are matched to their host `<iframe>` by resolved `src`, and a frame whose host cannot be identified is attached to the parent tree and counted in `unmatchedFrames` rather than dropped.
+
+Three limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `screenshot` refuses a `uid` or `selector` inside an iframe for the same reason. `read_console` and `read_network` report the top frame only.
 
 ### Form filling
 

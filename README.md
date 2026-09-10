@@ -22,10 +22,13 @@ Built with Swift and a Manifest V3 Safari extension. Requires macOS 14+ and Safa
 ### 1. Install
 
 ```sh
+brew trust epistates/tap
 brew install --cask epistates/tap/mcp-safari
 ```
 
-Enable **MCPSafari Extension** in Safari → Settings → Extensions. Grant access to the sites you want your agent to use.
+`brew trust` is needed once: installing a cask auto-trusts the cask, but not the `mcp-safari-server` formula it depends on, and without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`.
+
+Open MCPSafari.app once so Safari picks up the extension, then enable **MCPSafari Extension** in Safari → Settings → Extensions. Grant access to the sites you want your agent to use.
 
 Homebrew installs the published release. This README and the [tool reference](docs/tools.md) describe `main`, which may include unreleased features. Check [Releases](https://github.com/Epistates/MCPSafari/releases) for your version.
 

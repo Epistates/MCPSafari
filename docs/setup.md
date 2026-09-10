@@ -11,8 +11,11 @@ These instructions describe `main`. For an installed release, use the documentat
 Installs the MCP server binary and the Safari extension app to `/Applications`.
 
 ```bash
+brew trust epistates/tap
 brew install --cask epistates/tap/mcp-safari
 ```
+
+The `brew trust` line is needed once. Installing a cask auto-trusts the cask itself, but this cask depends on the `mcp-safari-server` formula, and a differently named dependency in the same tap is not covered by that. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`.
 
 Upgrading:
 
@@ -20,7 +23,7 @@ Upgrading:
 brew upgrade --cask epistates/tap/mcp-safari
 ```
 
-After install, enable the extension in **Safari > Settings > Extensions > MCPSafari Extension**.
+Open MCPSafari.app once so Safari picks up the extension, then enable it in **Safari > Settings > Extensions > MCPSafari Extension**.
 
 ### From release
 
@@ -134,6 +137,12 @@ For ports outside the default range, set the port in the client configuration an
   }
 }
 ```
+
+### Safari profiles
+
+Safari runs a separate instance of the extension in every profile it is enabled for, each with its own background page and its own tabs. All of them connect to the same server. The server keeps one connection per profile and lists them under `profiles` in `status`.
+
+Tool calls drive a single profile: the default one when it is connected, otherwise the first to connect. Naming a profile in a tool call is not supported yet, so if you want to automate a non-default profile, turn the extension off in the profiles you are not driving. Safari exposes no profile *name* to extensions, so `status` identifies profiles by the opaque UUID Safari assigns them.
 
 ### CLI options
 
