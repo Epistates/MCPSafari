@@ -59,16 +59,18 @@ struct BridgeStatusTests {
             logger: Logger(label: "BridgeStatusTests")
         )
         let token = await bridge.authToken
-        let incompatible = Data(#"{"auth":"\#(token)","extensionVersion":"0.3.0","protocolVersion":2}"#.utf8)
+        // Same reason as above: not a real release, so this cannot read as a
+        // shipped version being refused.
+        let incompatible = Data(#"{"auth":"\#(token)","extensionVersion":"99.0.0","protocolVersion":2}"#.utf8)
 
         #expect(
             await bridge.handshakeDecision(for: incompatible)
-                == .rejectProtocol(extensionVersion: "0.3.0", protocolVersion: 2)
+                == .rejectProtocol(extensionVersion: "99.0.0", protocolVersion: 2)
         )
 
         let status = await bridge.status()
         #expect(status.bridge == .disconnected)
-        #expect(status.extensionVersion == "0.3.0")
+        #expect(status.extensionVersion == "99.0.0")
         #expect(status.extensionProtocolVersion == 2)
         #expect(status.protocolVersion == MCPSafariProduct.bridgeProtocolVersion)
         #expect(status.lastError?.code == "protocol_version_mismatch")

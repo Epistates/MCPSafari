@@ -1,8 +1,10 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.3.1] - 2026-09-10
 ### Added
-- `screenshot` accepts `uid` or `selector` to capture one element plus `padding` CSS px of context, and `scale` to shrink the PNG; the result says which viewport CSS px the image covers.
+- `screenshot` accepts `uid` or `selector` to capture one element plus `padding` CSS px of context, and `scale` to shrink the PNG; the result says which viewport CSS px the image covers. A target inside an iframe is refused with `invalid_input`, because the capture covers the top-level viewport while a subframe measures its elements against its own, so cropping to that rect would return a confident picture of the wrong region.
 
 ### Bug Fixes
 - Safari profiles no longer fight over the extension connection. Safari runs a separate instance of the extension in each profile, with its own background page and its own storage, and every instance reads the same token and dials the same port. The bridge held a single connection, so each instance evicted the one before it and the evicted instance reconnected, which left a two-profile setup connecting and disconnecting in a loop rather than working, including for the profile being driven. The bridge now holds one connection per profile, identified by the profile Safari reports to the app extension. Tool calls still drive one profile, the default when it is connected, and `status` lists every connected profile so the others are visible rather than silently dropped. Targeting a specific profile is not supported yet.
