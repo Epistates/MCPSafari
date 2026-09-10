@@ -445,16 +445,22 @@ async function focusTabForNativeInput(tabIdParam) {
     return tabId;
 }
 
-// Native input works in screen coordinates. A subframe measures elements in its
-// own viewport and cannot reach a cross-origin parent's offset, so a subframe
-// target would produce a confidently wrong click. Refusing beats guessing.
-function requireTopFrameTarget(params) {
+// Native input works in screen coordinates, and captureVisibleTab captures the
+// top-level viewport. A subframe measures elements in its own viewport and
+// cannot reach a cross-origin parent's offset, so a subframe target would
+// produce a confidently wrong click or crop. Refusing beats guessing.
+const NATIVE_INPUT_TOP_FRAME_ONLY =
+    "Native input reaches the top frame only, and this element is inside an iframe. " +
+    "Omit native to use the synthetic path, which works in every frame.";
+
+const SCREENSHOT_TOP_FRAME_ONLY =
+    "Screenshot crops the top-level viewport, and this element is inside an iframe, " +
+    "so its position does not map onto the captured image. Capture without uid or selector.";
+
+function requireTopFrameTarget(params, reason = NATIVE_INPUT_TOP_FRAME_ONLY) {
     const frame = frameOfUid(params.uid) ?? frameOfUid(params.fromUid);
     if (frame) {
-        const error = new Error(
-            "Native input reaches the top frame only, and this element is inside an iframe. " +
-            "Omit native to use the synthetic path, which works in every frame."
-        );
+        const error = new Error(reason);
         error.code = "invalid_input";
         error.recoveryAction = "fix_input";
         throw error;
@@ -654,6 +660,7 @@ async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000, noNavigationT
 // ─── Screenshot Handler ─────────────────────────────────────────────
 
 async function handleScreenshot(params) {
+    requireTopFrameTarget(params, SCREENSHOT_TOP_FRAME_ONLY);
     const tabId = params.tabId || (await getActiveTabId());
     const tab = await browser.tabs.get(tabId);
 
@@ -666,6 +673,14 @@ async function handleScreenshot(params) {
     // Context before the frame: a page that loses focus between the two reads
     // then produces a warning about a good frame rather than an all-clear on a
     // stale one.
+    // The target is scrolled into view before the context read so the
+    // reported viewport matches the frame.
+    const target = params.uid || params.selector
+        ? await sendToContentScript(tabId, {
+            action: "element_rect",
+            params: { uid: params.uid, selector: params.selector },
+        })
+        : null;
     const context = await capturePageContext(tabId);
     const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, {
         format: "png",
@@ -675,6 +690,7 @@ async function handleScreenshot(params) {
         // Raw base64, data URI prefix stripped
         image: dataUrl.replace(/^data:image\/\w+;base64,/, ""),
         ...context,
+        ...(target ? { target } : {}),
     };
 }
 

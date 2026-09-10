@@ -29,7 +29,10 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
         },
         tabs: {
             query: async () => [{ id: 1, active: true, windowId: 1 }],
-            get: async () => ({ id: 1, url: TOP.url, title: "Top", windowId: 1 }),
+            // active matters: a handler that reactivates the tab awaits delay(300),
+            // which the setTimeout shim below deliberately never resolves, so a
+            // regression would hang here instead of failing.
+            get: async () => ({ id: 1, active: true, url: TOP.url, title: "Top", windowId: 1 }),
             update: async () => {},
             sendMessage: async (tabId, message, options) => {
                 const frameId = options ? options.frameId : 0;
@@ -195,4 +198,19 @@ test("native input refuses a subframe target instead of clicking the wrong point
 
     // A top-frame uid is still allowed through.
     await call('handleNativePointer({ tabId: 1, uid: "f0e7" })');
+});
+
+test("a targeted screenshot refuses a subframe target instead of cropping the wrong region", async () => {
+    // captureVisibleTab returns the top-level viewport, and a subframe measures
+    // its element against its own. Cropping on that would silently produce a
+    // picture of somewhere else, and the element_rect request would go to the
+    // top frame, which does not know the uid.
+    const { call, sent } = loadBackground({ respond: () => ok(null) });
+
+    await assert.rejects(
+        () => call('handleScreenshot({ tabId: 1, uid: "f3e2" })'),
+        /top frame only|iframe/i
+    );
+
+    assert.equal(sent.length, 0, "it should refuse before scrolling the page");
 });

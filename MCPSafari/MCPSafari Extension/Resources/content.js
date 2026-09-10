@@ -157,6 +157,8 @@
                 return uploadFile(params);
             case "drop_file":
                 return dropFile(params);
+            case "element_rect":
+                return elementRect(params);
             case "wait":
                 return waitFor(params);
             case "start_trace":
@@ -1498,6 +1500,31 @@
         for (const type of ["dragenter", "dragover", "drop"]) {
             target.dispatchEvent(new DragEvent(type, baseOpts));
         }
+    }
+
+    // ─── Element rect (screenshot region) ────────────────────────────
+
+    // captureVisibleTab only sees the viewport, so the target is scrolled
+    // into view first. Scroll handlers (collapsing headers, virtualized
+    // lists) run at the next rendering opportunity, so the rect is measured
+    // after one frame; the timeout covers a hidden page, which never paints.
+    async function elementRect(params) {
+        const el = resolveElement({ uid: params.uid, selector: params.selector });
+        el.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+        await new Promise((resolve) => {
+            const fallback = setTimeout(resolve, 100);
+            requestAnimationFrame(() => { clearTimeout(fallback); resolve(); });
+        });
+        const rect = el.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) {
+            throw toolError(
+                "target_not_found",
+                `<${el.tagName.toLowerCase()}> has no rendered size, so there is nothing to capture`,
+                false,
+                "take_snapshot"
+            );
+        }
+        return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
     }
 
     // ─── Wait ────────────────────────────────────────────────────────
