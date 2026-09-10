@@ -63,7 +63,8 @@ struct ProfileConnectionTests {
         let payload = try JSONSerialization.data(withJSONObject: handshake)
         try await task.send(.string(String(decoding: payload, as: UTF8.self)))
 
-        guard case let .string(reply) = try await task.receive(),
+        let message = try await withTimeout { try await task.receive() }
+        guard case let .string(reply) = message,
               let parsed = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any]
         else {
             throw BridgeTestError.unexpectedReply
@@ -76,21 +77,45 @@ struct ProfileConnectionTests {
         URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
     }
 
-    /// A ping round-trip is the only honest liveness check: a cancelled connection
-    /// fails it, whereas simply not receiving anything proves nothing.
-    private func isAlive(_ task: URLSessionWebSocketTask) async -> Bool {
-        await withCheckedContinuation { continuation in
-            nonisolated(unsafe) var resumed = false
-            task.sendPing { error in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(returning: error == nil)
-            }
-        }
+    /// Which profiles the bridge still holds, once any cancellation has landed.
+    ///
+    /// The bridge's own registry is the deterministic signal here: evicting a
+    /// connection runs `forget()`, which drops it from `connections`, so a profile
+    /// that survives is one that was not evicted. An earlier version asked the
+    /// client instead, with a WebSocket ping, and that measured URLSession
+    /// scheduling as much as liveness: it timed out on both sockets of one test
+    /// under parallel load in CI while the same check passed elsewhere.
+    private func settledProfiles(_ bridge: WebSocketBridge) async throws -> [String] {
+        // Cancellation arrives through Network.framework rather than inline, so
+        // give it room to land. Eviction is immediate when it happens, so this
+        // only has to outlast the callback hop.
+        try await Task.sleep(for: .milliseconds(250))
+        return await bridge.status().profiles.map(\.id).sorted()
     }
 
     private enum BridgeTestError: Error {
         case unexpectedReply
+        case timedOut
+    }
+
+    /// Bounds every wait on the socket. These tests bind fixed ports, so another
+    /// copy of the suite running at the same time takes them and the handshake
+    /// never answers. Failing after a few seconds is diagnosable; hanging holds
+    /// the SwiftPM build lock until someone notices.
+    private func withTimeout<T: Sendable>(
+        _ seconds: Double = 30,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw BridgeTestError.timedOut
+            }
+            guard let result = try await group.next() else { throw BridgeTestError.timedOut }
+            group.cancelAll()
+            return result
+        }
     }
 
     // MARK: - Tests
@@ -113,9 +138,9 @@ struct ProfileConnectionTests {
             #expect(workReply["auth"] as? String == "ok")
             #expect(workReply["profile"] as? String == "WORK-UUID")
 
-            // The regression: the second handshake used to cancel the first.
-            #expect(await isAlive(personal))
-            #expect(await isAlive(work))
+            // The regression: the second handshake used to cancel the first, which
+            // would leave only one of these behind.
+            #expect(try await settledProfiles(bridge) == ["WORK-UUID", "default"])
 
             let status = await bridge.status()
             #expect(status.bridge == .authenticated)
@@ -144,8 +169,8 @@ struct ProfileConnectionTests {
             )
             #expect(reply["auth"] as? String == "ok")
 
-            #expect(await isAlive(personal))
-            #expect(await isAlive(workAgain))
+            // Replacing WORK-UUID must not take the default profile with it.
+            #expect(try await settledProfiles(bridge) == ["WORK-UUID", "default"])
 
             let status = await bridge.status()
             #expect(status.profiles.count == 2)
@@ -179,7 +204,8 @@ struct ProfileConnectionTests {
 
             #expect(remaining.map(\.id) == ["default"])
             #expect(await bridge.isConnected)
-            #expect(await isAlive(personal))
+            // The surviving profile stays put rather than being swept with the other.
+            #expect(try await settledProfiles(bridge) == ["default"])
 
             personal.cancel()
         }
