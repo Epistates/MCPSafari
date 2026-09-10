@@ -69,7 +69,7 @@ func parseCommand(
 let logLevelUsage = "Use trace, debug, info, notice, warning, error, or critical."
 
 enum MCPSafariProduct {
-    static let version = "0.3.0"
+    static let version = "0.3.1"
     static let bridgeProtocolVersion = 1
     static let extensionBundleIdentifier = "com.epistates.MCPSafari.Extension"
 }
