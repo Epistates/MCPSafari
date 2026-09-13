@@ -114,7 +114,10 @@ actor SafariMCPServer {
     func start() async throws {
         await bridge.start()
         await registerToolHandlers()
-        let transport = StdioTransport()
+        let transport = ClientCapabilityNormalizingTransport(
+            wrapping: StdioTransport(),
+            logger: logger
+        )
         try await server.start(transport: transport)
         logger.info("Safari MCP server started")
         await server.waitUntilCompleted()

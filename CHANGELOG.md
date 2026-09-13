@@ -4,6 +4,10 @@
 ### Added
 - `mcp-safari --help`, `-h`, `--version`, and `-V`. All four were rejected as unknown arguments before, so the only way to read the version off the binary was `mcp-safari doctor`, which reports on the whole install. Help goes to stdout and exits 0 when asked for explicitly, and wins over anything else on the command line; usage errors still go to stderr with a non-zero status.
 
+### Bug Fixes
+- Codex CLI 0.154.0 can connect again. It declares `capabilities.experimental: {"codex/auth-change": {}}` on `initialize`, and the MCP SDK types that field as a map of strings, so decoding failed for the whole request and a valid `initialize` came back as `-32603 "The data couldn't be read because it isn't in the correct format."` The transport now rewrites object values there into their JSON text before the SDK decodes them, which keeps every capability key the client declared. The same shape from other clients, such as ChatGPT's `{"openai/visibility": {"enabled": true}}`, is covered. Clients that send no experimental capabilities, or only string ones, are passed through byte for byte.
+- `mcp-safari doctor` no longer reports a working install as broken. It built the server executable path from `argv[0]`, which carries no directory when the binary is invoked by bare name through `$PATH`, so the path resolved against the current directory and the `server_executable` check failed from anywhere but the directory holding the binary. It also exited non-zero while doing so, which ruled it out as a scripted health check.
+
 ## [0.3.1] - 2026-09-10
 ### Added
 - `screenshot` accepts `uid` or `selector` to capture one element plus `padding` CSS px of context, and `scale` to shrink the PNG; the result says which viewport CSS px the image covers. A target inside an iframe is refused with `invalid_input`, because the capture covers the top-level viewport while a subframe measures its elements against its own, so cropping to that rect would return a confident picture of the wrong region.
