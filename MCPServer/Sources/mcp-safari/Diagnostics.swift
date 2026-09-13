@@ -4,6 +4,8 @@ import Logging
 enum CLICommand: Equatable {
     case serve(port: UInt16, logLevel: Logger.Level)
     case doctor(port: UInt16, json: Bool)
+    case help
+    case version
 }
 
 /// Routine lifecycle chatter is not worth surfacing by default: stderr is the
@@ -19,6 +21,11 @@ func parseCommand(
     arguments: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) throws -> CLICommand {
+    // Both win over everything else on the line, including a bad argument next to
+    // them: someone reaching for --help is asking what the arguments are.
+    if arguments.contains(where: { $0 == "--help" || $0 == "-h" }) { return .help }
+    if arguments.contains(where: { $0 == "--version" || $0 == "-V" }) { return .version }
+
     let doctorMode = arguments.first == "doctor"
     let options = doctorMode ? Array(arguments.dropFirst()) : arguments
     var port: UInt16 = 8089
@@ -67,6 +74,32 @@ func parseCommand(
 }
 
 let logLevelUsage = "Use trace, debug, info, notice, warning, error, or critical."
+
+let usageText = """
+    mcp-safari \(MCPSafariProduct.version)
+    Safari browser automation over the Model Context Protocol.
+
+    USAGE:
+      mcp-safari [options]          Serve MCP over stdio
+      mcp-safari doctor [options]   Report on the installation and exit
+
+    OPTIONS:
+      -p, --port <n>        WebSocket port the Safari extension connects to (default: 8089)
+          --log-level <l>   trace, debug, info, notice, warning, error, critical (default: notice)
+          --verbose         Shorthand for --log-level debug
+      -h, --help            Show this help and exit
+      -V, --version         Show the version and exit
+
+    DOCTOR OPTIONS:
+      -p, --port <n>        Port whose token file to check (default: 8089)
+          --json            Emit the report as JSON
+
+    ENVIRONMENT:
+      MCP_SAFARI_LOG_LEVEL  Log level used when --log-level and --verbose are absent
+
+    Logs go to stderr. stdout carries the MCP stdio transport, so nothing else writes there.
+    https://github.com/Epistates/MCPSafari
+    """
 
 enum MCPSafariProduct {
     static let version = "0.3.1"

@@ -91,6 +91,33 @@ struct DoctorTests {
         }
     }
 
+    @Test func helpAndVersionAreRecognisedArguments() throws {
+        for argument in ["--help", "-h"] {
+            #expect(try parseCommand(arguments: [argument], environment: [:]) == .help)
+        }
+        for argument in ["--version", "-V"] {
+            #expect(try parseCommand(arguments: [argument], environment: [:]) == .version)
+        }
+    }
+
+    @Test func helpWinsOverEverythingElseOnTheLine() throws {
+        // Someone reaching for --help is asking what the arguments are, so a bad
+        // one sitting next to it should not be what they get told about.
+        #expect(try parseCommand(arguments: ["doctor", "--help"], environment: [:]) == .help)
+        #expect(try parseCommand(arguments: ["--log-level", "chatty", "--help"], environment: [:]) == .help)
+        #expect(try parseCommand(arguments: ["--nonsense", "-h"], environment: [:]) == .help)
+        #expect(try parseCommand(arguments: ["doctor", "--version"], environment: [:]) == .version)
+    }
+
+    @Test func usageTextCoversEveryAcceptedFlag() {
+        for flag in ["--port", "--log-level", "--verbose", "--json", "--help", "--version"] {
+            #expect(usageText.contains(flag), "usage text is missing \(flag)")
+        }
+        #expect(usageText.contains(MCPSafariProduct.version))
+        #expect(usageText.contains("MCP_SAFARI_LOG_LEVEL"))
+        #expect(usageText.contains("doctor"))
+    }
+
     @Test func serveDefaultsToQuietLogging() throws {
         // stderr is the only channel a stdio server has and clients show it to
         // the user, so routine lifecycle lines stay off unless asked for.

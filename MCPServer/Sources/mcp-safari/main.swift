@@ -11,6 +11,16 @@ do {
 }
 
 switch command {
+case .help:
+    // Asked for explicitly, so it is output rather than an error: stdout, exit 0.
+    // Usage errors keep going to stderr with a non-zero status above.
+    print(usageText)
+    exit(0)
+
+case .version:
+    print("mcp-safari \(MCPSafariProduct.version)")
+    exit(0)
+
 case .doctor(let port, let json):
     let report = Doctor.inspect(port: port, extensionRegistered: Doctor.isExtensionRegistered())
     let output = json ? try Doctor.json(report) : Doctor.humanReadable(report)
