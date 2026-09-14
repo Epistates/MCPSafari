@@ -393,7 +393,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.3.2;
 				OTHER_LDFLAGS = (
 					"-framework",
 					SafariServices,
@@ -429,7 +429,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.3.2;
 				OTHER_LDFLAGS = (
 					"-framework",
 					SafariServices,
@@ -587,7 +587,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.3.2;
 				OTHER_LDFLAGS = (
 					"-framework",
 					SafariServices,
@@ -628,7 +628,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.3.2;
 				OTHER_LDFLAGS = (
 					"-framework",
 					SafariServices,
@@ -656,7 +656,7 @@
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -677,7 +677,7 @@
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -696,7 +696,7 @@
 				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariUITests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -715,7 +715,7 @@
 				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariUITests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
