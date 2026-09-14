@@ -156,6 +156,7 @@ actor SafariMCPServer {
     private static let snap: Value = .object(["type": .string("boolean"), "description": .string("Return snapshot after action")])
     private static let coordX: Value = .object(["type": .string("number"), "description": .string("Viewport x in CSS px; events dispatch at this exact point (overrides uid/selector/text)")])
     private static let coordY: Value = .object(["type": .string("number"), "description": .string("Viewport y in CSS px")])
+    private static let nativeRequirements = "Requires Safari to already be the frontmost application and Accessibility permission. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it."
     private static let waitSel: Value = .object(["type": .string("string"), "description": .string("Wait for CSS selector after action")])
     private static let waitTxt: Value = .object(["type": .string("string"), "description": .string("Wait for visible text after action")])
     private static let waitTimeout: Value = .object(["type": .string("number"), "description": .string("Post-action wait timeout seconds (default: 10)")])
@@ -350,7 +351,7 @@ actor SafariMCPServer {
                         "clearFirst": .object(["type": .string("boolean")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Use real macOS key events; requires Safari to already be the frontmost application and Accessibility permission"),
+                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code. " + Self.nativeRequirements),
                         ]),
                         "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
@@ -409,7 +410,7 @@ actor SafariMCPServer {
                         "key": .object(["type": .string("string")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Use a real macOS key event; requires Safari to already be the frontmost application and Accessibility permission"),
+                            "description": .string("Use a real macOS key event. " + Self.nativeRequirements),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -427,7 +428,7 @@ actor SafariMCPServer {
                         "y": Self.coordY,
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Move the real OS pointer; requires Safari to already be the frontmost application and Accessibility permission"),
+                            "description": .string("Move the real OS pointer. " + Self.nativeRequirements),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -445,7 +446,7 @@ actor SafariMCPServer {
                         "toSelector": .object(["type": .string("string")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Use real macOS mouse events; requires Safari to already be the frontmost application and Accessibility permission"),
+                            "description": .string("Use real macOS mouse events. " + Self.nativeRequirements),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -1055,10 +1056,10 @@ actor SafariMCPServer {
             throw NativeInputError(failure: ToolFailure(
                 code: "native_input_focus_lost",
                 message: afterTyping
-                    ? "Safari lost focus during native input. Some events may have gone to another application; verify the target and retry."
-                    : "Safari is not the frontmost application. Native events go to whichever app has focus; activate Safari and retry. Nothing was sent.",
-                retryable: true,
-                recoveryAction: "retry"
+                    ? "Safari lost focus during native input, so some events may have gone to another application. Tell the user before retrying: a retry sends the whole input again."
+                    : "Safari is not the frontmost application, so nothing was sent. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it, or omit native to use synthetic input, which does not need focus.",
+                retryable: !afterTyping,
+                recoveryAction: "ask_user"
             ))
         }
     }
@@ -1769,13 +1770,15 @@ actor SafariMCPServer {
             parts.append(
                 "Page visibility: hidden. Safari does not repaint an occluded page or run its "
                 + "requestAnimationFrame callbacks, so this frame may predate your last action "
-                + "and any rAF-scheduled work has not run."
+                + "and any rAF-scheduled work has not run. Ask the user before bringing Safari "
+                + "to the front unless they have already allowed it."
             )
         } else if capture["hasFocus"]?.boolValue == false {
             parts.append(
                 "Window not focused. Safari does not match :focus or :focus-within while its "
                 + "window is not key, so focus states are missing from this frame even though "
-                + "document.activeElement is set."
+                + "document.activeElement is set. Ask the user before bringing Safari to the front "
+                + "unless they have already allowed it."
             )
         }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
