@@ -128,9 +128,23 @@ struct DoctorPaths {
     let appURL: URL
     let tokenDirectoryURL: URL
 
+    /// argv[0] is whatever the parent process handed to `exec`, so it can be a bare
+    /// name, a relative path, or something unrelated. Invoked through `$PATH` it
+    /// carries no directory at all, and `URL(fileURLWithPath:)` then resolves it
+    /// against the working directory: `doctor` run from `/tmp` went looking for
+    /// `/private/tmp/mcp-safari` and called a healthy install broken. SE-0513 adds
+    /// `CommandLine.executablePath` for exactly this, but it is not in the toolchain
+    /// yet, and Foundation already knows the real path.
+    static func resolveExecutableURL(
+        bundlePath: String? = Bundle.main.executablePath,
+        argv0: String = CommandLine.arguments[0]
+    ) -> URL {
+        URL(fileURLWithPath: bundlePath ?? argv0).resolvingSymlinksInPath()
+    }
+
     static var system: DoctorPaths {
         DoctorPaths(
-            executableURL: URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath(),
+            executableURL: resolveExecutableURL(),
             appURL: URL(fileURLWithPath: "/Applications/MCPSafari.app"),
             tokenDirectoryURL: WebSocketBridge.tokenDirectoryURL
         )

@@ -75,6 +75,27 @@ struct DoctorTests {
         #expect(report.checks.first { $0.code == "token_file" }?.message.contains("permissions") == true)
     }
 
+    @Test func executablePathIgnoresArgv0AndTheWorkingDirectory() {
+        // Invoked through $PATH, argv[0] is a bare name. Resolving that against the
+        // working directory is what made doctor report a healthy install as broken.
+        let resolved = DoctorPaths.resolveExecutableURL(
+            bundlePath: "/opt/test-prefix/Cellar/mcp-safari-server/0.3.1/bin/mcp-safari",
+            argv0: "mcp-safari"
+        )
+
+        #expect(resolved.path == "/opt/test-prefix/Cellar/mcp-safari-server/0.3.1/bin/mcp-safari")
+        #expect(!resolved.path.hasPrefix(FileManager.default.currentDirectoryPath + "/"))
+    }
+
+    @Test func executablePathFallsBackToArgv0WhenTheBundleHasNone() {
+        let resolved = DoctorPaths.resolveExecutableURL(
+            bundlePath: nil,
+            argv0: "/opt/test-prefix/bin/mcp-safari"
+        )
+
+        #expect(resolved.path == "/opt/test-prefix/bin/mcp-safari")
+    }
+
     @Test func parsesDoctorCommandWithoutStartingServer() throws {
         #expect(
             try parseCommand(arguments: ["doctor", "--json", "--port", "8123"])
