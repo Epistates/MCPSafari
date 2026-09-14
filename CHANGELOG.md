@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- `mcp-safari --help`, `-h`, `--version`, and `-V`. All four were rejected as unknown arguments before, so the only way to read the version off the binary was `mcp-safari doctor`, which reports on the whole install. Help goes to stdout and exits 0 when asked for explicitly, and wins over anything else on the command line; usage errors still go to stderr with a non-zero status.
 
 ## [0.3.1] - 2026-09-10
 ### Added

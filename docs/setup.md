@@ -154,6 +154,8 @@ Tool calls drive a single profile: the default one when it is connected, otherwi
 | `--port <n>` / `-p <n>` | WebSocket port (default: `8089`) |
 | `--log-level <level>` | `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `critical` (default: `notice`) |
 | `--verbose` | Shorthand for `--log-level debug` |
+| `--help` / `-h` | Print usage and exit |
+| `--version` / `-V` | Print the version and exit |
 
 Logs go to stderr. The default level is `notice`; use `--log-level info` for startup and connection messages, or `--verbose` for debug logs. Clients that pass environment variables but not arguments can set `MCP_SAFARI_LOG_LEVEL`. An explicit flag takes precedence.
 
