@@ -10,16 +10,16 @@ This reference describes `main`, which may include tools and options not yet in 
 
 | Tool | Description |
 |-|-|
-| `status` | Report listener, authenticated bridge, version, and token health without requiring a Safari connection |
+| `status` | Report listener, authenticated bridge, version, token health, and connected Safari profiles without requiring a Safari connection |
 
 ### Tab management
 
 | Tool | Description |
 |-|-|
-| `tabs_context` | List all open tabs with IDs, URLs, and titles |
+| `tabs_context` | List open tabs across every connected Safari profile, with handles, URLs, and titles |
 | `tabs_create` | Open a new tab, optionally with a URL |
-| `close_tab` | Close a tab by ID |
-| `select_tab` | Pin a tab as the default context for future calls |
+| `close_tab` | Close a tab by handle |
+| `select_tab` | Pin a tab, and its Safari profile, as the default context for future calls |
 
 ### Navigation
 
@@ -109,6 +109,14 @@ Console and network capture run in the page's JavaScript context. Pages can obse
 3. Use those UIDs with `click`, `type_text`, or `hover`.
 4. Check the result with `includeSnapshot: true` on the action, or take a `screenshot`.
 
+### Tab handles
+
+`tabId` is a handle such as `p0t5`, meaning tab 5 of profile 0. Read handles out of `tabs_context` rather than composing them.
+
+Safari runs a separate, complete instance of the extension in every profile, and each instance numbers its own tabs, so tab 5 names a different page in each one. The handle carries the profile the way an element UID carries its frame. Omit `tabId` to act on the selected tab of the selected profile.
+
+Naming a profile that is not connected fails with `profile_not_connected` rather than falling back to another one, because answering from a different browser window is worse than refusing.
+
 ### Element targeting
 
 Targeting options vary by tool. `click` accepts all four:
@@ -133,6 +141,14 @@ Iframe content is readable and clickable. `snapshot` returns the whole tab as on
 No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is element 12 in frame 3), so targeting by UID routes automatically; targeting by selector or text searches frames in order, top frame first. Frames are matched to their host `<iframe>` by resolved `src`, and a frame whose host cannot be identified is attached to the parent tree and counted in `unmatchedFrames` rather than dropped.
 
 Three limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `screenshot` refuses a `uid` or `selector` inside an iframe for the same reason. `read_console` and `read_network` report the top frame only.
+
+### Safari profiles
+
+Every enabled profile is driven from the same server. `tabs_context` asks all of them and returns one merged listing, and each tool call goes to the profile its handle names.
+
+`status` lists the connected profiles: `handle` is the `p0` prefix their tabs carry, `id` is the opaque `SFExtensionProfileKey` UUID Safari assigns (`default` for the default profile), and one profile is marked `selected`, which is where a call naming no tab lands. Safari exposes no profile *name* to an extension and no way to ask which profile is frontmost, so the default is the default profile when it is connected, then the earliest to connect. `select_tab` moves it, and it falls through to the next profile if the pinned one goes away.
+
+A profile that fails to answer `tabs_context` is named in the result rather than dropped, so a short listing is not mistaken for a closed tab.
 
 ### Form filling
 
@@ -186,7 +202,7 @@ Use `run_steps` for a fixed sequence of existing interactions and waits with a s
 
 ```json
 {
-  "tabId": 42,
+  "tabId": "p0t42",
   "steps": [
     { "tool": "navigate", "arguments": { "url": "https://example.com" } },
     { "tool": "wait", "arguments": { "text": "Example Domain" } }

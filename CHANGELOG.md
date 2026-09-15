@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- Every connected Safari profile is drivable. `tabs_context` now asks all of them and returns one merged listing, and each tool call goes to the profile its tab handle names. A profile that fails to answer `tabs_context` is named in the result rather than dropped, so a short listing is not mistaken for a closed tab. `status` gains a `handle` (`p0`) and a `selected` flag per profile, and `select_tab` moves the selection; it falls through to another profile if the pinned one goes away, so closing a window does not break calls that name no tab. Naming a profile that is not connected fails with `profile_not_connected` rather than answering from a different browser window.
+
+### Changed
+- **Breaking:** `tabId` is now a tab handle string such as `p0t5`, meaning tab 5 of profile 0, rather than an integer. Safari runs a separate instance of the extension in every profile and each one numbers its own tabs, so a bare number named a different page in each. The handle carries the profile the way an element UID carries its frame (`f0e42`): no tool gained a profile argument. Handles come from `tabs_context`, which mints them, and from `tabs_create` and `select_tab`, which return them. An integer `tabId` is refused with `invalid_input` and a message naming the new form rather than being read as a tab in whichever profile happened to be selected.
+
 ### Bug Fixes
 - Native input no longer tells agents to bring Safari to the front themselves. The refusal said "activate Safari and retry", so agents running in the background activated Safari with `osascript` and took over the user's keyboard and mouse mid-task. The refusal, the `native` parameter descriptions, and the screenshot hidden-page and unfocused-window notes now tell the agent to ask the user first unless the user has already allowed it, and both focus failures report `recoveryAction: "ask_user"`. Losing focus after events were sent is no longer `retryable`, since a retry sends the whole input again. The native `type_text` description also says it types one character at a time, is not paste, and is for short input only.
 

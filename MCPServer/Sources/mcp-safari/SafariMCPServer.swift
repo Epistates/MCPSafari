@@ -37,9 +37,7 @@ struct RunStepsPlan: Equatable, Sendable {
         }
 
         let batchTabId = arguments["tabId"]
-        if let batchTabId, batchTabId.intValue == nil {
-            throw RunStepsInputError("tabId must be an integer")
-        }
+        _ = try Self.tabHandle(batchTabId)
 
         steps = try values.enumerated().map { index, value in
             guard let object = value.objectValue else {
@@ -63,8 +61,10 @@ struct RunStepsPlan: Equatable, Sendable {
             for key in ["trace", "traceDuration", "eventTypes", "includeSnapshot"] where stepArguments[key] != nil {
                 throw RunStepsInputError("steps[\(index)].arguments.\(key) must be set on run_steps instead")
             }
-            if let tabId = stepArguments["tabId"], tabId.intValue == nil {
-                throw RunStepsInputError("steps[\(index)].arguments.tabId must be an integer")
+            do {
+                _ = try Self.tabHandle(stepArguments["tabId"])
+            } catch let error as RunStepsInputError {
+                throw RunStepsInputError("steps[\(index)].arguments.\(error.description)")
             }
             if stepArguments["tabId"] == nil, let batchTabId {
                 stepArguments["tabId"] = batchTabId
@@ -76,6 +76,16 @@ struct RunStepsPlan: Equatable, Sendable {
             throw RunStepsInputError("timeout must be a number")
         }
         timeout = max(0.1, min(SafariMCPServer.numberValue(arguments["timeout"]) ?? 60, Self.maxTimeout))
+    }
+
+    /// Rejects a bad tab handle up front, so a batch fails on its arguments rather
+    /// than partway through after some steps have already run.
+    private static func tabHandle(_ value: Value?) throws -> TabHandle? {
+        do {
+            return try TabHandle.resolve(value)
+        } catch let error as TabHandleError {
+            throw RunStepsInputError(error.description)
+        }
     }
 }
 
@@ -102,7 +112,9 @@ actor SafariMCPServer {
             version: MCPSafariProduct.version,
             instructions: """
                 Safari browser automation. Use tabs_context to list tabs, snapshot for element UIDs, \
-                then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state.
+                then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state. \
+                Tab handles look like p0t5, where p0 names the Safari profile; read them from \
+                tabs_context rather than composing them.
                 """,
             capabilities: Server.Capabilities(
                 logging: .init(),
@@ -149,7 +161,10 @@ actor SafariMCPServer {
 
     // MARK: - Shared Schema Fragments (terse to minimize token usage)
 
-    private static let tab: Value = .object(["type": .string("integer"), "description": .string("Tab ID (default: active tab)")])
+    private static let tab: Value = .object([
+        "type": .string("string"),
+        "description": .string("Tab handle from tabs_context, such as p0t5 (default: selected tab)"),
+    ])
     private static let uid: Value = .object(["type": .string("string"), "description": .string("Element UID from snapshot")])
     private static let sel: Value = .object(["type": .string("string"), "description": .string("CSS selector")])
     private static let txt: Value = .object(["type": .string("string"), "description": .string("Visible text to match")])
@@ -211,7 +226,7 @@ actor SafariMCPServer {
         [
             Tool(
                 name: "status",
-                description: "Report local Safari MCP listener, authentication, version, token health, and which Safari profiles are connected. Works without an extension connection.",
+                description: "Report local Safari MCP listener, authentication, version, token health, and which Safari profiles are connected. Each profile's handle (p0, p1) is the prefix of its tab handles, and one profile is marked selected: that is where a call naming no tab lands. Works without an extension connection.",
                 inputSchema: .object(["type": .string("object"), "properties": .object([:])]),
                 annotations: .init(readOnlyHint: true, openWorldHint: false)
             ),
@@ -220,7 +235,7 @@ actor SafariMCPServer {
 
             Tool(
                 name: "tabs_context",
-                description: "List open tabs with IDs, URLs, titles.",
+                description: "List open tabs across every connected Safari profile, with handles, URLs, titles. Each id is a handle such as p0t5; pass it back as tabId.",
                 inputSchema: .object(["type": .string("object"), "properties": .object([:])]),
                 annotations: .init(readOnlyHint: true, openWorldHint: false)
             ),
@@ -236,7 +251,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "close_tab",
-                description: "Close a tab by ID.",
+                description: "Close a tab by handle.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(["tabId": Self.tab]),
@@ -246,7 +261,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "select_tab",
-                description: "Pin a tab as default context for future calls. Activates and focuses the tab unless bringToFront is false.",
+                description: "Pin a tab as default context for future calls, including its Safari profile. Activates and focuses the tab unless bringToFront is false.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -672,6 +687,65 @@ actor SafariMCPServer {
         }
     }
 
+    // MARK: - Profile Routing
+
+    /// Every bridge call goes through here so the caller's `tabId` is read in one
+    /// place. The handle names the profile, so the request is routed to that
+    /// profile's extension instance and the numeric tab id, which is all that
+    /// instance knows, is what crosses the bridge.
+    private func send(
+        _ action: String,
+        _ args: [String: Value],
+        params: [String: AnyCodable] = [:],
+        timeout: Double? = nil
+    ) async throws -> BridgeResponse {
+        let handle = try TabHandle.resolve(args["tabId"])
+        var params = params
+        if let handle { params["tabId"] = AnyCodable(handle.tabID) }
+        return try await bridge.send(
+            action: action,
+            params: params,
+            timeout: timeout ?? Self.bridgeTimeout(args),
+            profileIndex: handle?.profileIndex
+        )
+    }
+
+    /// Rewrites the `id` of a tab object the extension returned into the handle
+    /// that names it, so the only tab identifier a caller ever sees is one they
+    /// can hand straight back.
+    private func tabResult(_ response: BridgeResponse, profileIndex: Int) -> CallTool.Result {
+        guard response.success, let raw = response.data?.stringValue else {
+            return textResult(response)
+        }
+        guard let data = raw.data(using: .utf8),
+              var tab = try? JSONDecoder().decode([String: AnyCodable].self, from: data),
+              let tabID = tab["id"]?.intValue
+        else {
+            return textResult(response)
+        }
+        tab["id"] = AnyCodable(TabHandle(profileIndex: profileIndex, tabID: tabID).description)
+        return CallTool.Result(content: [Self.textContent(Self.jsonText(tab) ?? raw)])
+    }
+
+    /// Which profile a call will land on. An explicit handle names it; otherwise it
+    /// is whichever profile the bridge drives right now. Resolved once and reused
+    /// for both the routing and the handle, so a tab cannot be created in one
+    /// profile and named as if it were in another.
+    private func resolveProfileIndex(_ args: [String: Value]) async throws -> Int {
+        if let handle = try TabHandle.resolve(args["tabId"]) { return handle.profileIndex }
+        guard let selected = await bridge.connectedProfiles().first(where: \.selected) else {
+            throw WebSocketBridge.BridgeError.notConnected
+        }
+        return selected.index
+    }
+
+    private static func jsonText(_ value: some Encodable) -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(value) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     // MARK: - Tool Handlers
 
     private func handleStatus() async throws -> CallTool.Result {
@@ -682,9 +756,69 @@ actor SafariMCPServer {
         return CallTool.Result(content: [Self.textContent(String(decoding: data, as: UTF8.self))])
     }
 
+    /// Asks every connected profile for its tabs and returns one merged listing,
+    /// each tab named by a handle that says which profile it belongs to. A profile
+    /// that fails to answer is named in a second block rather than dropped, so a
+    /// short listing is never mistaken for an empty browser.
     private func handleTabsContext() async throws -> CallTool.Result {
-        let response = try await bridge.send(action: "tabs_query")
-        return textResult(response)
+        let merged = Self.mergedTabListing(try await bridge.broadcast(action: "tabs_query"))
+
+        guard !merged.tabs.isEmpty || merged.failures.isEmpty else {
+            return Self.failureResult(ToolFailure(
+                code: "extension_error",
+                message: "No Safari profile returned its tabs. \(merged.failures.joined(separator: "; "))",
+                retryable: true,
+                recoveryAction: "retry"
+            ))
+        }
+
+        var content = [Self.textContent(Self.jsonText(merged.tabs) ?? "[]")]
+        if !merged.failures.isEmpty {
+            content.append(Self.textContent(
+                "Tabs are missing from \(merged.failures.count) profile(s): "
+                + merged.failures.joined(separator: "; ")
+            ))
+        }
+        return CallTool.Result(content: content)
+    }
+
+    /// Flattens what each profile returned into one listing, naming every tab by
+    /// its handle. A profile that could not answer is reported rather than
+    /// dropped: a short listing that looks complete is worse than a named gap,
+    /// because the caller concludes the tab they wanted is closed.
+    static func mergedTabListing(
+        _ outcomes: [WebSocketBridge.ProfileOutcome]
+    ) -> (tabs: [AnyCodable], failures: [String]) {
+        var tabs: [AnyCodable] = []
+        var failures: [String] = []
+
+        for outcome in outcomes {
+            let label = "p\(outcome.index) (\(outcome.profileID))"
+            guard let response = outcome.response, response.success else {
+                let detail = outcome.failure
+                    ?? outcome.response?.error
+                    ?? "no response"
+                failures.append("\(label): \(detail)")
+                continue
+            }
+            guard let raw = response.data?.stringValue,
+                  let data = raw.data(using: .utf8),
+                  let listing = try? JSONDecoder().decode([[String: AnyCodable]].self, from: data)
+            else {
+                failures.append("\(label): unreadable tab listing")
+                continue
+            }
+            for var tab in listing {
+                if let tabID = tab["id"]?.intValue {
+                    tab["id"] = AnyCodable(
+                        TabHandle(profileIndex: outcome.index, tabID: tabID).description
+                    )
+                }
+                tabs.append(AnyCodable(tab))
+            }
+        }
+
+        return (tabs, failures)
     }
 
     private func handleTabsCreate(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -701,22 +835,39 @@ actor SafariMCPServer {
             }
             params["url"] = AnyCodable(url)
         }
-        let response = try await bridge.send(action: "tabs_create", params: params)
-        return textResult(response)
+        let profileIndex = try await resolveProfileIndex(args)
+        let response = try await bridge.send(
+            action: "tabs_create",
+            params: params,
+            timeout: Self.bridgeTimeout(args),
+            profileIndex: profileIndex
+        )
+        return tabResult(response, profileIndex: profileIndex)
     }
 
     private func handleCloseTab(_ args: [String: Value]) async throws -> CallTool.Result {
-        let tabId = args["tabId"]?.intValue ?? 0
-        let response = try await bridge.send(action: "tabs_close", params: ["tabId": AnyCodable(tabId)])
-        return textResult(response)
+        guard let handle = try TabHandle.resolve(args["tabId"]) else {
+            throw ToolInputError("close_tab requires tabId, a handle from tabs_context such as p0t5")
+        }
+        let response = try await send("tabs_close", args)
+        guard response.success else { return textResult(response) }
+        // The extension's confirmation names the tab by its own number, which is
+        // ambiguous across profiles; the server knows the handle the caller used.
+        return CallTool.Result(content: [Self.textContent("Closed tab \(handle)")])
     }
 
     private func handleSelectTab(_ args: [String: Value]) async throws -> CallTool.Result {
+        guard let handle = try TabHandle.resolve(args["tabId"]) else {
+            throw ToolInputError("select_tab requires tabId, a handle from tabs_context such as p0t5")
+        }
         var params: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let bringToFront = args["bringToFront"]?.boolValue { params["bringToFront"] = AnyCodable(bringToFront) }
-        let response = try await bridge.send(action: "select_tab", params: params)
-        return textResult(response)
+        let response = try await send("select_tab", args, params: params)
+        guard response.success else { return textResult(response) }
+        // Pinning the tab pins its profile too, so later calls that name no tab
+        // stay in the browser window the caller just chose.
+        try await bridge.selectProfile(atIndex: handle.profileIndex)
+        return tabResult(response, profileIndex: handle.profileIndex)
     }
 
     private static let allowedURLSchemes: Set<String> = ["http", "https", "about", "file"]
@@ -739,7 +890,6 @@ actor SafariMCPServer {
             }
             params["url"] = AnyCodable(url)
         }
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let action = args["action"]?.stringValue {
             guard Self.allowedNavActions.contains(action) else {
                 return CallTool.Result(
@@ -749,17 +899,12 @@ actor SafariMCPServer {
             }
             params["action"] = AnyCodable(action)
         }
-        let response = try await bridge.send(
-            action: "navigate",
-            params: params,
-            timeout: Self.bridgeTimeout(args)
-        )
+        let response = try await send("navigate", args, params: params)
         return try await resultAfterAction(response, args)
     }
 
     private func handleReadPage(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let format = args["format"]?.stringValue {
             guard Self.allowedPageFormats.contains(format) else {
                 return CallTool.Result(
@@ -791,13 +936,12 @@ actor SafariMCPServer {
             }
             params["maxNodes"] = AnyCodable(maxNodes)
         }
-        let response = try await bridge.send(action: "read_page", params: params)
+        let response = try await send("read_page", args, params: params)
         return textResult(response)
     }
 
     private func handleSnapshot(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let maxNodes = args["maxNodes"]?.intValue {
             guard maxNodes > 0 else {
                 return Self.failureResult(ToolFailure(
@@ -809,7 +953,7 @@ actor SafariMCPServer {
             }
             params["maxNodes"] = AnyCodable(maxNodes)
         }
-        let response = try await bridge.send(action: "snapshot", params: params)
+        let response = try await send("snapshot", args, params: params)
         return textResult(response)
     }
 
@@ -818,8 +962,7 @@ actor SafariMCPServer {
         if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
         if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
         if let role = args["role"]?.stringValue { params["role"] = AnyCodable(role) }
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        let response = try await bridge.send(action: "find", params: params)
+        let response = try await send("find", args, params: params)
         return textResult(response)
     }
 
@@ -883,11 +1026,7 @@ actor SafariMCPServer {
 
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let response = try await bridge.send(
-                action: action,
-                params: params,
-                timeout: Self.bridgeTimeout(args)
-            )
+            let response = try await send(action, args, params: params)
             return try await resultAfterAction(response, args, wantSnapshot: wantSnapshot, traceSession: traceSession)
         } catch {
             if let traceSession {
@@ -897,6 +1036,9 @@ actor SafariMCPServer {
         }
     }
 
+    /// Forwards the caller's arguments to the extension verbatim, minus the ones
+    /// the server handles itself. `tabId` is one of those: it arrives as a handle
+    /// the extension cannot read, and `send` puts the numeric id back.
     private func interactionParams(_ args: [String: Value], skipKeys: Set<String> = []) -> [String: AnyCodable] {
         var params: [String: AnyCodable] = [:]
         for (key, value) in args {
@@ -907,7 +1049,6 @@ actor SafariMCPServer {
             else if let d = value.doubleValue { params[key] = AnyCodable(d) }
             else if let b = value.boolValue { params[key] = AnyCodable(b) }
         }
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         return params
     }
 
@@ -925,11 +1066,7 @@ actor SafariMCPServer {
         let input = try Self.nativeInputPlan(args)
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let preparation = try await bridge.send(
-                action: "native_type_text",
-                params: interactionParams(args),
-                timeout: Self.bridgeTimeout(args)
-            )
+            let preparation = try await send("native_type_text", args, params: interactionParams(args))
             guard preparation.success else {
                 return try await resultAfterAction(preparation, args, traceSession: traceSession)
             }
@@ -1136,11 +1273,7 @@ actor SafariMCPServer {
         try Self.ensureNativeInputPermission()
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let preparation = try await bridge.send(
-                action: action,
-                params: interactionParams(args),
-                timeout: Self.bridgeTimeout(args)
-            )
+            let preparation = try await send(action, args, params: interactionParams(args))
             guard preparation.success else {
                 return try await resultAfterAction(preparation, args, traceSession: traceSession)
             }
@@ -1484,14 +1617,9 @@ actor SafariMCPServer {
         }
 
         params["fields"] = AnyCodable(fieldDict)
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let response = try await bridge.send(
-                action: "form_input",
-                params: params,
-                timeout: Self.bridgeTimeout(args)
-            )
+            let response = try await send("form_input", args, params: params)
             return try await resultAfterAction(response, args, traceSession: traceSession)
         } catch {
             if let traceSession {
@@ -1503,7 +1631,6 @@ actor SafariMCPServer {
 
     private func handleScreenshot(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let uid = args["uid"]?.stringValue { params["uid"] = AnyCodable(uid) }
         if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
         // Validate before the bridge call: a targeted capture scrolls the page.
@@ -1515,7 +1642,7 @@ actor SafariMCPServer {
         } catch {
             return Self.failureResult(toolFailure(for: error))
         }
-        let response = try await bridge.send(action: "screenshot", params: params)
+        let response = try await send("screenshot", args, params: params)
 
         guard response.success, let raw = response.data?.stringValue else {
             return textResult(response)
@@ -1796,14 +1923,12 @@ actor SafariMCPServer {
     private func handleJavaScript(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
         if let code = args["code"]?.stringValue { params["code"] = AnyCodable(code) }
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        let response = try await bridge.send(action: "javascript_tool", params: params)
+        let response = try await send("javascript_tool", args, params: params)
         return textResult(response)
     }
 
     private func handleReadConsole(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let level = args["level"]?.stringValue {
             guard Self.allowedConsoleLevels.contains(level) else {
                 return CallTool.Result(
@@ -1830,13 +1955,12 @@ actor SafariMCPServer {
             }
             params["pattern"] = AnyCodable(pattern)
         }
-        let response = try await bridge.send(action: "read_console", params: params)
+        let response = try await send("read_console", args, params: params)
         return textResult(response)
     }
 
     private func handleReadNetwork(_ args: [String: Value]) async throws -> CallTool.Result {
         var params: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let type = args["type"]?.stringValue {
             guard Self.allowedNetworkTypes.contains(type) else {
                 return CallTool.Result(
@@ -1880,7 +2004,7 @@ actor SafariMCPServer {
             params["maxResults"] = AnyCodable(maxResults)
         }
         if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
-        let response = try await bridge.send(action: "read_network", params: params)
+        let response = try await send("read_network", args, params: params)
         return textResult(response)
     }
 
@@ -1888,7 +2012,7 @@ actor SafariMCPServer {
         var params: [String: AnyCodable] = [:]
         if let width = args["width"]?.intValue { params["width"] = AnyCodable(width) }
         if let height = args["height"]?.intValue { params["height"] = AnyCodable(height) }
-        let response = try await bridge.send(action: "resize_window", params: params)
+        let response = try await send("resize_window", args, params: params)
         return textResult(response)
     }
 
@@ -2035,10 +2159,9 @@ actor SafariMCPServer {
         if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
         let userTimeout = min(Self.cappedWaitTimeout(args["timeout"]), Self.batchRemaining(args))
         params["timeout"] = AnyCodable(userTimeout)
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         // Extend bridge timeout to exceed the wait timeout so it doesn't race
-        let response = try await bridge.send(
-            action: "wait",
+        let response = try await send(
+            "wait", args,
             params: params,
             timeout: Self.bridgeTimeout(args, default: userTimeout + 5)
         )
@@ -2105,7 +2228,6 @@ actor SafariMCPServer {
         guard traceEnabled else { return nil }
 
         var params: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
         if let value = args["eventTypes"] {
             guard let values = value.arrayValue,
                   values.allSatisfy({ $0.stringValue?.isEmpty == false }) else {
@@ -2114,11 +2236,7 @@ actor SafariMCPServer {
             params["eventTypes"] = AnyCodable(values.compactMap(\.stringValue))
         }
 
-        let response = try await bridge.send(
-            action: "start_trace",
-            params: params,
-            timeout: Self.bridgeTimeout(args)
-        )
+        let response = try await send("start_trace", args, params: params)
         guard response.success else { throw ToolInputError(responseText(response)) }
         guard let traceID = response.data?.stringValue, !traceID.isEmpty else {
             throw ToolInputError("Trace did not return an id")
@@ -2139,13 +2257,7 @@ actor SafariMCPServer {
             try await Task.sleep(for: .seconds(min(traceSession.duration, Self.batchRemaining(args))))
         }
 
-        var params: [String: AnyCodable] = ["id": AnyCodable(traceSession.id)]
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        return try await bridge.send(
-            action: "stop_trace",
-            params: params,
-            timeout: Self.bridgeTimeout(args)
-        )
+        return try await send("stop_trace", args, params: ["id": AnyCodable(traceSession.id)])
     }
 
     private func waitAfterAction(_ args: [String: Value]) async throws -> BridgeResponse? {
@@ -2163,22 +2275,15 @@ actor SafariMCPServer {
         }
         let timeout = min(Self.cappedWaitTimeout(args["waitTimeout"]), Self.batchRemaining(args))
         params["timeout"] = AnyCodable(timeout)
-        if let tabId = args["tabId"]?.intValue { params["tabId"] = AnyCodable(tabId) }
-        return try await bridge.send(
-            action: "wait",
+        return try await send(
+            "wait", args,
             params: params,
             timeout: Self.bridgeTimeout(args, default: timeout + 5)
         )
     }
 
     private func snapshotResponse(_ args: [String: Value]) async throws -> BridgeResponse {
-        var snapParams: [String: AnyCodable] = [:]
-        if let tabId = args["tabId"]?.intValue { snapParams["tabId"] = AnyCodable(tabId) }
-        return try await bridge.send(
-            action: "snapshot",
-            params: snapParams,
-            timeout: Self.bridgeTimeout(args)
-        )
+        try await send("snapshot", args)
     }
 
     private static func cappedWaitTimeout(_ value: Value?) -> Double {
@@ -2236,6 +2341,14 @@ actor SafariMCPServer {
             return ToolFailure(
                 code: "invalid_input",
                 message: inputError.description,
+                retryable: false,
+                recoveryAction: "fix_input"
+            )
+        }
+        if let handleError = error as? TabHandleError {
+            return ToolFailure(
+                code: "invalid_input",
+                message: handleError.description,
                 retryable: false,
                 recoveryAction: "fix_input"
             )

@@ -93,6 +93,46 @@ struct ProfileConnectionTests {
         return await bridge.status().profiles.map(\.id).sorted()
     }
 
+    /// Receives one bridge request, failing rather than hanging when it never comes.
+    ///
+    /// The socket is closed on timeout rather than the task being cancelled:
+    /// URLSession's async `receive()` does not answer task cancellation, so a
+    /// pending one holds its enclosing task group open at scope exit and hangs the
+    /// whole suite instead of failing one test. Closing the socket makes it throw.
+    private func receiveRequest(
+        on task: URLSessionWebSocketTask,
+        within seconds: Double = 10
+    ) async throws -> [String: Any] {
+        let deadline = Task {
+            try await Task.sleep(for: .seconds(seconds))
+            task.cancel()
+        }
+        defer { deadline.cancel() }
+
+        guard case let .string(text) = try await task.receive(),
+              let parsed = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        else { throw BridgeTestError.unexpectedReply }
+        return parsed
+    }
+
+    /// Answers a bridge request the way background.js does, with the correlation id.
+    private func respond(
+        to request: [String: Any],
+        on task: URLSessionWebSocketTask,
+        data: String,
+        success: Bool = true
+    ) async throws {
+        guard let id = request["id"] as? String else { throw BridgeTestError.unexpectedReply }
+        let payload: [String: Any] = [
+            "id": id,
+            "success": success,
+            "data": success ? data : NSNull(),
+            "error": success ? NSNull() : data,
+        ]
+        let encoded = try JSONSerialization.data(withJSONObject: payload)
+        try await task.send(.string(String(decoding: encoded, as: UTF8.self)))
+    }
+
     private enum BridgeTestError: Error {
         case unexpectedReply
         case timedOut
@@ -208,6 +248,163 @@ struct ProfileConnectionTests {
             #expect(try await settledProfiles(bridge) == ["default"])
 
             personal.cancel()
+        }
+    }
+
+    // MARK: - Routing
+
+    @Test func aProfileIndexRoutesTheRequestToThatProfileAlone() async throws {
+        try await withStartedBridge(port: 8134) { bridge, port in
+            let token = await bridge.authToken
+
+            let personal = makeTask(port: port)
+            let work = makeTask(port: port)
+            try await authenticate(port: port, token: token, profileId: "default", task: personal)
+            try await authenticate(port: port, token: token, profileId: "WORK-UUID", task: work)
+
+            // p1 is WORK-UUID, which is neither the default profile nor the one an
+            // untargeted call would drive, so reaching it proves the routing.
+            async let workAnswered: BridgeResponse = bridge.send(
+                action: "tabs_query",
+                params: ["tabId": AnyCodable(5)],
+                timeout: 10,
+                profileIndex: 1
+            )
+
+            let workRequest = try await receiveRequest(on: work)
+            #expect(workRequest["action"] as? String == "tabs_query")
+            #expect((workRequest["params"] as? [String: Any])?["tabId"] as? Int == 5)
+            try await respond(to: workRequest, on: work, data: "work tabs")
+            #expect(try await workAnswered.data?.stringValue == "work tabs")
+
+            // Then the other way. If the first request had gone to the default
+            // profile, this is the frame the default socket would be holding, and
+            // its action would read tabs_query rather than snapshot.
+            async let personalAnswered: BridgeResponse = bridge.send(
+                action: "snapshot", timeout: 10, profileIndex: 0
+            )
+            let personalRequest = try await receiveRequest(on: personal)
+            #expect(personalRequest["action"] as? String == "snapshot")
+            try await respond(to: personalRequest, on: personal, data: "default snapshot")
+            #expect(try await personalAnswered.data?.stringValue == "default snapshot")
+
+            personal.cancel()
+            work.cancel()
+        }
+    }
+
+    @Test func namingAProfileThatIsNotConnectedFailsInsteadOfFallingBack() async throws {
+        try await withStartedBridge(port: 8135) { bridge, port in
+            let token = await bridge.authToken
+            let personal = makeTask(port: port)
+            try await authenticate(port: port, token: token, profileId: "default", task: personal)
+
+            // Answering from a different profile would be worse than refusing: the
+            // caller asked for one browser window and would get another.
+            await #expect(throws: WebSocketBridge.BridgeError.self) {
+                _ = try await bridge.send(action: "tabs_query", timeout: 5, profileIndex: 3)
+            }
+
+            do {
+                _ = try await bridge.send(action: "tabs_query", timeout: 5, profileIndex: 3)
+            } catch let error as WebSocketBridge.BridgeError {
+                #expect(error.description.contains("p3"))
+                #expect(error.toolFailure.code == "profile_not_connected")
+            }
+
+            personal.cancel()
+        }
+    }
+
+    @Test func selectingAProfilePinsWhereUntargetedCallsLand() async throws {
+        try await withStartedBridge(port: 8136) { bridge, port in
+            let token = await bridge.authToken
+
+            let personal = makeTask(port: port)
+            let work = makeTask(port: port)
+            try await authenticate(port: port, token: token, profileId: "default", task: personal)
+            try await authenticate(port: port, token: token, profileId: "WORK-UUID", task: work)
+
+            // The default profile wins until something says otherwise.
+            #expect(await bridge.connectedProfiles().first { $0.selected }?.id == "default")
+
+            try await bridge.selectProfile(atIndex: 1)
+            #expect(await bridge.connectedProfiles().first { $0.selected }?.id == "WORK-UUID")
+
+            // No profile named, so this follows the pin to WORK-UUID rather than
+            // going to the default profile it would have gone to a moment ago.
+            async let answered: BridgeResponse = bridge.send(action: "snapshot", timeout: 10)
+            let delivered = try await receiveRequest(on: work)
+            #expect(delivered["action"] as? String == "snapshot")
+            try await respond(to: delivered, on: work, data: "work snapshot")
+            #expect(try await answered.data?.stringValue == "work snapshot")
+
+            personal.cancel()
+            work.cancel()
+        }
+    }
+
+    @Test func aPinnedProfileGoingAwayFallsThroughRatherThanBreakingEveryCall() async throws {
+        try await withStartedBridge(port: 8137) { bridge, port in
+            let token = await bridge.authToken
+
+            let personal = makeTask(port: port)
+            let work = makeTask(port: port)
+            try await authenticate(port: port, token: token, profileId: "default", task: personal)
+            try await authenticate(port: port, token: token, profileId: "WORK-UUID", task: work)
+            try await bridge.selectProfile(atIndex: 1)
+
+            work.cancel(with: .goingAway, reason: nil)
+
+            var profiles = await bridge.connectedProfiles()
+            for _ in 0..<50 where profiles.count > 1 {
+                try await Task.sleep(for: .milliseconds(20))
+                profiles = await bridge.connectedProfiles()
+            }
+
+            // Closing the pinned profile's window must not leave every untargeted
+            // call failing until someone calls select_tab again.
+            #expect(profiles.map(\.id) == ["default"])
+            #expect(profiles.first { $0.selected }?.id == "default")
+
+            personal.cancel()
+        }
+    }
+
+    @Test func broadcastReachesEveryProfileAndReportsEachSeparately() async throws {
+        try await withStartedBridge(port: 8138) { bridge, port in
+            let token = await bridge.authToken
+
+            let personal = makeTask(port: port)
+            let work = makeTask(port: port)
+            try await authenticate(port: port, token: token, profileId: "default", task: personal)
+            try await authenticate(port: port, token: token, profileId: "WORK-UUID", task: work)
+
+            async let outcomes: [WebSocketBridge.ProfileOutcome] = bridge.broadcast(
+                action: "tabs_query", timeout: 10
+            )
+
+            // Both sockets are sent to at once, so both frames are already in
+            // flight and the order these are read in does not matter.
+            let personalRequest = try await receiveRequest(on: personal)
+            let workRequest = try await receiveRequest(on: work)
+            #expect(personalRequest["action"] as? String == "tabs_query")
+            #expect(workRequest["action"] as? String == "tabs_query")
+
+            try await respond(to: personalRequest, on: personal, data: "default tabs")
+            // One profile refusing a read must not withhold what the other returned.
+            try await respond(to: workRequest, on: work, data: "extension busy", success: false)
+
+            let results = try await outcomes
+            #expect(results.map(\.index) == [0, 1])
+            #expect(results.map(\.profileID) == ["default", "WORK-UUID"])
+            #expect(results[0].response?.success == true)
+            #expect(results[0].response?.data?.stringValue == "default tabs")
+            #expect(results[1].response?.success == false)
+            #expect(results[1].response?.error == "extension busy")
+
+            personal.cancel()
+            work.cancel()
         }
     }
 
