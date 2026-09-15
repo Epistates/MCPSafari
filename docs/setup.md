@@ -145,7 +145,7 @@ For ports outside the default range, set the port in the client configuration an
 
 Safari runs a separate instance of the extension in every profile it is enabled for, each with its own background page and its own tabs. All of them connect to the same server. The server keeps one connection per profile and lists them under `profiles` in `status`.
 
-Tool calls drive a single profile: the default one when it is connected, otherwise the first to connect. Naming a profile in a tool call is not supported yet, so if you want to automate a non-default profile, turn the extension off in the profiles you are not driving. Safari exposes no profile *name* to extensions, so `status` identifies profiles by the opaque UUID Safari assigns them.
+Every connected profile is drivable. `tabs_context` lists the tabs of all of them together, and each tab is named by a handle such as `p0t5` that says which profile it is in; pass that handle back as `tabId`. A call that names no tab drives the selected profile, which is the default one when it is connected, otherwise the first to connect, and `select_tab` moves it. Safari exposes no profile *name* to extensions, so `status` identifies profiles by the opaque UUID Safari assigns them alongside the short `p0` handle. See [Tools](tools.md#safari-profiles) for the details.
 
 ### CLI options
 

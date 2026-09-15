@@ -104,8 +104,22 @@ actor WebSocketBridge {
     struct ProfileStatus: Codable, Equatable {
         let id: String
         let index: Int
+        /// The `p<index>` prefix that this profile's tab handles carry.
+        let handle: String
+        /// Whether a call that names no tab drives this profile.
+        let selected: Bool
         let extensionVersion: String?
         let extensionProtocolVersion: Int?
+    }
+
+    /// What one profile made of a broadcast. Failures are reported rather than
+    /// thrown, because one profile refusing a read is not a reason to withhold
+    /// what the others returned.
+    struct ProfileOutcome: Sendable {
+        let index: Int
+        let profileID: String
+        let response: BridgeResponse?
+        let failure: String?
     }
 
     struct Status: Codable, Equatable {
@@ -186,6 +200,8 @@ actor WebSocketBridge {
     /// this server's lifetime, including across its own reconnects, so the short
     /// handle in `status` does not shuffle under the caller.
     private var profileOrder: [String] = []
+    /// Profile pinned by `select_tab`, driving every call that names no tab.
+    private var selectedProfileIndex: Int?
     /// Accepted connections that have not completed the token handshake, oldest first.
     /// Kept as a list rather than a single slot for the same reason as `connections`:
     /// a second profile dialing in must not cancel the first one mid-handshake.
@@ -254,6 +270,7 @@ actor WebSocketBridge {
 
     enum BridgeError: Error, CustomStringConvertible {
         case notConnected
+        case profileNotConnected(Int)
         case timeout
         case encodingFailed
         case decodingFailed(String)
@@ -264,6 +281,8 @@ actor WebSocketBridge {
             switch self {
             case .notConnected:
                 "No Safari extension connected. Open Safari and click the MCPSafari extension icon to connect."
+            case .profileNotConnected(let index):
+                "Safari profile p\(index) is not connected. Call status to see which profiles are connected, or tabs_context for current tab handles."
             case .timeout:
                 "Request to Safari extension timed out after 30 seconds."
             case .encodingFailed:
@@ -282,6 +301,13 @@ actor WebSocketBridge {
             case .notConnected:
                 ToolFailure(
                     code: "bridge_disconnected",
+                    message: description,
+                    retryable: false,
+                    recoveryAction: "call_status"
+                )
+            case .profileNotConnected:
+                ToolFailure(
+                    code: "profile_not_connected",
                     message: description,
                     retryable: false,
                     recoveryAction: "call_status"
@@ -316,21 +342,46 @@ actor WebSocketBridge {
     /// The profile that tool calls target when the caller names none.
     ///
     /// Safari gives an extension no way to ask which profile is frontmost, so this
-    /// prefers the default profile and otherwise takes the earliest to connect. The
-    /// point is that it is deterministic and that `status` lists the others, rather
-    /// than silently picking a different winner between calls.
+    /// takes `select_tab`'s pin when that profile is still connected, then prefers
+    /// the default profile, then the earliest to connect. The point is that it is
+    /// deterministic and that `status` marks the winner, rather than silently
+    /// picking a different one between calls.
     private var activeProfileID: String? {
+        if let selectedProfileIndex,
+           let pinned = profileID(atIndex: selectedProfileIndex),
+           connections[pinned] != nil {
+            return pinned
+        }
         if connections[Self.defaultProfileID] != nil { return Self.defaultProfileID }
         return profileOrder.first { connections[$0] != nil }
     }
 
+    func profileID(atIndex index: Int) -> String? {
+        profileOrder.indices.contains(index) ? profileOrder[index] : nil
+    }
+
+    /// Pins the profile that untargeted calls drive. `select_tab` sets this from the
+    /// handle it was given; it is never cleared, because a disconnected pin falls
+    /// through in `activeProfileID` and comes back if that profile reconnects.
+    func selectProfile(atIndex index: Int) throws {
+        guard let profileID = profileID(atIndex: index), connections[profileID] != nil else {
+            throw BridgeError.profileNotConnected(index)
+        }
+        selectedProfileIndex = index
+    }
+
+    func connectedProfiles() -> [ProfileStatus] { profileStatuses() }
+
     private func profileStatuses() -> [ProfileStatus] {
-        profileOrder.enumerated().compactMap { index, profileID in
+        let active = activeProfileID
+        return profileOrder.enumerated().compactMap { index, profileID in
             guard connections[profileID] != nil else { return nil }
             let metadata = metadataByProfile[profileID]
             return ProfileStatus(
                 id: profileID,
                 index: index,
+                handle: "p\(index)",
+                selected: profileID == active,
                 extensionVersion: metadata?.version,
                 extensionProtocolVersion: metadata?.protocolVersion
             )
@@ -497,6 +548,7 @@ actor WebSocketBridge {
         profileIDsByConnection.removeAll()
         metadataByProfile.removeAll()
         profileOrder.removeAll()
+        selectedProfileIndex = nil
         listenerStatus = .stopped
         extensionVersion = nil
         extensionProtocolVersion = nil
@@ -504,11 +556,15 @@ actor WebSocketBridge {
         logger.info("WebSocket server stopped")
     }
 
-    /// Send a request to the extension and await the correlated response.
-    func send(action: String, params: [String: AnyCodable] = [:], timeout: TimeInterval = 30) async throws -> BridgeResponse {
-        guard let profileID = activeProfileID, let connection = connections[profileID] else {
-            throw BridgeError.notConnected
-        }
+    /// Send a request to one profile's extension instance and await the correlated
+    /// response. `profileIndex` nil drives `activeProfileID`.
+    func send(
+        action: String,
+        params: [String: AnyCodable] = [:],
+        timeout: TimeInterval = 30,
+        profileIndex: Int? = nil
+    ) async throws -> BridgeResponse {
+        let connection = try connection(forProfileIndex: profileIndex)
         let connectionID = ObjectIdentifier(connection)
 
         let request = BridgeRequest(action: action, params: params)
@@ -554,7 +610,64 @@ actor WebSocketBridge {
         }
     }
 
+    /// Sends the same request to every connected profile at once and reports what
+    /// each one made of it. Used by `tabs_context`, which has to see the whole
+    /// browser rather than one profile's slice of it.
+    func broadcast(
+        action: String,
+        params: [String: AnyCodable] = [:],
+        timeout: TimeInterval = 30
+    ) async throws -> [ProfileOutcome] {
+        let targets = profileStatuses().map { (index: $0.index, id: $0.id) }
+        guard !targets.isEmpty else { throw BridgeError.notConnected }
+
+        return await withTaskGroup(of: ProfileOutcome.self) { group in
+            for target in targets {
+                group.addTask {
+                    do {
+                        let response = try await self.send(
+                            action: action,
+                            params: params,
+                            timeout: timeout,
+                            profileIndex: target.index
+                        )
+                        return ProfileOutcome(
+                            index: target.index, profileID: target.id,
+                            response: response, failure: nil
+                        )
+                    } catch {
+                        return ProfileOutcome(
+                            index: target.index, profileID: target.id,
+                            response: nil, failure: "\(error)"
+                        )
+                    }
+                }
+            }
+
+            var outcomes: [ProfileOutcome] = []
+            for await outcome in group { outcomes.append(outcome) }
+            return outcomes.sorted { $0.index < $1.index }
+        }
+    }
+
     // MARK: - Private
+
+    /// The connection a request should go out on. A named profile that is not
+    /// connected is an error rather than a silent fallback: the caller asked for a
+    /// specific browser window, and answering from a different one would be worse
+    /// than refusing.
+    private func connection(forProfileIndex index: Int?) throws -> NWConnection {
+        guard let index else {
+            guard let profileID = activeProfileID, let connection = connections[profileID] else {
+                throw BridgeError.notConnected
+            }
+            return connection
+        }
+        guard let profileID = profileID(atIndex: index), let connection = connections[profileID] else {
+            throw BridgeError.profileNotConnected(index)
+        }
+        return connection
+    }
 
     /// Removes a pending request by ID and resumes its continuation with an error,
     /// but only if the continuation is still present (prevents double-resume).
