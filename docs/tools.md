@@ -54,7 +54,7 @@ This reference describes `main`, which may include tools and options not yet in 
 
 By default, interaction tools send synthetic DOM events. These reach page event handlers, but they do not trigger browser shortcuts, clipboard actions, or CSS `:hover`. Text entry uses setters and editing events that update application state.
 
-Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the page needs real macOS input. Safari must already be in front, and the app running the server needs Accessibility permission. Native hover and drag move your real pointer; screen coordinates assume 100% page zoom. `click` uses synthetic events and has no native mode. Running JavaScript does not make an event trusted.
+Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the page needs real macOS input. Safari must already be in front, and the app running the server needs Accessibility permission. Native input takes over your keyboard and mouse, so tool descriptions and errors tell agents to ask you before bringing Safari to the front. If you want agents to do that on their own, say so in your agent instructions. Native `type_text` types one character at a time and is not paste. Native hover and drag move your real pointer; screen coordinates assume 100% page zoom. `click` uses synthetic events and has no native mode. Running JavaScript does not make an event trusted.
 
 ### Dialogs
 

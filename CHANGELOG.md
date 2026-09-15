@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Bug Fixes
+- Native input no longer tells agents to bring Safari to the front themselves. The refusal said "activate Safari and retry", so agents running in the background activated Safari with `osascript` and took over the user's keyboard and mouse mid-task. The refusal, the `native` parameter descriptions, and the screenshot hidden-page and unfocused-window notes now tell the agent to ask the user first unless the user has already allowed it, and both focus failures report `recoveryAction: "ask_user"`. Losing focus after events were sent is no longer `retryable`, since a retry sends the whole input again. The native `type_text` description also says it types one character at a time, is not paste, and is for short input only.
 
 ## [0.3.2] - 2026-09-14
 ### Added
