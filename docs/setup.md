@@ -183,7 +183,11 @@ The content scripts may not be injected yet. The extension auto-injects on first
 
 ### Safari permission prompts
 
-Safari prompts for per-site permissions the first time the extension interacts with a domain. Click "Always Allow on Every Website" in Safari > Settings > Extensions > MCPSafari Extension to avoid repeated prompts.
+Safari asks for website access the first time the extension touches a site, and it asks with a modal dialog that **can open behind another window**. While it is unanswered, every extension call for that tab is blocked, so a tool that needs the page fails with `permission_required` rather than waiting for it.
+
+Click the MCPSafari toolbar button to see where you stand: the popup names the current site and whether MCPSafari can reach it, and opening it is also what prompts Safari to ask if it has not already. That is on purpose, since a question about MCPSafari is easiest to answer while you are looking at MCPSafari.
+
+To stop being asked per site, click "Always Allow on Every Website" in Safari > Settings > Extensions > MCPSafari Extension. That is also the only way to reach cross-origin iframes, because Safari's per-site grant covers the top-level page only. Everything runs on your Mac either way; MCPSafari sends nothing anywhere.
 
 ### Port already in use
 
