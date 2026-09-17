@@ -188,7 +188,8 @@ enum Doctor {
     static func inspect(
         paths: DoctorPaths = .system,
         port: UInt16 = 8089,
-        extensionRegistered: Bool? = nil
+        extensionRegistered: Bool? = nil,
+        registeredExtensionPath: String? = nil
     ) -> DoctorReport {
         let fileManager = FileManager.default
         var checks: [DiagnosticCheck] = []
@@ -260,6 +261,26 @@ enum Doctor {
             ))
         }
 
+        // Safari's own Uninstall button deletes MCPSafari.app outright. On a
+        // machine with an Xcode checkout, PlugInKit then falls back to whatever
+        // debug build is sitting in DerivedData, and because neighbouring
+        // versions share a bridge protocol the handshake accepts it. The result
+        // is an old extension driving a current server with nothing to say so.
+        if let registeredExtensionPath, !registeredExtensionPath.isEmpty {
+            let isInstalledCopy = registeredExtensionPath.hasPrefix(paths.appURL.path + "/")
+            checks.append(.init(
+                code: "extension_location",
+                status: isInstalledCopy ? .ok : .warning,
+                message: isInstalledCopy
+                    ? "Safari is using the installed extension."
+                    : "Safari is using an extension from outside \(paths.appURL.path): \(registeredExtensionPath).",
+                recovery: isInstalledCopy
+                    ? nil
+                    : "That build can be any version. Reinstall the app, open it once so PlugInKit "
+                      + "re-registers, then reopen Safari."
+            ))
+        }
+
         let tokenURL = paths.tokenDirectoryURL.appendingPathComponent(String(port))
         if fileManager.fileExists(atPath: tokenURL.path) {
             let permissions = (try? fileManager.attributesOfItem(atPath: tokenURL.path)[.posixPermissions] as? NSNumber)?.intValue
@@ -297,19 +318,45 @@ enum Doctor {
     }
 
     static func isExtensionRegistered() -> Bool? {
+        guard let output = pluginkitOutput() else { return nil }
+        return output.contains(MCPSafariProduct.extensionBundleIdentifier)
+    }
+
+    /// Where PlugInKit says the registered extension lives, which is not always
+    /// inside the installed app. `-v` appends the bundle path to each match.
+    static func registeredExtensionPath() -> String? {
+        guard let output = pluginkitOutput() else { return nil }
+        return parseExtensionPath(from: output)
+    }
+
+    /// The path is the tail of the line, after the date, and can contain spaces
+    /// ("MCPSafari Extension.appex"), so it is taken from the first path
+    /// separator rather than by splitting on whitespace.
+    static func parseExtensionPath(from output: String) -> String? {
+        for line in output.split(separator: "\n") {
+            guard line.contains(MCPSafariProduct.extensionBundleIdentifier),
+                  let start = line.firstIndex(of: "/")
+            else { continue }
+            let path = line[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !path.isEmpty { return path }
+        }
+        return nil
+    }
+
+    private static func pluginkitOutput() -> String? {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
-        process.arguments = ["-m", "-i", MCPSafariProduct.extensionBundleIdentifier]
+        process.arguments = ["-m", "-v", "-i", MCPSafariProduct.extensionBundleIdentifier]
         process.standardOutput = output
         process.standardError = Pipe()
 
         do {
             try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            return String(decoding: data, as: UTF8.self).contains(MCPSafariProduct.extensionBundleIdentifier)
+            return String(decoding: data, as: UTF8.self)
         } catch {
             return nil
         }

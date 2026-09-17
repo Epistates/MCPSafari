@@ -213,6 +213,56 @@ struct DoctorTests {
         #expect(report.checks.first { $0.code == "token_file" }?.status == .warning)
     }
 
+    /// Safari's own Uninstall button deletes the app, and PlugInKit then falls
+    /// back to whatever debug build is in DerivedData. Since neighbouring
+    /// versions share a bridge protocol the handshake accepts it, so nothing
+    /// else in the product notices. This is the check that does.
+    @Test func doctorFlagsAnExtensionLoadedFromOutsideTheInstalledApp() throws {
+        let paths = DoctorPaths(
+            executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
+            appURL: URL(fileURLWithPath: "/Applications/MCPSafari.app"),
+            tokenDirectoryURL: URL(fileURLWithPath: "/tmp/tokens")
+        )
+
+        let stale = Doctor.inspect(
+            paths: paths,
+            port: 8089,
+            extensionRegistered: true,
+            registeredExtensionPath: "/Users/someone/Library/Developer/Xcode/DerivedData/MCPSafari-abc"
+                + "/Build/Products/Debug/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+        )
+        let flagged = stale.checks.first { $0.code == "extension_location" }
+        #expect(flagged?.status == .warning)
+        #expect(flagged?.message.contains("DerivedData") == true)
+        #expect(flagged?.recovery?.contains("Reinstall") == true)
+
+        let installed = Doctor.inspect(
+            paths: paths,
+            port: 8089,
+            extensionRegistered: true,
+            registeredExtensionPath: "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+        )
+        #expect(installed.checks.first { $0.code == "extension_location" }?.status == .ok)
+
+        // A path PlugInKit would not give us is not evidence of anything, so the
+        // check stays quiet rather than inventing a warning.
+        let unknown = Doctor.inspect(paths: paths, port: 8089, extensionRegistered: true)
+        #expect(unknown.checks.contains { $0.code == "extension_location" } == false)
+    }
+
+    /// The bundle path is the tail of the line and contains a space, so anything
+    /// that splits on whitespace truncates it to "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari".
+    @Test func theRegisteredPathSurvivesTheSpaceInItsName() {
+        let output = "     com.epistates.MCPSafari.Extension(0.3.2)\t8AC12B3C-1B4B\t2026-09-16 23:56:34 +0000"
+            + "\t/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex\n (1 plug-in)\n"
+
+        #expect(
+            Doctor.parseExtensionPath(from: output)
+                == "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+        )
+        #expect(Doctor.parseExtensionPath(from: " (0 plug-ins)\n") == nil)
+    }
+
     private func writeBundle(
         at url: URL,
         identifier: String,
