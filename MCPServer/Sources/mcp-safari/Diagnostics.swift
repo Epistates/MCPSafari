@@ -184,13 +184,41 @@ struct DoctorPaths {
     }
 }
 
+/// What PlugInKit says about the Safari extension.
+///
+/// One value rather than a `Bool?` alongside a `String?`. That pair admits a
+/// state that cannot exist, not registered yet here is its path, and filling it
+/// in took two `pluginkit` readings that were free to disagree with each other.
+enum ExtensionRegistration: Equatable, Sendable {
+    /// PlugInKit could not be asked, which is not the same as an answer of no.
+    case unknown
+    case notRegistered
+    /// Registered, with where it was loaded from when that could be read.
+    case registered(bundlePath: String?)
+
+    /// The shape the JSON report has always carried.
+    var isRegistered: Bool? {
+        switch self {
+        case .unknown: nil
+        case .notRegistered: false
+        case .registered: true
+        }
+    }
+
+    var bundlePath: String? {
+        guard case .registered(let path) = self else { return nil }
+        return path
+    }
+}
+
 enum Doctor {
     static func inspect(
         paths: DoctorPaths = .system,
         port: UInt16 = 8089,
-        extensionRegistered: Bool? = nil,
-        registeredExtensionPath: String? = nil
+        registration: ExtensionRegistration = .unknown
     ) -> DoctorReport {
+        let extensionRegistered = registration.isRegistered
+        let registeredExtensionPath = registration.bundlePath
         let fileManager = FileManager.default
         var checks: [DiagnosticCheck] = []
 
@@ -331,16 +359,15 @@ enum Doctor {
         )
     }
 
-    static func isExtensionRegistered() -> Bool? {
-        guard let output = pluginkitOutput() else { return nil }
-        return output.contains(MCPSafariProduct.extensionBundleIdentifier)
-    }
-
-    /// Where PlugInKit says the registered extension lives, which is not always
-    /// inside the installed app. `-v` appends the bundle path to each match.
-    static func registeredExtensionPath() -> String? {
-        guard let output = pluginkitOutput() else { return nil }
-        return parseExtensionPath(from: output)
+    /// Asks PlugInKit once. `-v` appends the bundle path to each match, which is
+    /// how the extension Safari actually loaded gets identified, and that is not
+    /// always the one inside the installed app.
+    static func extensionRegistration() -> ExtensionRegistration {
+        guard let output = pluginkitOutput() else { return .unknown }
+        guard output.contains(MCPSafariProduct.extensionBundleIdentifier) else {
+            return .notRegistered
+        }
+        return .registered(bundlePath: parseExtensionPath(from: output))
     }
 
     /// The path is the tail of the line, after the date, and can contain spaces

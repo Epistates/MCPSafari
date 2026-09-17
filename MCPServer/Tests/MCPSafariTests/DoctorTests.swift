@@ -28,7 +28,7 @@ struct DoctorTests {
 
         let report = Doctor.inspect(
             paths: .init(executableURL: executable, appURL: app, tokenDirectoryURL: tokens),
-            extensionRegistered: true
+            registration: .registered(bundlePath: nil)
         )
         let json = try Doctor.json(report)
 
@@ -67,7 +67,7 @@ struct DoctorTests {
 
         let report = Doctor.inspect(
             paths: .init(executableURL: executable, appURL: app, tokenDirectoryURL: tokens),
-            extensionRegistered: true
+            registration: .registered(bundlePath: nil)
         )
 
         #expect(report.checks.first { $0.code == "app_version" }?.status == .error)
@@ -200,7 +200,7 @@ struct DoctorTests {
                 tokenDirectoryURL: root.appendingPathComponent("tokens")
             ),
             port: 8089,
-            extensionRegistered: false
+            registration: .notRegistered
         )
 
         #expect(report.overall == .error)
@@ -239,8 +239,7 @@ struct DoctorTests {
         let stale = Doctor.inspect(
             paths: paths,
             port: 8089,
-            extensionRegistered: true,
-            registeredExtensionPath: strayBuild.path
+            registration: .registered(bundlePath: strayBuild.path)
         )
         let flagged = stale.checks.first { $0.code == "extension_location" }
         #expect(flagged?.status == .warning)
@@ -249,14 +248,13 @@ struct DoctorTests {
         let installed = Doctor.inspect(
             paths: paths,
             port: 8089,
-            extensionRegistered: true,
-            registeredExtensionPath: installedExtension.path
+            registration: .registered(bundlePath: installedExtension.path)
         )
         #expect(installed.checks.first { $0.code == "extension_location" }?.status == .ok)
 
         // A path PlugInKit would not give us is not evidence of anything, so the
         // check stays quiet rather than inventing a warning.
-        let unknown = Doctor.inspect(paths: paths, port: 8089, extensionRegistered: true)
+        let unknown = Doctor.inspect(paths: paths, port: 8089, registration: .registered(bundlePath: nil))
         #expect(unknown.checks.contains { $0.code == "extension_location" } == false)
     }
 
@@ -290,8 +288,7 @@ struct DoctorTests {
                 tokenDirectoryURL: root.appendingPathComponent("tokens")
             ),
             port: 8089,
-            extensionRegistered: true,
-            registeredExtensionPath: strayBuild.path
+            registration: .registered(bundlePath: strayBuild.path)
         )
 
         let version = report.checks.first { $0.code == "extension_version" }
@@ -317,13 +314,32 @@ struct DoctorTests {
                 tokenDirectoryURL: URL(fileURLWithPath: "/tmp/tokens")
             ),
             port: 8089,
-            extensionRegistered: true,
-            registeredExtensionPath: "/Users/someone/Applications/MCPSafari.app/Contents/PlugIns"
-                + "/MCPSafari Extension.appex"
+            registration: .registered(bundlePath: "/Users/someone/Applications/MCPSafari.app/Contents/PlugIns"
+                + "/MCPSafari Extension.appex")
         )
 
         #expect(report.checks.first { $0.code == "app_installed" }?.status == .error)
         #expect(report.checks.contains { $0.code == "extension_location" } == false)
+    }
+
+    /// PlugInKit answers one question, so it is modelled as one value. The
+    /// previous pair of a `Bool?` and a `String?` could express "not registered,
+    /// and here is where it is registered", and needed two readings to fill in.
+    @Test func registrationCannotExpressAContradiction() {
+        #expect(ExtensionRegistration.unknown.isRegistered == nil)
+        #expect(ExtensionRegistration.unknown.bundlePath == nil)
+
+        #expect(ExtensionRegistration.notRegistered.isRegistered == false)
+        // Not registered has no path to offer, and no way to be given one.
+        #expect(ExtensionRegistration.notRegistered.bundlePath == nil)
+
+        let located = ExtensionRegistration.registered(bundlePath: "/Applications/MCPSafari.app")
+        #expect(located.isRegistered == true)
+        #expect(located.bundlePath == "/Applications/MCPSafari.app")
+
+        // Registered somewhere PlugInKit would not name is still registered.
+        #expect(ExtensionRegistration.registered(bundlePath: nil).isRegistered == true)
+        #expect(ExtensionRegistration.registered(bundlePath: nil).bundlePath == nil)
     }
 
     /// The bundle path is the tail of the line and contains a space, so anything
