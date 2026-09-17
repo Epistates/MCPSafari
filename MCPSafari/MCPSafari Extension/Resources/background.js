@@ -109,6 +109,9 @@ function permissionRequiredError(origin, pending) {
     error.code = "permission_required";
     error.retryable = true;
     error.recoveryAction = "ask_user";
+    // Carried rather than sniffed back out of the message: the popup needs to
+    // tell "Safari is asking right now" from "Safari has been told no".
+    error.permissionPending = pending;
     return error;
 }
 
@@ -1206,6 +1209,30 @@ browser.tabs.onRemoved.addListener((tabId) => {
     tabAccessProbedAt.delete(tabId);
 });
 
+/// Whether MCPSafari can reach whatever the user is looking at.
+///
+/// Opening the popup is the right moment to find this out, and the right moment
+/// for Safari to ask if it has not already: the user is looking straight at
+/// MCPSafari, so a dialog about MCPSafari makes sense. The alternative is what
+/// happens otherwise, which is the question surfacing mid-task, in a dialog that
+/// can be behind another window, while an agent waits on it.
+async function describeActiveTabAccess() {
+    let tabId;
+    try {
+        tabId = await getActiveTabId();
+    } catch {
+        return { origin: null, allowed: false, pending: false };
+    }
+
+    const origin = await originOfTab(tabId);
+    try {
+        await ensureTabAccess(tabId);
+        return { origin, allowed: true, pending: false };
+    } catch (err) {
+        return { origin, allowed: false, pending: err.permissionPending === true };
+    }
+}
+
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "refreshConnections") {
         loadAuthTokens().finally(() => {
@@ -1217,6 +1244,10 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "getStatus") {
         sendResponse({ ports: visibleConnectionStatuses() });
         return false;
+    }
+    if (message.type === "tabAccess") {
+        describeActiveTabAccess().then(sendResponse);
+        return true;
     }
     if (message.type === "addPort") {
         const port = parseInt(message.port, 10);

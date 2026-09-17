@@ -44,6 +44,44 @@ function renderConnections(ports) {
     });
 }
 
+// Safari grants website access per site, and says so nowhere the user is
+// looking. Saying it here means someone can tell "the agent cannot reach this
+// page" from "the server is not connected", which are the two failures that
+// otherwise look identical from the outside.
+function siteAccessMarkup(access) {
+    if (!access || !access.origin) return "";
+
+    const host = access.origin.replace(/^https?:\/\//, "");
+    const state = access.allowed
+        ? '<span class="site-state allowed">Allowed</span>'
+        : access.pending
+            ? '<span class="site-state">Asking…</span>'
+            : '<span class="site-state blocked">No access</span>';
+
+    const hint = access.allowed
+        ? ""
+        : access.pending
+            ? '<p class="site-hint">Safari is asking whether to allow this site. Its dialog can '
+              + "open behind another window.</p>"
+            : '<p class="site-hint">Allow this site from Safari Settings &gt; Extensions to let '
+              + "MCPSafari read it. Everything runs on this Mac.</p>";
+
+    return `<div class="site-row"><span class="site-host">${escapeHtml(host)}</span>${state}</div>${hint}`;
+}
+
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[c]);
+}
+
+async function refreshSite() {
+    try {
+        const access = await browser.runtime.sendMessage({ type: "tabAccess" });
+        document.getElementById("site").innerHTML = siteAccessMarkup(access);
+    } catch (_) { /* extension may not be ready */ }
+}
+
 async function refresh() {
     try {
         const response = await browser.runtime.sendMessage({ type: "getStatus" });
@@ -62,6 +100,10 @@ async function refreshConnections() {
 
 document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("version").textContent = `v${browser.runtime.getManifest().version}`;
+    // Not awaited alongside the connection refresh: this one can sit for a
+    // couple of seconds behind Safari's dialog, and the ports should paint
+    // straight away rather than waiting on it.
+    refreshSite();
     await refreshConnections();
 
     const refreshTimer = setInterval(refresh, 1000);
