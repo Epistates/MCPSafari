@@ -58,6 +58,8 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
             if ((ms || 0) <= 200) queueMicrotask(fn);
             return 0;
         },
+        // A service worker has this; without it every frame origin reads as null.
+        URL,
         WebSocket: class { send() {} },
     });
     vm.runInContext(source, context);
@@ -135,6 +137,59 @@ test("a frame whose host cannot be identified is attached, not dropped", async (
         tree.children.some((c) => c.children?.[0]?.uid === "f3e2"),
         "the unmatched frame's content should still be reachable"
     );
+});
+
+test("a frame that will not answer is named rather than left as a hole", async () => {
+    const { call } = loadBackground({
+        respond: (frameId) => {
+            if (frameId === 0) return ok(topTree());
+            throw new Error("Could not establish connection");
+        },
+    });
+
+    const tree = await call('dispatchToContent("snapshot", { tabId: 1 })');
+
+    // Safari's per-site grant covers the top level only, so this is what a page
+    // with a third-party frame looks like until the broad grant is given. The
+    // tree used to come back looking complete.
+    assert.deepEqual(
+        [...tree.unreachableFrames].map((f) => ({ ...f })),
+        [{ frameId: 3, origin: "https://embed.example" }]
+    );
+    // The iframe node is still there, it just has nothing hanging off it.
+    const iframe = tree.children.find((c) => c.tag === "iframe");
+    assert.equal(iframe.children, undefined);
+});
+
+test("a snapshot that reaches every frame says nothing about unreachable ones", async () => {
+    const { call } = loadBackground({
+        respond: (frameId) => ok(frameId === 0 ? topTree() : embedTree()),
+    });
+
+    const tree = await call('dispatchToContent("snapshot", { tabId: 1 })');
+
+    // An empty list on every snapshot would be noise on the overwhelmingly
+    // common case, so the key is absent when there is nothing to report.
+    assert.equal("unreachableFrames" in tree, false);
+});
+
+test("a frame with an unreadable url is still reported", async () => {
+    // about:blank and srcdoc frames have no origin to name, but the hole in the
+    // tree is just as real, so the entry appears with a null origin.
+    const blank = { frameId: 7, parentFrameId: 0, url: "about:srcdoc" };
+    const { call } = loadBackground({
+        frames: [TOP, blank],
+        respond: (frameId) => {
+            if (frameId === 0) return ok(topTree());
+            throw new Error("Could not establish connection");
+        },
+    });
+
+    const tree = await call('dispatchToContent("snapshot", { tabId: 1 })');
+
+    assert.equal(tree.unreachableFrames.length, 1);
+    assert.equal(tree.unreachableFrames[0].frameId, 7);
+    assert.equal(tree.unreachableFrames[0].origin, null);
 });
 
 test("find fans out and returns matches from every frame", async () => {

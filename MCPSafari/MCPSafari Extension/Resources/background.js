@@ -119,12 +119,28 @@ function permissionRequiredError(origin, pending) {
     return error;
 }
 
+// The origin is what Safari grants by, so it is the unit anything asking the
+// user to grant something has to speak in. Also the part of a URL with no
+// secrets in it, which is why unreachable frames are named this way.
+function originOfUrl(url) {
+    try {
+        if (!url) return null;
+        // An opaque origin (about:, data:, file:, a sandboxed frame) serialises
+        // to the string "null", which would reach the user looking like a
+        // hostname they could go and grant. There is nothing to grant.
+        const origin = new URL(url).origin;
+        return origin && origin !== "null" ? origin : null;
+    } catch {
+        return null;
+    }
+}
+
 // Best effort, and deliberately not fatal: the origin only sharpens the message,
 // and reading it goes through the same APIs that may already be blocked.
 async function originOfTab(tabId) {
     try {
         const tab = await withDeadline(browser.tabs.get(tabId), PERMISSION_PROBE_TIMEOUT_MS);
-        return tab && tab.url ? new URL(tab.url).origin : null;
+        return tab ? originOfUrl(tab.url) : null;
     } catch {
         return null;
     }
@@ -1016,6 +1032,7 @@ async function sendToFirstMatchingFrame(tabId, message) {
 async function snapshotAcrossFrames(tabId, params) {
     const frames = await listFrames(tabId);
     const trees = new Map();
+    const unreachable = [];
     for (const frame of frames) {
         try {
             const tree = await sendToContentScript(
@@ -1026,6 +1043,15 @@ async function snapshotAcrossFrames(tabId, params) {
             if (tree) trees.set(frame.frameId, tree);
         } catch (err) {
             if (frame.frameId === 0) throw err;
+            // A subframe that will not answer leaves a hole, and a tree with a
+            // silent hole in it is the exact thing cross-frame snapshots were
+            // built to avoid. Safari grants "Always Allow on This Website" for
+            // the top level only, so this is the ordinary case on a page with
+            // third-party frames, not an exotic one.
+            unreachable.push({
+                frameId: frame.frameId,
+                origin: originOfUrl(frame.url),
+            });
         }
     }
 
@@ -1038,7 +1064,10 @@ async function snapshotAcrossFrames(tabId, params) {
     }
 
     const root = trees.get(0);
-    if (root) spliceFrames(root, 0, childFrames, trees);
+    if (root) {
+        spliceFrames(root, 0, childFrames, trees);
+        if (unreachable.length > 0) root.unreachableFrames = unreachable;
+    }
     return root;
 }
 
