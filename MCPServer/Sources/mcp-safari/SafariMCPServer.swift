@@ -1168,7 +1168,7 @@ actor SafariMCPServer {
         // One check before and one after typing: a per-keystroke re-check
         // would abort mid-word on any transient focus blip without saying
         // how much was delivered.
-        try ensureSafariIsFrontmost(afterTyping: true)
+        try ensureSafariIsFrontmost(eventsAlreadySent: true)
 
         let suffix = input.submitKey.map { " then pressed \($0)" } ?? ""
         return "Typed \(input.text.count) character(s) with native input\(suffix)"
@@ -1183,21 +1183,33 @@ actor SafariMCPServer {
         }
     }
 
-    private nonisolated static func ensureSafariIsFrontmost(afterTyping: Bool = false) throws {
+    /// What losing Safari's focus means, which depends entirely on whether
+    /// anything has been delivered yet.
+    ///
+    /// `eventsAlreadySent` rather than `afterTyping`: the guard runs after
+    /// `press_key`, `hover`, and `drag` too, and in every case the question is
+    /// the same one. Nothing sent is a clean refusal the caller can retry.
+    /// Something sent is not retryable, because a retry is not a recovery, it is
+    /// a second stream of input into whatever is frontmost now.
+    nonisolated static func nativeFocusFailure(eventsAlreadySent: Bool) -> ToolFailure {
+        ToolFailure(
+            code: "native_input_focus_lost",
+            message: eventsAlreadySent
+                ? "Safari lost focus during native input, so some events may have gone to another application. Tell the user before retrying: a retry sends the whole input again."
+                : "Safari is not the frontmost application, so nothing was sent. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it, or omit native to use synthetic input, which does not need focus.",
+            retryable: !eventsAlreadySent,
+            recoveryAction: "ask_user"
+        )
+    }
+
+    private nonisolated static func ensureSafariIsFrontmost(eventsAlreadySent: Bool = false) throws {
         // NSWorkspace.frontmostApplication freezes at first touch in this
         // run-loop-less process; a fresh fetch reads current state.
         let safariIsActive = NSRunningApplication
             .runningApplications(withBundleIdentifier: "com.apple.Safari")
             .contains { $0.isActive }
         guard safariIsActive else {
-            throw NativeInputError(failure: ToolFailure(
-                code: "native_input_focus_lost",
-                message: afterTyping
-                    ? "Safari lost focus during native input, so some events may have gone to another application. Tell the user before retrying: a retry sends the whole input again."
-                    : "Safari is not the frontmost application, so nothing was sent. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it, or omit native to use synthetic input, which does not need focus.",
-                retryable: !afterTyping,
-                recoveryAction: "ask_user"
-            ))
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: eventsAlreadySent))
         }
     }
 
@@ -1445,7 +1457,7 @@ actor SafariMCPServer {
     private nonisolated static func pressNativeKey(_ combo: NativeKeyCombo, deadline: Double? = nil) throws -> String {
         let source = try nativeEventSource(deadline: deadline)
         try postKey(code: combo.keyCode, flags: combo.flags, source: source)
-        try ensureSafariIsFrontmost(afterTyping: true)
+        try ensureSafariIsFrontmost(eventsAlreadySent: true)
         return "Pressed \(combo.label) with native input"
     }
 
@@ -1518,7 +1530,7 @@ actor SafariMCPServer {
         let source = try nativeEventSource(deadline: deadline)
         let start = CGEvent(source: nil)?.location ?? target
         try postPointerPath(from: start, to: target, mouseType: .mouseMoved, source: source)
-        try ensureSafariIsFrontmost(afterTyping: true)
+        try ensureSafariIsFrontmost(eventsAlreadySent: true)
         return "Moved pointer to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
@@ -1540,7 +1552,7 @@ actor SafariMCPServer {
         }
         Thread.sleep(forTimeInterval: 0.05)
         try postMouse(type: .leftMouseUp, at: target, source: source)
-        try ensureSafariIsFrontmost(afterTyping: true)
+        try ensureSafariIsFrontmost(eventsAlreadySent: true)
         return "Dragged from (\(Int(start.x)), \(Int(start.y))) to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
