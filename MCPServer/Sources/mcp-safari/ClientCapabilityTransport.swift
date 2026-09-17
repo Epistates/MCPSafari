@@ -38,7 +38,7 @@ actor ClientCapabilityNormalizingTransport: Transport {
 
     func send(_ data: Data) async throws { try await wrapped.send(data) }
 
-    func receive() -> AsyncThrowingStream<Data, Swift.Error> {
+    func receive() -> AsyncThrowingStream<Data, any Swift.Error> {
         let wrapped = self.wrapped
         let logger = self.logger
         return AsyncThrowingStream { continuation in

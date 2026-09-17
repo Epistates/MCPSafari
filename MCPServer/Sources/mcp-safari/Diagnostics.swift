@@ -141,7 +141,7 @@ struct DoctorReport: Codable, Equatable {
         case checks
     }
 
-    func encode(to encoder: Encoder) throws {
+    func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(serverVersion, forKey: .serverVersion)
         try container.encodeIfPresent(appVersion, forKey: .appVersion)
