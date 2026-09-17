@@ -93,7 +93,9 @@ test("screenshot without a target never touches the content script", async () =>
 
     const capture = await evaluate("handleScreenshot({ tabId: 1 })");
 
-    assert.deepEqual(log, ["context", "capture"]);
+    // The probe is an injection, not the content script, and it guards the
+    // `tabs.get` that would otherwise sit on Safari's permission dialog.
+    assert.deepEqual(log, ["probe", "context", "capture"]);
     assert.equal("target" in capture, false);
 });
 

@@ -20,7 +20,15 @@ function loadBackground({ executeScript, page = {}, captureVisibleTab }) {
             onMessage: { addListener() {} },
             sendNativeMessage: async () => ({ tokens: {} }),
         },
-        scripting: { executeScript },
+        // The website-permission probe lands here too. These tests are about the
+        // page-context read, so the probe is answered separately and each case
+        // keeps control of the call it actually cares about.
+        scripting: {
+            executeScript: (options) =>
+                options && options.func && options.func.name === "probeTabAccess"
+                    ? Promise.resolve([{ result: true }])
+                    : executeScript(options),
+        },
         storage: {
             local: { get: async () => ({}), set() {} },
             session: { get: async () => ({}), set() {}, remove: async () => {} },
