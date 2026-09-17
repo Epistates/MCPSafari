@@ -793,19 +793,24 @@ actor SafariMCPServer {
         var failures: [String] = []
 
         for outcome in outcomes {
-            let label = "p\(outcome.index) (\(outcome.profileID))"
-            guard let response = outcome.response, response.success else {
-                let detail = outcome.failure
-                    ?? outcome.response?.error
-                    ?? "no response"
-                failures.append("\(label): \(detail)")
+            let response: BridgeResponse
+            switch outcome.reply {
+            case .answered(let answer):
+                response = answer
+            case .unreachable(let detail):
+                failures.append("\(outcome.label): \(detail)")
+                continue
+            }
+
+            guard response.success else {
+                failures.append("\(outcome.label): \(response.error ?? "no reason given")")
                 continue
             }
             guard let raw = response.data?.stringValue,
                   let data = raw.data(using: .utf8),
                   let listing = try? JSONDecoder().decode([[String: AnyCodable]].self, from: data)
             else {
-                failures.append("\(label): unreadable tab listing")
+                failures.append("\(outcome.label): unreadable tab listing")
                 continue
             }
             for var tab in listing {

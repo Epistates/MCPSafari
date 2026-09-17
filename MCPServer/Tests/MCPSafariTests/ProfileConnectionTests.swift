@@ -398,10 +398,19 @@ struct ProfileConnectionTests {
             let results = try await outcomes
             #expect(results.map(\.index) == [0, 1])
             #expect(results.map(\.profileID) == ["default", "WORK-UUID"])
-            #expect(results[0].response?.success == true)
-            #expect(results[0].response?.data?.stringValue == "default tabs")
-            #expect(results[1].response?.success == false)
-            #expect(results[1].response?.error == "extension busy")
+            // Both profiles replied, so neither outcome is `.unreachable`. A
+            // refusal is still a reply, which is the distinction that keeps
+            // "the extension said no" apart from "nothing came back".
+            guard case .answered(let fromPersonal) = results[0].reply,
+                  case .answered(let fromWork) = results[1].reply
+            else {
+                Issue.record("Both profiles answered, so both replies should be .answered.")
+                return
+            }
+            #expect(fromPersonal.success == true)
+            #expect(fromPersonal.data?.stringValue == "default tabs")
+            #expect(fromWork.success == false)
+            #expect(fromWork.error == "extension busy")
 
             personal.cancel()
             work.cancel()
