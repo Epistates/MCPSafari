@@ -29,6 +29,7 @@ function loadBackground({ executeScript, page = {}, captureVisibleTab }) {
             get: async (id) => ({ id, active: true, windowId: 1 }),
             captureVisibleTab: captureVisibleTab ?? (async () => DATA_URL),
             onUpdated: { addListener() {}, removeListener() {} },
+            onRemoved: { addListener() {} },
             update: async () => {},
         },
     };

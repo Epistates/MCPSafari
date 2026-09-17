@@ -15,6 +15,49 @@ const RECONNECT_MAX_MS = 5000;
 const AUTO_CLEANUP_MS = 120_000;
 const DEFAULT_PROFILE_ID = "default";
 
+// ─── Website permission gating ───────────────────────────────────────
+//
+// Safari asks for website access with a modal dialog the first time the
+// extension touches an origin, and blocks every extension API for that tab
+// until the dialog is answered. The dialog can open behind another window,
+// where nobody knows it is there, so "blocked" lasts as long as it takes
+// someone to find it.
+//
+// Without a deadline that call rides the server's 30-second bridge timeout and
+// the agent is told the bridge timed out. That is not what happened, it is not
+// something a retry fixes, and it names none of the one action that would fix
+// it. So every tab-touching call is probed first with a cheap injection, and a
+// probe that stalls or fails becomes a named `permission_required`.
+//
+// `permissions.contains` cannot do this job on Safari: it reports what the
+// manifest asked for rather than what the user granted, so it answers true for
+// origins with no access. Probing with a real call is the only reliable test.
+const PERMISSION_PROBE_TIMEOUT_MS = 2000;
+// For gated calls that are quick when permitted and so can be deadlined
+// directly, without the extra round trip a probe costs.
+const PERMISSION_DEADLINE_MS = 10_000;
+// Listing tabs blocks on the same dialog, and no per-tab probe helps because
+// the block is not attributable to one tab. This only has to beat the bridge.
+const TAB_LISTING_TIMEOUT_MS = 15_000;
+// Long enough to spare the per-frame calls within one request a probe each,
+// short enough that granting access is picked up on the next retry.
+const PERMISSION_CACHE_MS = 2000;
+
+/** @type {Map<number, number>} tabId to when its last successful probe landed. */
+const tabAccessProbedAt = new Map();
+
+class DeadlineExceeded extends Error {}
+
+function withDeadline(promise, ms) {
+    let timer;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new DeadlineExceeded()), ms);
+        }),
+    ]).finally(() => clearTimeout(timer));
+}
+
 // ─── Multi-Connection State ──────────────────────────────────────────
 // All ports in the scan range (8089-8098) are initialized at startup.
 // The extension tries to connect to each — servers that exist get connected,
@@ -45,6 +88,77 @@ function toolErrorFromResponse(response) {
         ? response.recoveryAction
         : "inspect_error";
     return error;
+}
+
+// Two different situations, and the difference is the whole point: a dialog the
+// user has not seen yet, versus access they have already been refused. Both are
+// retryable, because in both cases a grant makes the same call work.
+function permissionRequiredError(origin, pending) {
+    const site = origin ? `this tab (${origin})` : "this tab";
+    const error = new Error(
+        pending
+            ? `MCPSafari needs the user to allow access to ${site}. Safari is showing a `
+              + `permission dialog that blocks every call for this tab until it is answered, and `
+              + `it can sit behind another window. Ask the user to find it and choose "Always `
+              + `Allow on This Website", then retry.`
+            : `MCPSafari is not allowed on ${site}. Ask the user to grant it from the MCPSafari `
+              + `button in Safari's toolbar, or in Safari Settings > Extensions > MCPSafari `
+              + `Extension, where "Always Allow on Every Website" also stops the per-site `
+              + `asking. Then retry.`
+    );
+    error.code = "permission_required";
+    error.retryable = true;
+    error.recoveryAction = "ask_user";
+    return error;
+}
+
+// Best effort, and deliberately not fatal: the origin only sharpens the message,
+// and reading it goes through the same APIs that may already be blocked.
+async function originOfTab(tabId) {
+    try {
+        const tab = await withDeadline(browser.tabs.get(tabId), PERMISSION_PROBE_TIMEOUT_MS);
+        return tab && tab.url ? new URL(tab.url).origin : null;
+    } catch {
+        return null;
+    }
+}
+
+// For a call that is already permission-gated and already expected to be quick.
+// Cheaper than a probe, since it adds no round trip, but only safe where the
+// operation has no legitimate reason to run long.
+async function withPermissionDeadline(promise, tabId, ms = PERMISSION_DEADLINE_MS) {
+    try {
+        return await withDeadline(promise, ms);
+    } catch (err) {
+        if (!(err instanceof DeadlineExceeded)) throw err;
+        throw permissionRequiredError(await originOfTab(tabId), true);
+    }
+}
+
+// Injected into the tab to prove it can be reached at all, so it must not close
+// over anything here. Named rather than inline so a caller reading a trace can
+// tell a probe from real work.
+function probeTabAccess() {
+    return true;
+}
+
+// Cheapest call that proves the extension can actually reach this tab. It also
+// raises Safari's dialog when there is no decision yet, which is wanted: the
+// user cannot answer a question nobody asked.
+async function ensureTabAccess(tabId) {
+    const probedAt = tabAccessProbedAt.get(tabId);
+    if (probedAt !== undefined && Date.now() - probedAt < PERMISSION_CACHE_MS) return;
+
+    try {
+        await withDeadline(
+            browser.scripting.executeScript({ target: { tabId }, func: probeTabAccess }),
+            PERMISSION_PROBE_TIMEOUT_MS
+        );
+        tabAccessProbedAt.set(tabId, Date.now());
+    } catch (err) {
+        tabAccessProbedAt.delete(tabId);
+        throw permissionRequiredError(await originOfTab(tabId), err instanceof DeadlineExceeded);
+    }
 }
 
 function failureResponse(id, error) {
@@ -380,7 +494,17 @@ function redactUrlSecrets(url) {
 }
 
 async function handleTabsQuery() {
-    const tabs = await browser.tabs.query({});
+    // One tab awaiting a permission decision is enough to hold up the whole
+    // listing, and there is no probe that helps because the block belongs to no
+    // single tab here. Failing with the reason beats the bridge timing out with
+    // none, and this is the call every session starts with.
+    let tabs;
+    try {
+        tabs = await withDeadline(browser.tabs.query({}), TAB_LISTING_TIMEOUT_MS);
+    } catch (err) {
+        if (!(err instanceof DeadlineExceeded)) throw err;
+        throw permissionRequiredError(null, true);
+    }
     return tabs.map((t) => ({
         id: t.id,
         url: redactUrlSecrets(t.url),
@@ -682,9 +806,14 @@ async function handleScreenshot(params) {
         })
         : null;
     const context = await capturePageContext(tabId);
-    const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, {
-        format: "png",
-    });
+    // Deliberately not `ensureTabAccess`: the context read above is allowed to
+    // fail and still produce a picture, and a probe would turn that graceful
+    // degradation into a refusal. A capture is sub-second when it is permitted
+    // at all, so a deadline here separates "blocked on the dialog" from "slow".
+    const dataUrl = await withPermissionDeadline(
+        browser.tabs.captureVisibleTab(tab.windowId, { format: "png" }),
+        tabId
+    );
 
     return {
         // Raw base64, data URI prefix stripped
@@ -750,6 +879,7 @@ function evaluateUserCode(code) {
 
 async function handleJavaScript(params) {
     const tabId = params.tabId || (await getActiveTabId());
+    await ensureTabAccess(tabId);
     const runIn = async (world) => {
         const results = await browser.scripting.executeScript({
             target: { tabId },
@@ -976,6 +1106,10 @@ const FRAME_SEARCHING_ACTIONS = new Set([
 
 async function sendToContentScript(tabId, message, frameId = 0) {
     const resolvedTabId = tabId || (await getActiveTabId());
+    // Before anything that can block on Safari's permission dialog. `wait` and
+    // other long actions are unaffected: the probe is separate and short, and
+    // the action keeps its own timing once access is established.
+    await ensureTabAccess(resolvedTabId);
     // The frame learns its own id from the request it is answering.
     message = { ...message, frameId };
     const options = { frameId };
@@ -1065,6 +1199,12 @@ function delay(ms) {
 }
 
 // ─── Message Listener (from popup or content scripts) ────────────────
+
+// Entries expire on their own, but a long-lived background page would otherwise
+// accumulate one per tab ever touched.
+browser.tabs.onRemoved.addListener((tabId) => {
+    tabAccessProbedAt.delete(tabId);
+});
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "refreshConnections") {

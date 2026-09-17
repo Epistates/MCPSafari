@@ -44,7 +44,10 @@ function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
         scripting: {
             // A world whose CSP forbids 'unsafe-eval' refuses to compile a
             // string, which is what `new Function` does inside the injected code.
-            executeScript: async ({ func, args, world }) => {
+            // `args` is optional in the real API, and the permission probe omits
+            // it, so spreading it unguarded would fail the probe rather than the
+            // call under test.
+            executeScript: async ({ func, args = [], world }) => {
                 if (!cspBlockedWorlds.includes(world)) {
                     return [{ result: await func(...args) }];
                 }
@@ -67,6 +70,7 @@ function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
         tabs: {
             get: async () => { throw new Error("not found"); },
             onUpdated: { addListener() {}, removeListener() {} },
+            onRemoved: { addListener() {} },
         },
     };
 
