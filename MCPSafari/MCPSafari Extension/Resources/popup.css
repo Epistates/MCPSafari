@@ -27,6 +27,63 @@ body {
     letter-spacing: 0;
 }
 
+/* ─── This site ───────────────────────────────────── */
+
+.site {
+    margin-bottom: 10px;
+}
+
+.site:empty {
+    display: none;
+}
+
+.site-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.06);
+    background: -apple-system-quaternary-fill;
+}
+
+.site-host {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+}
+
+.site-state {
+    flex: none;
+    font-size: 11px;
+    color: CanvasText;
+    color: -apple-system-secondary-label;
+}
+
+.site-state.allowed {
+    color: #137333;
+}
+
+.site-state.blocked {
+    color: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+    .site-state.allowed { color: #62d482; }
+    .site-state.blocked { color: #f2b8b5; }
+}
+
+.site-hint {
+    margin: 6px 2px 0;
+    font-size: 11px;
+    line-height: 1.35;
+    color: CanvasText;
+    color: -apple-system-secondary-label;
+}
+
 /* ─── Connection rows ─────────────────────────────── */
 
 #connections {
