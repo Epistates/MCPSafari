@@ -116,10 +116,23 @@ actor WebSocketBridge {
     /// thrown, because one profile refusing a read is not a reason to withhold
     /// what the others returned.
     struct ProfileOutcome: Sendable {
+        /// Answered and unreachable are the only two ways this ends, so they are
+        /// the only two it can hold. A `BridgeResponse?` beside a `String?` could
+        /// also be both at once, or neither, and every reader had to decide what
+        /// those meant.
+        enum Reply: Sendable {
+            /// The profile replied. The reply can still carry a refusal.
+            case answered(BridgeResponse)
+            /// Nothing came back: a timeout, a dropped connection, a send that threw.
+            case unreachable(String)
+        }
+
         let index: Int
         let profileID: String
-        let response: BridgeResponse?
-        let failure: String?
+        let reply: Reply
+
+        /// How a profile is named in anything a user reads, e.g. `p1 (WORK-UUID)`.
+        var label: String { "p\(index) (\(profileID))" }
     }
 
     struct Status: Codable, Equatable {
@@ -641,12 +654,12 @@ actor WebSocketBridge {
                         )
                         return ProfileOutcome(
                             index: target.index, profileID: target.id,
-                            response: response, failure: nil
+                            reply: .answered(response)
                         )
                     } catch {
                         return ProfileOutcome(
                             index: target.index, profileID: target.id,
-                            response: nil, failure: "\(error)"
+                            reply: .unreachable("\(error)")
                         )
                     }
                 }
