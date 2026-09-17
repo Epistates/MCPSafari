@@ -153,6 +153,16 @@ So a tool that needs a page it has not been granted fails with `permission_requi
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
 
+### Results
+
+Every result carries the same answer twice: readable text in `content`, and the same payload as data in `structuredContent` for anything that needs to branch on it rather than parse prose.
+
+The structured half is always a JSON object with one named key, because the protocol revision this server negotiates requires that. The key says what the payload is: `snapshot`, `matches` (`find`), `messages` (`read_console`), `requests` (`read_network`), `page` (`read_page`), `tab`, `window`, `result` (`javascript_tool`), `wait`, `screenshot`.
+
+Text that is not JSON stays text. `read_page` with `format: "text"` returns whatever the page says, including a page whose entire content is `42` or `null`, and those come back as the strings they are rather than retyped.
+
+No `outputSchema` is declared for these yet. Clients that hold one reject any result that does not match it, which would make every later shape change a hard break while the tool surface is still settling. Treat `structuredContent` as stable in spirit and not yet contractual; read `content` if you want the safer of the two.
+
 ### Failures
 
 Every tool failure carries a stable `code`, a human-readable `message`, a `retryable` flag, and a `recoveryAction` naming what to do next:
