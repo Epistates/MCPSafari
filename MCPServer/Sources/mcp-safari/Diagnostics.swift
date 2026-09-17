@@ -228,7 +228,13 @@ enum Doctor {
             recovery: "Reinstall MCPSafari.app."
         ))
 
-        let extensionVersion = bundleVersion(at: extensionURL)
+        // Safari runs whichever bundle PlugInKit registered, and that is not
+        // always the one inside the installed app. Reading the version from the
+        // installed copy reports a match while Safari runs something else, which
+        // is how a stale build stays invisible: every check passes and the wrong
+        // extension is driving. Ask the bundle Safari actually loaded.
+        let runningExtensionURL = registeredExtensionPath.map(URL.init(fileURLWithPath:)) ?? extensionURL
+        let extensionVersion = bundleVersion(at: runningExtensionURL)
         if extensionInstalled {
             checks.append(versionCheck(
                 code: "extension_version",
@@ -266,18 +272,26 @@ enum Doctor {
         // debug build is sitting in DerivedData, and because neighbouring
         // versions share a bridge protocol the handshake accepts it. The result
         // is an old extension driving a current server with nothing to say so.
-        if let registeredExtensionPath, !registeredExtensionPath.isEmpty {
+        //
+        // Only when an app is actually installed where we expect one. Someone
+        // running MCPSafari.app from somewhere else entirely is already being
+        // told that by `app_installed`, and a second warning saying the same
+        // thing in different words helps nobody. The case worth flagging is the
+        // confusing one: the app is installed, and Safari is running something
+        // else anyway.
+        if appInstalled, let registeredExtensionPath, !registeredExtensionPath.isEmpty {
             let isInstalledCopy = registeredExtensionPath.hasPrefix(paths.appURL.path + "/")
             checks.append(.init(
                 code: "extension_location",
                 status: isInstalledCopy ? .ok : .warning,
                 message: isInstalledCopy
                     ? "Safari is using the installed extension."
-                    : "Safari is using an extension from outside \(paths.appURL.path): \(registeredExtensionPath).",
+                    : "MCPSafari.app is installed, but Safari is running the extension from "
+                      + "\(registeredExtensionPath) instead.",
                 recovery: isInstalledCopy
                     ? nil
-                    : "That build can be any version. Reinstall the app, open it once so PlugInKit "
-                      + "re-registers, then reopen Safari."
+                    : "That build can be any version. Open \(paths.appURL.path) once so PlugInKit "
+                      + "re-registers it, then reopen Safari."
             ))
         }
 

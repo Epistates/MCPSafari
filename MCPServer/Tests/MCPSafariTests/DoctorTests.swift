@@ -218,29 +218,39 @@ struct DoctorTests {
     /// versions share a bridge protocol the handshake accepts it, so nothing
     /// else in the product notices. This is the check that does.
     @Test func doctorFlagsAnExtensionLoadedFromOutsideTheInstalledApp() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appURL = root.appendingPathComponent("MCPSafari.app")
+        try writeBundle(at: appURL, identifier: "com.epistates.MCPSafari")
+        let installedExtension = appURL
+            .appendingPathComponent("Contents/PlugIns")
+            .appendingPathComponent("MCPSafari Extension.appex")
+        try writeBundle(at: installedExtension, identifier: MCPSafariProduct.extensionBundleIdentifier)
+
         let paths = DoctorPaths(
             executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
-            appURL: URL(fileURLWithPath: "/Applications/MCPSafari.app"),
-            tokenDirectoryURL: URL(fileURLWithPath: "/tmp/tokens")
+            appURL: appURL,
+            tokenDirectoryURL: root.appendingPathComponent("tokens")
         )
+        let strayBuild = root.appendingPathComponent("DerivedData/Debug/MCPSafari.app/Contents/PlugIns")
+            .appendingPathComponent("MCPSafari Extension.appex")
 
         let stale = Doctor.inspect(
             paths: paths,
             port: 8089,
             extensionRegistered: true,
-            registeredExtensionPath: "/Users/someone/Library/Developer/Xcode/DerivedData/MCPSafari-abc"
-                + "/Build/Products/Debug/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+            registeredExtensionPath: strayBuild.path
         )
         let flagged = stale.checks.first { $0.code == "extension_location" }
         #expect(flagged?.status == .warning)
         #expect(flagged?.message.contains("DerivedData") == true)
-        #expect(flagged?.recovery?.contains("Reinstall") == true)
 
         let installed = Doctor.inspect(
             paths: paths,
             port: 8089,
             extensionRegistered: true,
-            registeredExtensionPath: "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+            registeredExtensionPath: installedExtension.path
         )
         #expect(installed.checks.first { $0.code == "extension_location" }?.status == .ok)
 
@@ -248,6 +258,72 @@ struct DoctorTests {
         // check stays quiet rather than inventing a warning.
         let unknown = Doctor.inspect(paths: paths, port: 8089, extensionRegistered: true)
         #expect(unknown.checks.contains { $0.code == "extension_location" } == false)
+    }
+
+    /// The version check read the installed bundle rather than the one Safari
+    /// loaded, so a stale build reported a clean match and the real mismatch
+    /// stayed invisible. That is what made the DerivedData fallback silent.
+    @Test func theVersionCheckReadsTheBundleSafariActuallyLoaded() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appURL = root.appendingPathComponent("MCPSafari.app")
+        try writeBundle(at: appURL, identifier: "com.epistates.MCPSafari")
+        let installedExtension = appURL
+            .appendingPathComponent("Contents/PlugIns")
+            .appendingPathComponent("MCPSafari Extension.appex")
+        // The installed copy is current, so reading it would report all clear.
+        try writeBundle(at: installedExtension, identifier: MCPSafariProduct.extensionBundleIdentifier)
+
+        let strayBuild = root.appendingPathComponent("DerivedData/MCPSafari.app/Contents/PlugIns")
+            .appendingPathComponent("MCPSafari Extension.appex")
+        try writeBundle(
+            at: strayBuild,
+            identifier: MCPSafariProduct.extensionBundleIdentifier,
+            version: "0.0.1"
+        )
+
+        let report = Doctor.inspect(
+            paths: DoctorPaths(
+                executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
+                appURL: appURL,
+                tokenDirectoryURL: root.appendingPathComponent("tokens")
+            ),
+            port: 8089,
+            extensionRegistered: true,
+            registeredExtensionPath: strayBuild.path
+        )
+
+        let version = report.checks.first { $0.code == "extension_version" }
+        #expect(version?.status == .error)
+        #expect(version?.message.contains("0.0.1") == true)
+        #expect(report.overall == .error)
+    }
+
+    /// Someone running the app from somewhere other than /Applications is
+    /// already told so by `app_installed`. Saying it twice in different words
+    /// would make doctor noisier for people who have done nothing wrong.
+    @Test func anAppInstalledElsewhereIsNotWarnedAboutTwice() {
+        // A path under a fresh temp root, so this does not quietly depend on
+        // whether the machine running the tests happens to have the app.
+        let absent = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("MCPSafari.app")
+
+        let report = Doctor.inspect(
+            paths: DoctorPaths(
+                executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
+                appURL: absent,
+                tokenDirectoryURL: URL(fileURLWithPath: "/tmp/tokens")
+            ),
+            port: 8089,
+            extensionRegistered: true,
+            registeredExtensionPath: "/Users/someone/Applications/MCPSafari.app/Contents/PlugIns"
+                + "/MCPSafari Extension.appex"
+        )
+
+        #expect(report.checks.first { $0.code == "app_installed" }?.status == .error)
+        #expect(report.checks.contains { $0.code == "extension_location" } == false)
     }
 
     /// The bundle path is the tail of the line and contains a space, so anything
