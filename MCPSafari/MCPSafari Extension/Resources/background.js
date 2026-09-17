@@ -36,9 +36,13 @@ const PERMISSION_PROBE_TIMEOUT_MS = 2000;
 // For gated calls that are quick when permitted and so can be deadlined
 // directly, without the extra round trip a probe costs.
 const PERMISSION_DEADLINE_MS = 10_000;
-// Listing tabs blocks on the same dialog, and no per-tab probe helps because
-// the block is not attributable to one tab. This only has to beat the bridge.
-const TAB_LISTING_TIMEOUT_MS = 15_000;
+// Listing tabs blocks on the same dialog, and no per-tab probe helps because the
+// block is not attributable to one tab. Measured against real Safari, a listing
+// held up this way still completes, in around nine seconds, so this sits just
+// under the bridge timeout rather than anywhere near that. A deadline tight
+// enough to catch the slow case turns a listing that would have arrived into a
+// failure, and tabs_context is the call every session starts with.
+const TAB_LISTING_TIMEOUT_MS = 25_000;
 // Long enough to spare the per-frame calls within one request a probe each,
 // short enough that granting access is picked up on the next retry.
 const PERMISSION_CACHE_MS = 2000;
@@ -152,6 +156,12 @@ async function ensureTabAccess(tabId) {
     const probedAt = tabAccessProbedAt.get(tabId);
     if (probedAt !== undefined && Date.now() - probedAt < PERMISSION_CACHE_MS) return;
 
+    // Read the origin first. The probe below is what raises Safari's dialog, and
+    // once that dialog is up `tabs.get` blocks on it as well, so asking
+    // afterwards returns nothing and the refusal cannot name the site it is
+    // about. Measured against real Safari, which is the only place this shows.
+    const origin = await originOfTab(tabId);
+
     try {
         await withDeadline(
             browser.scripting.executeScript({ target: { tabId }, func: probeTabAccess }),
@@ -160,7 +170,7 @@ async function ensureTabAccess(tabId) {
         tabAccessProbedAt.set(tabId, Date.now());
     } catch (err) {
         tabAccessProbedAt.delete(tabId);
-        throw permissionRequiredError(await originOfTab(tabId), err instanceof DeadlineExceeded);
+        throw permissionRequiredError(origin, err instanceof DeadlineExceeded);
     }
 }
 
@@ -789,6 +799,11 @@ async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000, noNavigationT
 async function handleScreenshot(params) {
     requireTopFrameTarget(params, SCREENSHOT_TOP_FRAME_ONLY);
     const tabId = params.tabId || (await getActiveTabId());
+    // Before the `tabs.get` below, which blocks on Safari's dialog just like the
+    // capture does. Deadlining only the capture left this line to absorb the
+    // whole wait, so a blocked screenshot still took the full bridge timeout and
+    // still reported the wrong reason.
+    await ensureTabAccess(tabId);
     const tab = await browser.tabs.get(tabId);
 
     // captureVisibleTab captures the active tab in a window
