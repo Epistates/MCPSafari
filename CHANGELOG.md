@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Bug Fixes
+- Touching a site Safari has not been asked about no longer hangs for 30 seconds. Safari asks for website access with a modal dialog and blocks every extension call for that tab until it is answered, and that dialog can open behind another window where nobody knows it exists. Every tool rode that out to the server's 30-second bridge timeout and then reported `bridge_timeout`, which is not what happened and is not something a retry fixes. Tab-touching calls are now probed first with a trivial injection, so a blocked tab fails in about two seconds with `permission_required`, the origin, and the fact that the dialog may be hidden. A blocked `tabs_context` and `screenshot` report the same way. `permissions.contains` is deliberately not used for this: on Safari it reports what the manifest asked for rather than what the user granted, so it answers true for origins with no access.
+
 ### Added
 - Every connected Safari profile is drivable. `tabs_context` now asks all of them and returns one merged listing, and each tool call goes to the profile its tab handle names. A profile that fails to answer `tabs_context` is named in the result rather than dropped, so a short listing is not mistaken for a closed tab. `status` gains a `handle` (`p0`) and a `selected` flag per profile, and `select_tab` moves the selection; it falls through to another profile if the pinned one goes away, so closing a window does not break calls that name no tab. Naming a profile that is not connected fails with `profile_not_connected` rather than answering from a different browser window.
 

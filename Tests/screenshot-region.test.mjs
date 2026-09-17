@@ -24,7 +24,14 @@ function loadBackground({ contentReply }) {
             sendNativeMessage: async () => ({ tokens: {} }),
         },
         scripting: {
-            executeScript: async () => {
+            // The website-permission probe and the page-context read both land
+            // here. Logging them apart keeps the ordering assertions about the
+            // capture rather than about the probe.
+            executeScript: async ({ func } = {}) => {
+                if (func && func.name === "probeTabAccess") {
+                    log.push("probe");
+                    return [{ result: true }];
+                }
                 log.push("context");
                 return [{ result: { visible: true, hasFocus: true } }];
             },
@@ -44,6 +51,7 @@ function loadBackground({ contentReply }) {
                 return contentReply(message);
             },
             onUpdated: { addListener() {}, removeListener() {} },
+            onRemoved: { addListener() {} },
             update: async () => {},
         },
     };
@@ -70,7 +78,9 @@ test("screenshot with uid asks the content script for the element rect before th
 
     const capture = await evaluate('handleScreenshot({ tabId: 1, uid: "e7" })');
 
-    assert.deepEqual(log, ["content:element_rect", "context", "capture"]);
+    // The probe precedes the first content call, because reaching the content
+    // script is exactly what it establishes.
+    assert.deepEqual(log, ["probe", "content:element_rect", "context", "capture"]);
     assert.equal(capture.image, "AAAB");
     assert.equal(capture.target.x, 10);
     assert.equal(capture.target.height, 40);
@@ -102,7 +112,9 @@ test("a content-script rect error fails the screenshot with its code", async () 
         assert.equal(err.code, "stale_uid");
         return true;
     });
-    assert.deepEqual(log, ["content:element_rect"]);
+    // Nothing is captured after the content script refuses, and the probe is the
+    // only thing that ran before it.
+    assert.deepEqual(log, ["probe", "content:element_rect"]);
 });
 
 // Content harness: one element, resolvable by selector, with a controllable rect.

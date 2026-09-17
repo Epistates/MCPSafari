@@ -64,6 +64,7 @@ function backgroundHarness(contentResponse) {
             get: async () => ({ id: 1, windowId: 7 }),
             sendMessage: async () => contentResponses.shift(),
             update: async (...args) => { tabUpdates.push(args); },
+            onRemoved: { addListener() {} },
         },
         windows: {
             update: async (...args) => { windowUpdates.push(args); },
@@ -74,7 +75,9 @@ function backgroundHarness(contentResponse) {
         browser,
         console: { error() {}, log() {}, warn() {} },
         Promise,
-        setTimeout: (callback) => callback(),
+        // Short waits run inline so the handlers progress; the permission
+        // deadline must not, or every gated call fails as though it stalled.
+        setTimeout: (callback, ms) => { if ((ms || 0) <= 200) callback(); return 0; },
         clearTimeout() {},
         WebSocket: class { static OPEN = 1; static CONNECTING = 0; },
     });

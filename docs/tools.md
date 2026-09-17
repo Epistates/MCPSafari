@@ -142,6 +142,32 @@ No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is
 
 Three limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `screenshot` refuses a `uid` or `selector` inside an iframe for the same reason. `read_console` and `read_network` report the top frame only.
 
+### Website access
+
+Safari grants extensions access one site at a time, and it asks the first time MCPSafari touches a site it has no answer for. That question is a modal dialog, and **it can open behind another window**. While it is unanswered, every extension call for that tab is blocked.
+
+So a tool that needs a page it has not been granted fails with `permission_required` rather than waiting. There are two versions of it, and the difference matters:
+
+- The dialog is open and waiting. The message says so and names the origin. Tell the user to look for the dialog, including behind other windows, and choose **Always Allow on This Website** or **Allow for One Day**.
+- Access was refused, or was never asked for on this origin. Tell the user to grant it from the MCPSafari button in Safari's toolbar, or in Safari Settings > Extensions > MCPSafari Extension.
+
+Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
+
+### Failures
+
+Every tool failure carries a stable `code`, a human-readable `message`, a `retryable` flag, and a `recoveryAction` naming what to do next:
+
+| `recoveryAction` | Meaning |
+|-|-|
+| `fix_input` | The arguments were wrong. Correct them and call again. |
+| `retry` | Transient. The same call may work. |
+| `ask_user` | Needs a person: grant website access, or allow Safari to come to the front. |
+| `call_status` | Check `status` for the bridge, the connected profiles, and token health. |
+| `list_tools` | The tool name is not one this server has. |
+| `inspect_error` | Nothing automatic to do; read the message. |
+| `inspect_batch_result` | A `run_steps` batch stopped partway; read the per-step results. |
+| `grant_accessibility_to_mcp_client` | Native input needs Accessibility for the app running `mcp-safari`. |
+
 ### Safari profiles
 
 Every enabled profile is driven from the same server. `tabs_context` asks all of them and returns one merged listing, and each tool call goes to the profile its handle names.

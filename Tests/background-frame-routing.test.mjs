@@ -40,6 +40,7 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
                 return respond(frameId, message);
             },
             onUpdated: { addListener() {}, removeListener() {} },
+            onRemoved: { addListener() {} },
         },
         webNavigation: { getAllFrames: async () => frames },
         windows: { update: async () => {} },

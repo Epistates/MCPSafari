@@ -33,6 +33,7 @@ function loadBackground() {
             update: async () => {},
             reload: async () => {},
             onUpdated: { addListener() {}, removeListener() {} },
+            onRemoved: { addListener() {} },
         },
         windows: { update: async () => {} },
     };

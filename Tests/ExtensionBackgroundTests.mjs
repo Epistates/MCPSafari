@@ -60,6 +60,7 @@ function backgroundHarness(initialTokens, { profile } = {}) {
         tabs: {
             get: async () => { throw new Error("not found"); },
             onUpdated: { addListener() {}, removeListener() {} },
+            onRemoved: { addListener() {} },
         },
     };
 
