@@ -237,19 +237,27 @@ actor WebSocketBridge {
     /// repo — which puts the real file outside the granted path and makes it
     /// unreadable. `~/Library/Application Support` is effectively never
     /// symlinked, so tokens live there.
+    ///
+    /// Every component below says whether it is a directory. The one-argument
+    /// `appendingPathComponent` asks the filesystem instead, and appends a
+    /// trailing slash only for a path that already exists, so these constants
+    /// would otherwise hold a different value depending on whether anything had
+    /// created the directory before the first read. They are compared for
+    /// equality in tests, and two URLs differing only by that slash are not
+    /// equal.
     static let applicationSupportDirectoryURL: URL = {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Application Support")
-            .appendingPathComponent("MCPSafari")
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("MCPSafari", isDirectory: true)
     }()
 
     /// Legacy token root, still written so extension builds that predate the
     /// move keep authenticating.
     static let configDirectoryURL: URL = {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config")
-            .appendingPathComponent("mcp-safari")
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("mcp-safari", isDirectory: true)
     }()
 
     /// Token roots to populate, most preferred first.
@@ -257,15 +265,15 @@ actor WebSocketBridge {
 
     /// Directory where per-port auth tokens are written for the extension to read.
     static let tokenDirectoryURL: URL = applicationSupportDirectoryURL
-        .appendingPathComponent("tokens")
+        .appendingPathComponent("tokens", isDirectory: true)
 
     /// Legacy single-token path kept for older extension builds.
     static let legacyTokenFilePath: String = configDirectoryURL
-        .appendingPathComponent("token")
+        .appendingPathComponent("token", isDirectory: false)
         .path
 
     static func tokenFilePath(for port: UInt16) -> String {
-        tokenDirectoryURL.appendingPathComponent(String(port)).path
+        tokenDirectoryURL.appendingPathComponent(String(port), isDirectory: false).path
     }
 
     enum BridgeError: Error, CustomStringConvertible {
@@ -448,19 +456,19 @@ actor WebSocketBridge {
 
     private func writeToken(for port: UInt16, under root: URL) throws {
         let fileManager = FileManager.default
-        let tokenDirectory = root.appendingPathComponent("tokens")
+        let tokenDirectory = root.appendingPathComponent("tokens", isDirectory: true)
 
         try fileManager.createDirectory(at: tokenDirectory, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenDirectory.path)
 
-        let tokenFilePath = tokenDirectory.appendingPathComponent(String(port)).path
+        let tokenFilePath = tokenDirectory.appendingPathComponent(String(port), isDirectory: false).path
         try authToken.write(toFile: tokenFilePath, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFilePath)
 
         // Keep the single-token path populated for older extension builds.
         // Current builds prefer the per-port map and avoid its rewrite race.
-        let singleTokenPath = root.appendingPathComponent("token").path
+        let singleTokenPath = root.appendingPathComponent("token", isDirectory: false).path
         try authToken.write(toFile: singleTokenPath, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: singleTokenPath)
     }

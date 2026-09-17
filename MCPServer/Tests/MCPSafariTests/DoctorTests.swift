@@ -213,6 +213,132 @@ struct DoctorTests {
         #expect(report.checks.first { $0.code == "token_file" }?.status == .warning)
     }
 
+    /// Safari's own Uninstall button deletes the app, and PlugInKit then falls
+    /// back to whatever debug build is in DerivedData. Since neighbouring
+    /// versions share a bridge protocol the handshake accepts it, so nothing
+    /// else in the product notices. This is the check that does.
+    @Test func doctorFlagsAnExtensionLoadedFromOutsideTheInstalledApp() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appURL = root.appendingPathComponent("MCPSafari.app")
+        try writeBundle(at: appURL, identifier: "com.epistates.MCPSafari")
+        let installedExtension = appURL
+            .appendingPathComponent("Contents/PlugIns")
+            .appendingPathComponent("MCPSafari Extension.appex")
+        try writeBundle(at: installedExtension, identifier: MCPSafariProduct.extensionBundleIdentifier)
+
+        let paths = DoctorPaths(
+            executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
+            appURL: appURL,
+            tokenDirectoryURL: root.appendingPathComponent("tokens")
+        )
+        let strayBuild = root.appendingPathComponent("DerivedData/Debug/MCPSafari.app/Contents/PlugIns")
+            .appendingPathComponent("MCPSafari Extension.appex")
+
+        let stale = Doctor.inspect(
+            paths: paths,
+            port: 8089,
+            extensionRegistered: true,
+            registeredExtensionPath: strayBuild.path
+        )
+        let flagged = stale.checks.first { $0.code == "extension_location" }
+        #expect(flagged?.status == .warning)
+        #expect(flagged?.message.contains("DerivedData") == true)
+
+        let installed = Doctor.inspect(
+            paths: paths,
+            port: 8089,
+            extensionRegistered: true,
+            registeredExtensionPath: installedExtension.path
+        )
+        #expect(installed.checks.first { $0.code == "extension_location" }?.status == .ok)
+
+        // A path PlugInKit would not give us is not evidence of anything, so the
+        // check stays quiet rather than inventing a warning.
+        let unknown = Doctor.inspect(paths: paths, port: 8089, extensionRegistered: true)
+        #expect(unknown.checks.contains { $0.code == "extension_location" } == false)
+    }
+
+    /// The version check read the installed bundle rather than the one Safari
+    /// loaded, so a stale build reported a clean match and the real mismatch
+    /// stayed invisible. That is what made the DerivedData fallback silent.
+    @Test func theVersionCheckReadsTheBundleSafariActuallyLoaded() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appURL = root.appendingPathComponent("MCPSafari.app")
+        try writeBundle(at: appURL, identifier: "com.epistates.MCPSafari")
+        let installedExtension = appURL
+            .appendingPathComponent("Contents/PlugIns")
+            .appendingPathComponent("MCPSafari Extension.appex")
+        // The installed copy is current, so reading it would report all clear.
+        try writeBundle(at: installedExtension, identifier: MCPSafariProduct.extensionBundleIdentifier)
+
+        let strayBuild = root.appendingPathComponent("DerivedData/MCPSafari.app/Contents/PlugIns")
+            .appendingPathComponent("MCPSafari Extension.appex")
+        try writeBundle(
+            at: strayBuild,
+            identifier: MCPSafariProduct.extensionBundleIdentifier,
+            version: "0.0.1"
+        )
+
+        let report = Doctor.inspect(
+            paths: DoctorPaths(
+                executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
+                appURL: appURL,
+                tokenDirectoryURL: root.appendingPathComponent("tokens")
+            ),
+            port: 8089,
+            extensionRegistered: true,
+            registeredExtensionPath: strayBuild.path
+        )
+
+        let version = report.checks.first { $0.code == "extension_version" }
+        #expect(version?.status == .error)
+        #expect(version?.message.contains("0.0.1") == true)
+        #expect(report.overall == .error)
+    }
+
+    /// Someone running the app from somewhere other than /Applications is
+    /// already told so by `app_installed`. Saying it twice in different words
+    /// would make doctor noisier for people who have done nothing wrong.
+    @Test func anAppInstalledElsewhereIsNotWarnedAboutTwice() {
+        // A path under a fresh temp root, so this does not quietly depend on
+        // whether the machine running the tests happens to have the app.
+        let absent = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("MCPSafari.app")
+
+        let report = Doctor.inspect(
+            paths: DoctorPaths(
+                executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
+                appURL: absent,
+                tokenDirectoryURL: URL(fileURLWithPath: "/tmp/tokens")
+            ),
+            port: 8089,
+            extensionRegistered: true,
+            registeredExtensionPath: "/Users/someone/Applications/MCPSafari.app/Contents/PlugIns"
+                + "/MCPSafari Extension.appex"
+        )
+
+        #expect(report.checks.first { $0.code == "app_installed" }?.status == .error)
+        #expect(report.checks.contains { $0.code == "extension_location" } == false)
+    }
+
+    /// The bundle path is the tail of the line and contains a space, so anything
+    /// that splits on whitespace truncates it to "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari".
+    @Test func theRegisteredPathSurvivesTheSpaceInItsName() {
+        let output = "     com.epistates.MCPSafari.Extension(0.3.2)\t8AC12B3C-1B4B\t2026-09-16 23:56:34 +0000"
+            + "\t/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex\n (1 plug-in)\n"
+
+        #expect(
+            Doctor.parseExtensionPath(from: output)
+                == "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+        )
+        #expect(Doctor.parseExtensionPath(from: " (0 plug-ins)\n") == nil)
+    }
+
     private func writeBundle(
         at url: URL,
         identifier: String,
