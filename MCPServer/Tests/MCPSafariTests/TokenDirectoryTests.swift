@@ -65,9 +65,14 @@ struct TokenDirectoryTests {
     @Test func applicationSupportIsThePreferredTokenRoot() {
         #expect(WebSocketBridge.tokenRootURLs.first == WebSocketBridge.applicationSupportDirectoryURL)
         #expect(WebSocketBridge.tokenRootURLs.contains(WebSocketBridge.configDirectoryURL))
+        // Compared as paths on purpose. URL equality also compares the trailing
+        // slash, and the one-argument `appendingPathComponent` decides that by
+        // asking the filesystem, so a URL comparison here passes or fails on
+        // whether the directory happens to exist yet.
         #expect(
-            WebSocketBridge.tokenDirectoryURL
-                == WebSocketBridge.applicationSupportDirectoryURL.appendingPathComponent("tokens")
+            WebSocketBridge.tokenDirectoryURL.path
+                == WebSocketBridge.applicationSupportDirectoryURL
+                    .appendingPathComponent("tokens", isDirectory: true).path
         )
         #expect(WebSocketBridge.tokenDirectoryURL.path.contains("Library/Application Support/MCPSafari"))
         #expect(!WebSocketBridge.tokenDirectoryURL.path.contains(".config"))
