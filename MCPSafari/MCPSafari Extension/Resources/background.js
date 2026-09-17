@@ -97,13 +97,14 @@ function permissionRequiredError(origin, pending) {
     const site = origin ? `this tab (${origin})` : "this tab";
     const error = new Error(
         pending
-            ? `Safari is asking the user whether to allow MCPSafari on ${site}, and every `
-              + `extension call for the tab is blocked until they answer. Safari's permission `
-              + `dialog can open behind another window, so tell the user to look for it, then `
-              + `choose "Always Allow on This Website" or "Allow for One Day" and retry.`
-            : `MCPSafari does not have access to ${site}. Tell the user to grant it from the `
-              + `MCPSafari button in Safari's toolbar, or in Safari Settings > Extensions > `
-              + `MCPSafari Extension, then retry.`
+            ? `MCPSafari needs the user to allow access to ${site}. Safari is showing a `
+              + `permission dialog that blocks every call for this tab until it is answered, and `
+              + `it can sit behind another window. Ask the user to find it and choose "Always `
+              + `Allow on This Website", then retry.`
+            : `MCPSafari is not allowed on ${site}. Ask the user to grant it from the MCPSafari `
+              + `button in Safari's toolbar, or in Safari Settings > Extensions > MCPSafari `
+              + `Extension, where "Always Allow on Every Website" also stops the per-site `
+              + `asking. Then retry.`
     );
     error.code = "permission_required";
     error.retryable = true;

@@ -119,6 +119,9 @@ test("a probe parked on the permission dialog becomes a named refusal", async ()
     assert.match(err.message, /https:\/\/blocked\.example/);
     assert.match(err.message, /behind another window/);
     assert.match(err.message, /Always Allow on This Website/);
+    // The origin belongs in the message, not just the page path, so the user is
+    // told which site they are being asked about.
+    assert.doesNotMatch(err.message, /some\/page/);
 });
 
 test("a probe refused outright says access is missing, not that a dialog is open", async () => {
@@ -129,8 +132,13 @@ test("a probe refused outright says access is missing, not that a dialog is open
     const err = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
 
     assert.equal(err.code, "permission_required");
-    assert.match(err.message, /does not have access/);
+    assert.match(err.message, /is not allowed on/);
+    // No dialog is open in this case, so pointing at one would send the user
+    // hunting for a window that is not there.
     assert.doesNotMatch(err.message, /behind another window/);
+    // The one click that stops being asked per site belongs in the refusal that
+    // sends someone to settings anyway.
+    assert.match(err.message, /Always Allow on Every Website/);
 });
 
 test("a granted tab is not probed again for every frame in one request", async () => {
