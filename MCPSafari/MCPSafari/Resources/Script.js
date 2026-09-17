@@ -1,11 +1,9 @@
+// `enabled` true or false is Safari's answer; null means Safari would not give
+// one, which is not the same as "not enabled" and must not be shown as it.
 function show(enabled) {
-    if (typeof enabled === "boolean") {
-        document.body.classList.toggle(`state-on`, enabled);
-        document.body.classList.toggle(`state-off`, !enabled);
-    } else {
-        document.body.classList.remove(`state-on`);
-        document.body.classList.remove(`state-off`);
-    }
+    document.body.classList.toggle(`state-on`, enabled === true);
+    document.body.classList.toggle(`state-off`, enabled === false);
+    document.body.classList.toggle(`state-error`, enabled === null);
 }
 
 function openPreferences() {

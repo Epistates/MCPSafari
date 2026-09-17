@@ -105,15 +105,21 @@ h2 {
     color: var(--positive);
 }
 
-body:not(.state-on, .state-off) :is(.state-on, .state-off) {
+/* Exactly one status pill is visible. "Checking" is the state before any
+   answer arrives, so it shows until a class lands on the body. */
+body:not(.state-on, .state-off, .state-error) :is(.state-on, .state-off, .state-error) {
     display: none;
 }
 
-body.state-on :is(.state-off, .state-unknown) {
+body.state-on :is(.state-off, .state-error, .state-unknown) {
     display: none;
 }
 
-body.state-off :is(.state-on, .state-unknown) {
+body.state-off :is(.state-on, .state-error, .state-unknown) {
+    display: none;
+}
+
+body.state-error :is(.state-on, .state-off, .state-unknown) {
     display: none;
 }
 

@@ -24,6 +24,20 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
         self.webView.configuration.userContentController.add(self, name: "controller")
 
         self.webView.loadFileURL(Bundle.main.url(forResource: "Main", withExtension: "html")!, allowingReadAccessTo: Bundle.main.resourceURL!)
+
+        // Enabling the extension happens in Safari, so the answer this window is
+        // showing goes stale the moment the user acts on it. Re-ask whenever they
+        // come back, rather than making them relaunch to see that it worked.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidBecomeActive),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
+    }
+
+    @objc private func applicationDidBecomeActive() {
+        Self.updateExtensionStateDisplay(for: webView)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -32,19 +46,16 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
 
     private nonisolated static func updateExtensionStateDisplay(for webView: WKWebView) {
         let completion: @Sendable (SFSafariExtensionState?, Error?) -> Void = { (state, error) in
-            guard let state = state, error == nil else {
-                // Insert code to inform the user that something went wrong.
-                return
+            // No state is not the same as "not enabled". Saying "Not enabled"
+            // here would send someone to Safari to tick a box that may already
+            // be ticked, so the failure is reported as its own state.
+            let isEnabled = error == nil ? state?.isEnabled : nil
+            if let error {
+                NSLog("Could not read Safari extension state: \(error.localizedDescription)")
             }
 
-            let isEnabled = state.isEnabled
-
             DispatchQueue.main.async {
-                if #available(macOS 13, *) {
-                    webView.evaluateJavaScript("show(\(isEnabled), true)")
-                } else {
-                    webView.evaluateJavaScript("show(\(isEnabled), false)")
-                }
+                webView.evaluateJavaScript("show(\(isEnabled.map(String.init) ?? "null"))")
             }
         }
 
