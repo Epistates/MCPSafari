@@ -22,7 +22,13 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             swiftSettings: [
-                .enableUpcomingFeature("StrictConcurrency"),
+                // StrictConcurrency is not listed: it is already on in Swift 6
+                // language mode, which tools-version 6.3 selects, so naming it
+                // here would be a line that reads like a decision and is not one.
+                // These three are gated on Swift 7 and do change what compiles.
+                .enableUpcomingFeature("ExistentialAny"),
+                .enableUpcomingFeature("InternalImportsByDefault"),
+                .enableUpcomingFeature("MemberImportVisibility"),
             ]
         ),
         .testTarget(

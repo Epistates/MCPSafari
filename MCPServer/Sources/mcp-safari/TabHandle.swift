@@ -29,8 +29,12 @@ struct TabHandle: Equatable, Sendable, CustomStringConvertible {
         return TabHandle(profileIndex: profileIndex, tabID: tabID)
     }
 
-    /// `Int.init` alone would accept a sign, spaces, and non-ASCII digits, none
-    /// of which are handles.
+    /// `Int.init` accepts a leading `+` or `-`, so `p-1t5` would otherwise parse
+    /// as profile -1. It already rejects whitespace and non-ASCII digits, so the
+    /// guard is there for the sign and the empty string.
+    ///
+    /// `isASCII` is the half doing the work: `isNumber` alone also admits `½`,
+    /// `Ⅷ`, and `٣`. Together they are exactly `0...9`.
     private static func asciiDigits(_ text: Substring) -> Int? {
         guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
         return Int(text)
