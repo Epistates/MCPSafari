@@ -715,13 +715,13 @@ actor SafariMCPServer {
     /// can hand straight back.
     private func tabResult(_ response: BridgeResponse, profileIndex: Int) -> CallTool.Result {
         guard response.success, let raw = response.data?.stringValue else {
-            return textResult(response)
+            return textResult(response, as: "tab")
         }
         guard let data = raw.data(using: .utf8),
               var tab = try? JSONDecoder().decode([String: AnyCodable].self, from: data),
               let tabID = tab["id"]?.intValue
         else {
-            return textResult(response)
+            return textResult(response, as: "tab")
         }
         tab["id"] = AnyCodable(TabHandle(profileIndex: profileIndex, tabID: tabID).description)
         return CallTool.Result(content: [Self.textContent(Self.jsonText(tab) ?? raw)])
@@ -855,7 +855,7 @@ actor SafariMCPServer {
             throw ToolInputError("close_tab requires tabId, a handle from tabs_context such as p0t5")
         }
         let response = try await send("tabs_close", args)
-        guard response.success else { return textResult(response) }
+        guard response.success else { return textResult(response, as: "tab") }
         // The extension's confirmation names the tab by its own number, which is
         // ambiguous across profiles; the server knows the handle the caller used.
         return CallTool.Result(content: [Self.textContent("Closed tab \(handle)")])
@@ -868,7 +868,7 @@ actor SafariMCPServer {
         var params: [String: AnyCodable] = [:]
         if let bringToFront = args["bringToFront"]?.boolValue { params["bringToFront"] = AnyCodable(bringToFront) }
         let response = try await send("select_tab", args, params: params)
-        guard response.success else { return textResult(response) }
+        guard response.success else { return textResult(response, as: "tab") }
         // Pinning the tab pins its profile too, so later calls that name no tab
         // stay in the browser window the caller just chose.
         try await bridge.selectProfile(atIndex: handle.profileIndex)
@@ -942,7 +942,7 @@ actor SafariMCPServer {
             params["maxNodes"] = AnyCodable(maxNodes)
         }
         let response = try await send("read_page", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "page")
     }
 
     private func handleSnapshot(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -959,7 +959,7 @@ actor SafariMCPServer {
             params["maxNodes"] = AnyCodable(maxNodes)
         }
         let response = try await send("snapshot", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "snapshot")
     }
 
     private func handleFind(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -968,7 +968,7 @@ actor SafariMCPServer {
         if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
         if let role = args["role"]?.stringValue { params["role"] = AnyCodable(role) }
         let response = try await send("find", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "matches")
     }
 
     /// Reads the caller's local files, then runs the interaction with them attached.
@@ -1662,7 +1662,7 @@ actor SafariMCPServer {
         let response = try await send("screenshot", args, params: params)
 
         guard response.success, let raw = response.data?.stringValue else {
-            return textResult(response)
+            return textResult(response, as: "screenshot")
         }
 
         // Current extensions send the image plus its capture context; older
@@ -1941,7 +1941,7 @@ actor SafariMCPServer {
         var params: [String: AnyCodable] = [:]
         if let code = args["code"]?.stringValue { params["code"] = AnyCodable(code) }
         let response = try await send("javascript_tool", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "result")
     }
 
     private func handleReadConsole(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -1973,7 +1973,7 @@ actor SafariMCPServer {
             params["pattern"] = AnyCodable(pattern)
         }
         let response = try await send("read_console", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "messages")
     }
 
     private func handleReadNetwork(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -2022,7 +2022,7 @@ actor SafariMCPServer {
         }
         if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
         let response = try await send("read_network", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "requests")
     }
 
     private func handleResizeWindow(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -2030,7 +2030,7 @@ actor SafariMCPServer {
         if let width = args["width"]?.intValue { params["width"] = AnyCodable(width) }
         if let height = args["height"]?.intValue { params["height"] = AnyCodable(height) }
         let response = try await send("resize_window", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "window")
     }
 
     private static let maxWaitSeconds: Double = 300 // 5-minute cap
@@ -2182,7 +2182,7 @@ actor SafariMCPServer {
             params: params,
             timeout: Self.bridgeTimeout(args, default: userTimeout + 5)
         )
-        return textResult(response)
+        return textResult(response, as: "wait")
     }
 
     // MARK: - Helpers
@@ -2337,14 +2337,57 @@ actor SafariMCPServer {
         }
     }
 
-    private func textResult(_ response: BridgeResponse) -> CallTool.Result {
+    /// Returns the same answer twice: prose in `content` for the model to read,
+    /// and `structuredContent` for anything that has to branch on it.
+    ///
+    /// Failures have carried structured detail since tool error codes shipped, so
+    /// until now a caller got machine-readable data only when something went
+    /// wrong. `key` names the payload because the protocol revision this server
+    /// negotiates (2025-11-25, the ceiling in swift-sdk 0.12.1) requires
+    /// `structuredContent` to be a JSON object. Bare arrays became legal in
+    /// 2026-07-28, which the SDK cannot speak yet.
+    ///
+    /// No `outputSchema` is declared to go with these. Clients that have one
+    /// reject a result that does not match it, which would turn every later shape
+    /// change into a hard client break while the tool surface is still moving.
+    /// That is a 1.0 commitment, not a 0.4 one.
+    private func textResult(_ response: BridgeResponse, as key: String) -> CallTool.Result {
         guard response.success else {
             return Self.failureResult(response.toolFailure)
         }
         return CallTool.Result(
             content: [Self.textContent(responseText(response))],
+            structuredContent: .object([key: Self.structuredPayload(response.data)]),
             isError: false
         )
+    }
+
+    /// background.js stringifies anything that is not already a string, so a
+    /// listing reaches the server as JSON text. Parsing it back means the
+    /// structured half is data rather than a string that happens to contain data,
+    /// which is the only reason a caller would read it instead of `content`.
+    ///
+    /// Text that is not JSON stays text. `read_page` with `format: "text"` returns
+    /// prose, and prose that happens to start with a digit is not a number.
+    static func structuredPayload(_ data: AnyCodable?) -> Value {
+        guard let data else { return .null }
+        guard let text = data.stringValue else {
+            return (try? Value(data)) ?? .null
+        }
+        guard let parsed = try? JSONDecoder().decode(Value.self, from: Data(text.utf8)),
+              Self.isStructured(parsed)
+        else { return .string(text) }
+        return parsed
+    }
+
+    /// Only an object or an array is evidence the extension meant JSON. A bare
+    /// `true`, `null`, or number decodes fine from ordinary page text and would
+    /// silently retype it.
+    private static func isStructured(_ value: Value) -> Bool {
+        switch value {
+        case .object, .array: true
+        default: false
+        }
     }
 
     private func toolFailure(for error: any Error) -> ToolFailure {
