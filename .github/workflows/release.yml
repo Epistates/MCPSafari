@@ -51,9 +51,16 @@ jobs:
 
       # ── Code Signing ────────────────────────────────────────────
 
+      # A tag is a real release and must fail closed. Homebrew 5.0.0 rejects casks
+      # that do not pass Gatekeeper, so an ad-hoc fallback here does not degrade
+      # gracefully: it publishes a green release whose cask is broken for every
+      # user. The lenient path exists for workflow_dispatch dry runs only.
       - name: Import Apple Code Signing Certificate
-        continue-on-error: true
-        uses: Apple-Actions/import-codesign-certs@v7
+        continue-on-error: ${{ github.ref_type != 'tag' }}
+        # Pinned by commit: this one is handed the signing certificate, so a moved
+        # tag would be handed it too. The trailing comment is load-bearing, it is
+        # what lets Dependabot propose the next version.
+        uses: Apple-Actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -61,11 +68,14 @@ jobs:
       - name: Verify Certificate
         run: |
           if security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
-            echo "APPLE_CERT_IMPORTED=true" >> $GITHUB_ENV
+            echo "APPLE_CERT_IMPORTED=true" >> "$GITHUB_ENV"
             echo "✓ Developer ID certificate found"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "::error::No Developer ID certificate available. A tagged release must be signed and notarized, so this is a hard failure rather than an ad-hoc fallback. Check APPLE_CERTIFICATE_BASE64 and APPLE_CERTIFICATE_PASSWORD, which expire."
+            exit 1
           else
-            echo "APPLE_CERT_IMPORTED=false" >> $GITHUB_ENV
-            echo "⚠ No Developer ID certificate — will use ad-hoc signing"
+            echo "APPLE_CERT_IMPORTED=false" >> "$GITHUB_ENV"
+            echo "⚠ No Developer ID certificate, ad-hoc signing this dry run"
           fi
 
       # ── Build MCP Server (Swift CLI) ────────────────────────────
@@ -109,8 +119,8 @@ jobs:
         run: |
           APP_PATH=$(find MCPSafari/build -name "MCPSafari.app" -type d | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            echo "⚠ No .app bundle found"
-            exit 0
+            echo "::error::xcodebuild reported success but produced no MCPSafari.app. Releasing without it would ship a cask with no app in it."
+            exit 1
           fi
 
           # Sign the extension appex first (inner-to-outer signing order)
@@ -227,7 +237,8 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        uses: softprops/action-gh-release@v3
+        # Pinned by commit: this one holds a token that can write releases.
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: 'MCPSafari ${{ steps.version.outputs.version }}'

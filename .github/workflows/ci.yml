@@ -14,6 +14,12 @@ on:
       - 'LICENSE'
       - '.gitignore'
 
+# Building and testing needs nothing but the source. Stated per workflow rather
+# than left to the repository default, so widening that default later cannot
+# quietly widen this.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build & Test
