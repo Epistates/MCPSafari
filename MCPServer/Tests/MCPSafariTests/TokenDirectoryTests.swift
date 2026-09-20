@@ -50,7 +50,7 @@ struct TokenDirectoryTests {
                 appURL: root.appendingPathComponent("absent.app"),
                 tokenDirectoryURL: link
             ),
-            extensionRegistered: true
+            registration: .registered(bundlePath: nil)
         )
 
         let tokenPath = try #require(report.checks.first { $0.code == "token_path" })

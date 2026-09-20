@@ -160,6 +160,45 @@ struct ProfileConnectionTests {
 
     // MARK: - Tests
 
+    @Test func ephemeralPortIsPublishedAndAuthenticates() async throws {
+        try await withStartedBridge(port: 0) { bridge, port in
+            // A zero here would make both status and the per-port token unusable.
+            try #require(port != 0)
+            let status = await bridge.status()
+            #expect(status.requestedPort == 0)
+            #expect(status.port == port)
+            #expect(status.tokenFileSecure == true)
+            let token = try String(contentsOfFile: WebSocketBridge.tokenFilePath(for: port), encoding: .utf8)
+            let client = makeTask(port: port)
+            defer { client.cancel() }
+            let reply = try await authenticate(port: port, token: token, profileId: "default", task: client)
+            #expect(reply["auth"] as? String == "ok")
+        }
+    }
+
+    @Test func anotherProfilesReplyCannotConsumeAPendingRequest() async throws {
+        try await withStartedBridge(port: 0) { bridge, port in
+            let token = await bridge.authToken
+            let personal = makeTask(port: port)
+            let work = makeTask(port: port)
+            defer { personal.cancel(); work.cancel() }
+            try await authenticate(port: port, token: token, profileId: "default", task: personal)
+            try await authenticate(port: port, token: token, profileId: "WORK-UUID", task: work)
+
+            async let answered = bridge.send(action: "snapshot", timeout: 5, profileIndex: 0)
+            let request = try await receiveRequest(on: personal)
+            try await respond(to: request, on: work, data: "wrong profile")
+            // A second request on the same socket is a barrier: its reply proves
+            // the bridge has processed the preceding wrong-profile message.
+            async let barrier = bridge.send(action: "tabs_query", timeout: 5, profileIndex: 1)
+            let check = try await receiveRequest(on: work)
+            try await respond(to: check, on: work, data: "barrier")
+            _ = try await barrier
+            try await respond(to: request, on: personal, data: "correct profile")
+            #expect(try await answered.data?.stringValue == "correct profile")
+        }
+    }
+
     @Test func twoProfilesStayConnectedInsteadOfEvictingEachOther() async throws {
         try await withStartedBridge(port: 8131) { bridge, port in
             let token = await bridge.authToken
@@ -398,10 +437,19 @@ struct ProfileConnectionTests {
             let results = try await outcomes
             #expect(results.map(\.index) == [0, 1])
             #expect(results.map(\.profileID) == ["default", "WORK-UUID"])
-            #expect(results[0].response?.success == true)
-            #expect(results[0].response?.data?.stringValue == "default tabs")
-            #expect(results[1].response?.success == false)
-            #expect(results[1].response?.error == "extension busy")
+            // Both profiles replied, so neither outcome is `.unreachable`. A
+            // refusal is still a reply, which is the distinction that keeps
+            // "the extension said no" apart from "nothing came back".
+            guard case .answered(let fromPersonal) = results[0].reply,
+                  case .answered(let fromWork) = results[1].reply
+            else {
+                Issue.record("Both profiles answered, so both replies should be .answered.")
+                return
+            }
+            #expect(fromPersonal.success == true)
+            #expect(fromPersonal.data?.stringValue == "default tabs")
+            #expect(fromWork.success == false)
+            #expect(fromWork.error == "extension busy")
 
             personal.cancel()
             work.cancel()

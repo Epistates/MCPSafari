@@ -60,3 +60,33 @@ A Manifest V3 Safari Web Extension with:
 ### macOS host app
 
 A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension and provides native messaging for auth token exchange.
+
+## Release qualification
+
+A green build proves compilation and automated behavior; it does not prove Safari's
+permission dialogs or profile routing. Before tagging a release, record the exact
+macOS and Safari versions, date, build commit, and result of each manual pass:
+
+- Two real Safari profiles, each with the extension enabled; verify independent
+  routing, selection, disconnect, and reconnect.
+- A fresh, ungranted origin, a denied origin, and an allowed origin; verify the
+  popup and tool errors, including a permission dialog behind another window.
+- Any permission-manifest changes using a development build before changing the
+  shipped defaults. Confirm what Safari returns for ungranted tabs and whether a
+  popup permission request actually prompts.
+- Native input with consent, focus loss, Accessibility refusal, and screenshot
+  behavior while Safari is in the background.
+- Both packaged architectures, matching app/server versions, clean installation,
+  upgrade, signature verification, notarization, and Gatekeeper assessment.
+
+Use a statement such as `Verified on macOS <exact version> / Safari <exact version>
+— <date>, <commit>, <passes performed>` only for completed checks. An installed
+Safari version or a simulated profile test is not evidence of a real Safari pass.
+
+Tagged releases require matching versions in the CLI, extension manifest, Xcode
+project, and a nonempty versioned changelog entry. The release workflow publishes
+that entry, checks the complete artifact set, verifies signatures, notarizes the
+app and standalone CLI binaries, and creates relative-path checksums. Manual
+workflow dispatch builds artifacts for inspection and does not publish a release.
+Actual Developer ID signing and Apple service acceptance must still be verified
+in the release environment; local script tests cannot establish either.

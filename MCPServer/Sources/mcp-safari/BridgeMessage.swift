@@ -52,7 +52,7 @@ struct AnyCodable: Codable, Sendable, CustomStringConvertible {
         self.value = value
     }
 
-    init(from decoder: Decoder) throws {
+    init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
 
         if container.decodeNil() {
@@ -77,7 +77,7 @@ struct AnyCodable: Codable, Sendable, CustomStringConvertible {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    func encode(to encoder: any Encoder) throws {
         var container = encoder.singleValueContainer()
 
         switch value {

@@ -116,10 +116,23 @@ actor WebSocketBridge {
     /// thrown, because one profile refusing a read is not a reason to withhold
     /// what the others returned.
     struct ProfileOutcome: Sendable {
+        /// Answered and unreachable are the only two ways this ends, so they are
+        /// the only two it can hold. A `BridgeResponse?` beside a `String?` could
+        /// also be both at once, or neither, and every reader had to decide what
+        /// those meant.
+        enum Reply: Sendable {
+            /// The profile replied. The reply can still carry a refusal.
+            case answered(BridgeResponse)
+            /// Nothing came back: a timeout, a dropped connection, a send that threw.
+            case unreachable(String)
+        }
+
         let index: Int
         let profileID: String
-        let response: BridgeResponse?
-        let failure: String?
+        let reply: Reply
+
+        /// How a profile is named in anything a user reads, e.g. `p1 (WORK-UUID)`.
+        var label: String { "p\(index) (\(profileID))" }
     }
 
     struct Status: Codable, Equatable {
@@ -151,7 +164,7 @@ actor WebSocketBridge {
             case lastError
         }
 
-        func encode(to encoder: Encoder) throws {
+        func encode(to encoder: any Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(serverVersion, forKey: .serverVersion)
             try container.encode(protocolVersion, forKey: .protocolVersion)
@@ -522,16 +535,21 @@ actor WebSocketBridge {
                 }
 
                 if success {
+                    guard let boundPort = newListener.port?.rawValue else {
+                        newListener.cancel()
+                        continue
+                    }
+                    self.port = boundPort
                     listenerStatus = .listening
-                    if tryPort != requestedPort {
-                        logger.info("Port \(requestedPort) in use — listening on \(tryPort) instead")
+                    if requestedPort != 0 && boundPort != requestedPort {
+                        logger.info("Port \(requestedPort) in use — listening on \(boundPort) instead")
                     }
                     do {
-                        try writeAuthTokenFile(for: tryPort)
+                        try writeAuthTokenFile(for: boundPort)
                     } catch {
-                        logger.error("Could not write auth token file for port \(tryPort): \(error)")
+                        logger.error("Could not write auth token file for port \(boundPort): \(error)")
                     }
-                    logger.info("WebSocket server listening on port \(tryPort)")
+                    logger.info("WebSocket server listening on port \(boundPort)")
                     return
                 } else {
                     newListener.cancel()
@@ -641,12 +659,12 @@ actor WebSocketBridge {
                         )
                         return ProfileOutcome(
                             index: target.index, profileID: target.id,
-                            response: response, failure: nil
+                            reply: .answered(response)
                         )
                     } catch {
                         return ProfileOutcome(
                             index: target.index, profileID: target.id,
-                            response: nil, failure: "\(error)"
+                            reply: .unreachable("\(error)")
                         )
                     }
                 }
@@ -852,12 +870,12 @@ actor WebSocketBridge {
             let response = try JSONDecoder().decode(BridgeResponse.self, from: data)
             logger.debug("Received bridge response: [\(response.id)] success=\(response.success)")
 
-            if let pending = pendingRequests.removeValue(forKey: response.id) {
+            if let pending = pendingRequests[response.id] {
                 guard pending.connectionID == ObjectIdentifier(conn) else {
                     logger.warning("Received response for request ID on a stale connection: \(response.id)")
-                    pending.continuation.resume(throwing: BridgeError.notConnected)
                     return
                 }
+                pendingRequests.removeValue(forKey: response.id)
                 pending.continuation.resume(returning: response)
             } else {
                 logger.warning("Received response for unknown request ID: \(response.id)")

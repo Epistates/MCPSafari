@@ -140,6 +140,8 @@ Iframe content is readable and clickable. `snapshot` returns the whole tab as on
 
 No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is element 12 in frame 3), so targeting by UID routes automatically; targeting by selector or text searches frames in order, top frame first. Frames are matched to their host `<iframe>` by resolved `src`, and a frame whose host cannot be identified is attached to the parent tree and counted in `unmatchedFrames` rather than dropped.
 
+A frame that will not answer at all is named in `unreachableFrames` on the root of the snapshot, one entry per frame with its `frameId` and `origin` (`null` for `about:` and sandboxed frames, which have no origin to grant). The key is absent when every frame answered. The usual cause is website access: **Always Allow on This Website** covers the top-level page only, so a page with third-party frames reads as top-frame-only until the broad grant is given. Treat a non-empty list as a partial page, since the tree is otherwise indistinguishable from a complete one.
+
 Three limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `screenshot` refuses a `uid` or `selector` inside an iframe for the same reason. `read_console` and `read_network` report the top frame only.
 
 ### Website access

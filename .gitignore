@@ -25,3 +25,7 @@ xcuserdata/
 
 # Claude
 .claude/
+
+# Python validation scripts
+__pycache__/
+*.pyc

@@ -22,11 +22,7 @@ case .version:
     exit(0)
 
 case .doctor(let port, let json):
-    let report = Doctor.inspect(
-        port: port,
-        extensionRegistered: Doctor.isExtensionRegistered(),
-        registeredExtensionPath: Doctor.registeredExtensionPath()
-    )
+    let report = Doctor.inspect(port: port, registration: Doctor.extensionRegistration())
     let output = json ? try Doctor.json(report) : Doctor.humanReadable(report)
     print(output)
     exit(report.exitCode)

@@ -17,7 +17,7 @@ struct TabsContextMergeTests {
         return WebSocketBridge.ProfileOutcome(
             index: index,
             profileID: id,
-            response: BridgeResponse(
+            reply: .answered(BridgeResponse(
                 id: "req",
                 success: true,
                 data: AnyCodable(String(decoding: encoded, as: UTF8.self)),
@@ -25,8 +25,7 @@ struct TabsContextMergeTests {
                 errorCode: nil,
                 retryable: nil,
                 recoveryAction: nil
-            ),
-            failure: nil
+            ))
         )
     }
 
@@ -60,8 +59,7 @@ struct TabsContextMergeTests {
             WebSocketBridge.ProfileOutcome(
                 index: 1,
                 profileID: "WORK-UUID",
-                response: nil,
-                failure: "Request to Safari extension timed out after 30 seconds."
+                reply: .unreachable("Request to Safari extension timed out after 30 seconds.")
             ),
         ])
 
@@ -77,11 +75,10 @@ struct TabsContextMergeTests {
             WebSocketBridge.ProfileOutcome(
                 index: 0,
                 profileID: "default",
-                response: BridgeResponse(
+                reply: .answered(BridgeResponse(
                     id: "req", success: false, data: nil, error: "extension busy",
                     errorCode: nil, retryable: nil, recoveryAction: nil
-                ),
-                failure: nil
+                ))
             ),
         ])
 
@@ -89,16 +86,32 @@ struct TabsContextMergeTests {
         #expect(merged.failures == ["p0 (default): extension busy"])
     }
 
+    /// A refusal with no message used to be reported as "no response", which is
+    /// the one thing it is not: the profile answered, it just did not say why.
+    @Test func aRefusalWithNoMessageIsNotReportedAsSilence() {
+        let merged = SafariMCPServer.mergedTabListing([
+            WebSocketBridge.ProfileOutcome(
+                index: 0,
+                profileID: "default",
+                reply: .answered(BridgeResponse(
+                    id: "req", success: false, data: nil, error: nil,
+                    errorCode: nil, retryable: nil, recoveryAction: nil
+                ))
+            ),
+        ])
+
+        #expect(merged.failures == ["p0 (default): no reason given"])
+    }
+
     @Test func survivesAListingItCannotRead() {
         let merged = SafariMCPServer.mergedTabListing([
             WebSocketBridge.ProfileOutcome(
                 index: 0,
                 profileID: "default",
-                response: BridgeResponse(
+                reply: .answered(BridgeResponse(
                     id: "req", success: true, data: AnyCodable("not json"),
                     error: nil, errorCode: nil, retryable: nil, recoveryAction: nil
-                ),
-                failure: nil
+                ))
             ),
         ])
 
