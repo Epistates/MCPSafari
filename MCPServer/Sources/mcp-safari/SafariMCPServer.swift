@@ -715,16 +715,19 @@ actor SafariMCPServer {
     /// can hand straight back.
     private func tabResult(_ response: BridgeResponse, profileIndex: Int) -> CallTool.Result {
         guard response.success, let raw = response.data?.stringValue else {
-            return textResult(response)
+            return textResult(response, as: "tab")
         }
         guard let data = raw.data(using: .utf8),
               var tab = try? JSONDecoder().decode([String: AnyCodable].self, from: data),
               let tabID = tab["id"]?.intValue
         else {
-            return textResult(response)
+            return textResult(response, as: "tab")
         }
         tab["id"] = AnyCodable(TabHandle(profileIndex: profileIndex, tabID: tabID).description)
-        return CallTool.Result(content: [Self.textContent(Self.jsonText(tab) ?? raw)])
+        return CallTool.Result(
+            content: [Self.textContent(Self.jsonText(tab) ?? raw)],
+            structuredContent: .object(["tab": (try? Value(tab)) ?? .null])
+        )
     }
 
     /// Which profile a call will land on. An explicit handle names it; otherwise it
@@ -753,7 +756,10 @@ actor SafariMCPServer {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(status)
-        return CallTool.Result(content: [Self.textContent(String(decoding: data, as: UTF8.self))])
+        return CallTool.Result(
+            content: [Self.textContent(String(decoding: data, as: UTF8.self))],
+            structuredContent: .object(["status": try Value(status)])
+        )
     }
 
     /// Asks every connected profile for its tabs and returns one merged listing,
@@ -779,7 +785,10 @@ actor SafariMCPServer {
                 + merged.failures.joined(separator: "; ")
             ))
         }
-        return CallTool.Result(content: content)
+        return CallTool.Result(content: content, structuredContent: .object([
+            "tabs": try Value(merged.tabs),
+            "profileFailures": .array(merged.failures.map(Value.string)),
+        ]))
     }
 
     /// Flattens what each profile returned into one listing, naming every tab by
@@ -855,10 +864,15 @@ actor SafariMCPServer {
             throw ToolInputError("close_tab requires tabId, a handle from tabs_context such as p0t5")
         }
         let response = try await send("tabs_close", args)
-        guard response.success else { return textResult(response) }
+        guard response.success else { return textResult(response, as: "tab") }
         // The extension's confirmation names the tab by its own number, which is
         // ambiguous across profiles; the server knows the handle the caller used.
-        return CallTool.Result(content: [Self.textContent("Closed tab \(handle)")])
+        return CallTool.Result(
+            content: [Self.textContent("Closed tab \(handle)")],
+            structuredContent: .object(["tab": .object([
+                "id": .string(handle.description), "closed": .bool(true),
+            ])])
+        )
     }
 
     private func handleSelectTab(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -868,7 +882,7 @@ actor SafariMCPServer {
         var params: [String: AnyCodable] = [:]
         if let bringToFront = args["bringToFront"]?.boolValue { params["bringToFront"] = AnyCodable(bringToFront) }
         let response = try await send("select_tab", args, params: params)
-        guard response.success else { return textResult(response) }
+        guard response.success else { return textResult(response, as: "tab") }
         // Pinning the tab pins its profile too, so later calls that name no tab
         // stay in the browser window the caller just chose.
         try await bridge.selectProfile(atIndex: handle.profileIndex)
@@ -942,7 +956,7 @@ actor SafariMCPServer {
             params["maxNodes"] = AnyCodable(maxNodes)
         }
         let response = try await send("read_page", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "page", decoding: args["format"]?.stringValue == "snapshot" ? .containers : .text)
     }
 
     private func handleSnapshot(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -959,7 +973,7 @@ actor SafariMCPServer {
             params["maxNodes"] = AnyCodable(maxNodes)
         }
         let response = try await send("snapshot", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "snapshot")
     }
 
     private func handleFind(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -968,7 +982,7 @@ actor SafariMCPServer {
         if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
         if let role = args["role"]?.stringValue { params["role"] = AnyCodable(role) }
         let response = try await send("find", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "matches")
     }
 
     /// Reads the caller's local files, then runs the interaction with them attached.
@@ -1662,7 +1676,7 @@ actor SafariMCPServer {
         let response = try await send("screenshot", args, params: params)
 
         guard response.success, let raw = response.data?.stringValue else {
-            return textResult(response)
+            return textResult(response, as: "screenshot")
         }
 
         // Current extensions send the image plus its capture context; older
@@ -1690,6 +1704,13 @@ actor SafariMCPServer {
             return Self.failureResult(toolFailure(for: error))
         }
 
+        var captureDetails = capture ?? [:]
+        captureDetails.removeValue(forKey: "image")
+        captureDetails["mimeType"] = AnyCodable("image/png")
+        captureDetails["byteCount"] = AnyCodable(png.count)
+        captureDetails["scale"] = AnyCodable(scale)
+        if let note { captureDetails["note"] = AnyCodable(note) }
+
         if let filePath = args["filePath"] {
             let url: URL
             do {
@@ -1706,7 +1727,11 @@ actor SafariMCPServer {
             let text = ["Saved PNG to \(url.path) (\(png.count) bytes).", note]
                 .compactMap { $0 }
                 .joined(separator: "\n")
-            return CallTool.Result(content: [Self.textContent(text)])
+            captureDetails["filePath"] = AnyCodable(url.path)
+            return CallTool.Result(
+                content: [Self.textContent(text)],
+                structuredContent: .object(["screenshot": try Value(captureDetails)])
+            )
         }
 
         var content: [Tool.Content] = [
@@ -1715,7 +1740,7 @@ actor SafariMCPServer {
         if let note {
             content.append(Self.textContent(note))
         }
-        return CallTool.Result(content: content)
+        return CallTool.Result(content: content, structuredContent: .object(["screenshot": try Value(captureDetails)]))
     }
 
     /// Writes a capture to the caller's path. A batch of full-resolution frames
@@ -1941,7 +1966,7 @@ actor SafariMCPServer {
         var params: [String: AnyCodable] = [:]
         if let code = args["code"]?.stringValue { params["code"] = AnyCodable(code) }
         let response = try await send("javascript_tool", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "result", decoding: .json)
     }
 
     private func handleReadConsole(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -1973,7 +1998,7 @@ actor SafariMCPServer {
             params["pattern"] = AnyCodable(pattern)
         }
         let response = try await send("read_console", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "messages")
     }
 
     private func handleReadNetwork(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -2022,7 +2047,7 @@ actor SafariMCPServer {
         }
         if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
         let response = try await send("read_network", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "requests")
     }
 
     private func handleResizeWindow(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -2030,7 +2055,7 @@ actor SafariMCPServer {
         if let width = args["width"]?.intValue { params["width"] = AnyCodable(width) }
         if let height = args["height"]?.intValue { params["height"] = AnyCodable(height) }
         let response = try await send("resize_window", args, params: params)
-        return textResult(response)
+        return textResult(response, as: "window")
     }
 
     private static let maxWaitSeconds: Double = 300 // 5-minute cap
@@ -2101,7 +2126,7 @@ actor SafariMCPServer {
                 let traceResponse = try await stopTraceResponse(traceSession, batchArgs)
                 let traceText = responseText(traceResponse)
                 content.append(Self.textContent("--- Page Trace ---\n\(traceText)"))
-                details["trace"] = .string(traceText)
+                details["trace"] = Self.structuredPayload(traceResponse.data)
                 guard traceResponse.success else {
                     return Self.failureResult(traceResponse.toolFailure, content: content, details: details)
                 }
@@ -2115,7 +2140,7 @@ actor SafariMCPServer {
                 let snapshot = try await snapshotResponse(batchArgs)
                 let snapshotText = responseText(snapshot)
                 content.append(Self.textContent("--- Page Snapshot ---\n\(snapshotText)"))
-                details["snapshot"] = .string(snapshotText)
+                details["snapshot"] = Self.structuredPayload(snapshot.data)
                 guard snapshot.success else {
                     return Self.failureResult(snapshot.toolFailure, content: content, details: details)
                 }
@@ -2147,7 +2172,7 @@ actor SafariMCPServer {
                 let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
                 let traceText = responseText(traceResponse)
                 content.append(Self.textContent("--- Page Trace ---\n\(traceText)"))
-                details["trace"] = .string(traceText)
+                details["trace"] = Self.structuredPayload(traceResponse.data)
             } catch {
                 content.append(Self.textContent("--- Page Trace ---\nFailed to stop trace: \(error)"))
             }
@@ -2168,7 +2193,10 @@ actor SafariMCPServer {
                     recoveryAction: "inspect_batch_result"
                 ))
             }
-            return CallTool.Result(content: [Self.textContent("Waited \(duration) seconds")])
+            return CallTool.Result(
+                content: [Self.textContent("Waited \(duration) seconds")],
+                structuredContent: .object(["wait": .object(["seconds": .double(duration)])])
+            )
         }
 
         var params: [String: AnyCodable] = [:]
@@ -2182,7 +2210,7 @@ actor SafariMCPServer {
             params: params,
             timeout: Self.bridgeTimeout(args, default: userTimeout + 5)
         )
-        return textResult(response)
+        return textResult(response, as: "wait")
     }
 
     // MARK: - Helpers
@@ -2199,6 +2227,7 @@ actor SafariMCPServer {
         traceSession: TraceSession? = nil
     ) async throws -> CallTool.Result {
         var content = [Self.textContent(responseText(response))]
+        var details: [String: Value] = ["result": Self.structuredPayload(response.data)]
         guard response.success else {
             if let traceSession {
                 let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
@@ -2217,10 +2246,12 @@ actor SafariMCPServer {
                 return Self.failureResult(waitResponse.toolFailure, content: content)
             }
             content.append(Self.textContent(responseText(waitResponse)))
+            details["wait"] = Self.structuredPayload(waitResponse.data)
         }
 
         if let traceSession {
             let traceResponse = try await stopTraceResponse(traceSession, args)
+            details["trace"] = Self.structuredPayload(traceResponse.data)
             content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
             guard traceResponse.success else {
                 return Self.failureResult(traceResponse.toolFailure, content: content)
@@ -2229,6 +2260,7 @@ actor SafariMCPServer {
 
         if wantSnapshot ?? args["includeSnapshot"]?.boolValue == true {
             let snapResponse = try await snapshotResponse(args)
+            details["snapshot"] = Self.structuredPayload(snapResponse.data)
             let snapText = responseText(snapResponse)
             content.append(Self.textContent("--- Page Snapshot ---\n\(snapText)"))
             guard snapResponse.success else {
@@ -2236,7 +2268,7 @@ actor SafariMCPServer {
             }
         }
 
-        return CallTool.Result(content: content)
+        return CallTool.Result(content: content, structuredContent: .object(details))
     }
 
     private func startTraceIfNeeded(_ args: [String: Value]) async throws -> TraceSession? {
@@ -2337,14 +2369,66 @@ actor SafariMCPServer {
         }
     }
 
-    private func textResult(_ response: BridgeResponse) -> CallTool.Result {
+    /// Returns the same answer twice: prose in `content` for the model to read,
+    /// and `structuredContent` for anything that has to branch on it.
+    ///
+    /// Failures have carried structured detail since tool error codes shipped, so
+    /// until now a caller got machine-readable data only when something went
+    /// wrong. `key` names the payload because the protocol revision this server
+    /// negotiates (2025-11-25, the ceiling in swift-sdk 0.12.1) requires
+    /// `structuredContent` to be a JSON object. Bare arrays became legal in
+    /// 2026-07-28, which the SDK cannot speak yet.
+    ///
+    /// Output schemas remain optional until the result contracts stabilize; once
+    /// declared, every structured result must conform to its schema.
+    private func textResult(
+        _ response: BridgeResponse,
+        as key: String,
+        decoding: PayloadDecoding = .containers
+    ) -> CallTool.Result {
         guard response.success else {
             return Self.failureResult(response.toolFailure)
         }
         return CallTool.Result(
             content: [Self.textContent(responseText(response))],
+            structuredContent: .object([key: Self.structuredPayload(response.data, decoding: decoding)]),
             isError: false
         )
+    }
+
+    /// background.js stringifies anything that is not already a string, so a
+    /// listing reaches the server as JSON text. Parsing it back means the
+    /// structured half is data rather than a string that happens to contain data,
+    /// which is the only reason a caller would read it instead of `content`.
+    ///
+    /// Text that is not JSON stays text. `read_page` with `format: "text"` returns
+    /// prose, and prose that happens to start with a digit is not a number.
+    enum PayloadDecoding {
+        case text       // read_page text/html must remain strings, even "{}" or "[]".
+        case json       // javascript_tool explicitly JSON-encodes primitives too.
+        case containers // Legacy actions mix JSON objects/arrays with prose.
+    }
+
+    static func structuredPayload(_ data: AnyCodable?, decoding: PayloadDecoding = .containers) -> Value {
+        guard let data else { return .null }
+        guard let text = data.stringValue else {
+            return (try? Value(data)) ?? .null
+        }
+        guard decoding != .text,
+              let parsed = try? JSONDecoder().decode(Value.self, from: Data(text.utf8)),
+              decoding == .json || Self.isStructured(parsed)
+        else { return .string(text) }
+        return parsed
+    }
+
+    /// Legacy action replies mix JSON containers with confirmation prose. A bare
+    /// `true`, `null`, or number decodes fine from ordinary page text and would
+    /// silently retype it.
+    private static func isStructured(_ value: Value) -> Bool {
+        switch value {
+        case .object, .array: true
+        default: false
+        }
     }
 
     private func toolFailure(for error: any Error) -> ToolFailure {

@@ -155,6 +155,26 @@ So a tool that needs a page it has not been granted fails with `permission_requi
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
 
+### Results
+
+Every successful tool result includes an object in `structuredContent`, alongside the existing `content` text or image blocks. The object envelope is required by the negotiated MCP 2025-11-25 protocol; its payload may contain arrays, objects, strings, numbers, booleans, or null.
+
+| Tools | Structured fields |
+|-|-|
+| `status` | `status` with listener, authentication and profile details |
+| `tabs_context` | `tabs` and `profileFailures`; an incomplete listing names the missing profiles |
+| `tabs_create`, `select_tab`, `close_tab` | `tab`, with the profile-qualified handle; close returns `id` and `closed` |
+| `read_page`, `snapshot`, `find` | `page`, `snapshot`, `matches` respectively |
+| `read_console`, `read_network` | `messages`, `requests` respectively |
+| `javascript_tool`, interaction and navigation tools | `result`; interactions can additionally return `wait`, `trace`, and `snapshot` when requested and supported |
+| `wait`, `resize_window` | `wait`, `window` respectively |
+| `screenshot` | `screenshot` metadata, including MIME type, byte count, scale, available capture context, and `filePath` when saved; PNG bytes remain in the image block or file |
+| `run_steps` | `results`, `completedSteps`, `failedStep`, plus requested `trace` and `snapshot`; each completed step includes its own structured result |
+
+`read_page` text and HTML always remain strings, including literal `42`, `null`, `{}`, or `[]`. Snapshot format returns data. `javascript_tool` decodes JSON primitives as their actual types; legacy replies carrying explanatory text (such as an isolated-world fallback note) remain strings so that context is preserved.
+
+No `outputSchema` is declared yet. Result shapes are documented here and covered by protocol-level tests, but may evolve before 1.0. Clients should ignore unknown fields. A future declared schema will require every corresponding result to conform.
+
 ### Failures
 
 Every tool failure carries a stable `code`, a human-readable `message`, a `retryable` flag, and a `recoveryAction` naming what to do next:

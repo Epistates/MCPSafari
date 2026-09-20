@@ -61,6 +61,9 @@ jobs:
       - name: Test extension scripts
         run: node --test Tests/*.mjs
 
+      - name: Test MCP tool result contracts
+        run: node --test .github/scripts/test_mcp_results.mjs
+
       - name: Test release preparation
         run: python3 .github/scripts/test_prepare_release.py
 
