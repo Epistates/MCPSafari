@@ -135,9 +135,8 @@ test("the popup names the host and its state", () => {
     const blocked = render({ origin: "https://example.com", allowed: false, pending: false });
     assert.match(blocked, /No access/);
     assert.match(blocked, /Safari Settings/);
-    // The reassurance belongs exactly here, where someone is deciding whether
-    // to widen access.
-    assert.match(blocked, /runs on this Mac/i);
+    // Granting access can disclose page contents to the connected client.
+    assert.match(blocked, /shared with your MCP client/i);
 });
 
 test("a host with no origin renders nothing at all", () => {
