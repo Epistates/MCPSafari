@@ -190,6 +190,8 @@ Every tool failure carries a stable `code`, a human-readable `message`, a `retry
 | `inspect_batch_result` | A `run_steps` batch stopped partway; read the per-step results. |
 | `grant_accessibility_to_mcp_client` | Native input needs Accessibility for the app running `mcp-safari`. |
 
+A `bridge_timeout` means no reply arrived before the deadline; the browser operation may already have completed. It is not automatically retryable. Inspect the target state before repeating a click, submission, upload, or JavaScript call. Canceling a request stops the server waiting, but cannot retract work already sent to Safari.
+
 ### Safari profiles
 
 Every enabled profile is driven from the same server. `tabs_context` asks all of them and returns one merged listing, and each tool call goes to the profile its handle names.

@@ -199,6 +199,57 @@ struct ProfileConnectionTests {
         }
     }
 
+    @Test func lostMutationReplyDoesNotRecommendRepeatingTheMutation() async throws {
+        try await withStartedBridge(port: 0) { bridge, port in
+            let client = makeTask(port: port)
+            defer { client.cancel() }
+            try await authenticate(port: port, token: await bridge.authToken, profileId: "default", task: client)
+            let requestTask = Task { try await bridge.send(action: "click", timeout: 0.2) }
+            let request = try await receiveRequest(on: client)
+            #expect(request["action"] as? String == "click")
+            // The extension received the mutation, but its response was lost.
+            do {
+                _ = try await requestTask.value
+                Issue.record("Expected a timeout")
+            } catch let error as WebSocketBridge.BridgeError {
+                #expect(error.toolFailure.code == "bridge_timeout")
+                #expect(error.toolFailure.retryable == false)
+                #expect(error.toolFailure.recoveryAction == "inspect_error")
+            }
+            // A late reply is harmless, and the next request still works.
+            try await respond(to: request, on: client, data: "late success")
+            async let next = bridge.send(action: "snapshot", timeout: 5)
+            let snapshot = try await receiveRequest(on: client)
+            try await respond(to: snapshot, on: client, data: "current state")
+            #expect(try await next.data?.stringValue == "current state")
+        }
+    }
+
+    @Test func cancellingARequestReleasesTheWaitWithoutClosingTheProfile() async throws {
+        try await withStartedBridge(port: 0) { bridge, port in
+            let client = makeTask(port: port)
+            defer { client.cancel() }
+            try await authenticate(port: port, token: await bridge.authToken, profileId: "default", task: client)
+            let requestTask = Task { try await bridge.send(action: "click", timeout: 2) }
+            let request = try await receiveRequest(on: client)
+            requestTask.cancel()
+            do {
+                _ = try await requestTask.value
+                Issue.record("Expected cancellation")
+            } catch is CancellationError {
+                // Expected: cancellation should win rather than the 2s timeout.
+            } catch {
+                Issue.record("Cancellation returned \(error)")
+            }
+            #expect(await bridge.isConnected)
+            try await respond(to: request, on: client, data: "late result")
+            async let next = bridge.send(action: "snapshot", timeout: 5)
+            let snapshot = try await receiveRequest(on: client)
+            try await respond(to: snapshot, on: client, data: "still connected")
+            #expect(try await next.data?.stringValue == "still connected")
+        }
+    }
+
     @Test func twoProfilesStayConnectedInsteadOfEvictingEachOther() async throws {
         try await withStartedBridge(port: 8131) { bridge, port in
             let token = await bridge.authToken

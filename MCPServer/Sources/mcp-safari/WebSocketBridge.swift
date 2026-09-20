@@ -222,6 +222,7 @@ actor WebSocketBridge {
     private struct PendingRequest {
         let connectionID: ObjectIdentifier
         let continuation: CheckedContinuation<BridgeResponse, any Error>
+        let timeoutTask: Task<Void, Never>
     }
 
     private var pendingRequests: [String: PendingRequest] = [:]
@@ -292,7 +293,7 @@ actor WebSocketBridge {
     enum BridgeError: Error, CustomStringConvertible {
         case notConnected
         case profileNotConnected(Int)
-        case timeout
+        case timeout(action: String, seconds: TimeInterval)
         case encodingFailed
         case decodingFailed(String)
         case extensionError(String)
@@ -304,8 +305,8 @@ actor WebSocketBridge {
                 "No Safari extension connected. Open Safari and click the MCPSafari extension icon to connect."
             case .profileNotConnected(let index):
                 "Safari profile p\(index) is not connected. Call status to see which profiles are connected, or tabs_context for current tab handles."
-            case .timeout:
-                "Request to Safari extension timed out after 30 seconds."
+            case .timeout(let action, let seconds):
+                "Timed out waiting for \(action) after \(seconds) seconds. The operation may already have completed; inspect the browser state before retrying."
             case .encodingFailed:
                 "Failed to encode bridge request."
             case .decodingFailed(let detail):
@@ -337,8 +338,8 @@ actor WebSocketBridge {
                 ToolFailure(
                     code: "bridge_timeout",
                     message: description,
-                    retryable: true,
-                    recoveryAction: "retry"
+                    retryable: false,
+                    recoveryAction: "inspect_error"
                 )
             case .authenticationFailed:
                 ToolFailure(
@@ -602,37 +603,37 @@ actor WebSocketBridge {
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "ws", metadata: [metadata])
 
-        // Use withCheckedThrowingContinuation at the actor-isolated level so
-        // we can register the pending request BEFORE any message is sent.
-        // This prevents the race where a fast response arrives before the
-        // continuation is stored.
-        return try await withCheckedThrowingContinuation { (responseContinuation: CheckedContinuation<BridgeResponse, any Error>) in
-            // Register synchronously within the actor before sending
-            self.pendingRequests[request.id] = PendingRequest(
-                connectionID: connectionID,
-                continuation: responseContinuation
-            )
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            // Registration and sending are synchronous on the actor. Cancellation
+            // queues its removal on this same actor, so it cannot miss registration.
+            return try await withCheckedThrowingContinuation { responseContinuation in
+                let timeoutTask = Task { [weak self] in
+                    do {
+                        try await Task.sleep(for: .seconds(timeout))
+                    } catch { return }
+                    await self?.removePendingAndResume(
+                        id: request.id,
+                        error: BridgeError.timeout(action: action, seconds: timeout)
+                    )
+                }
+                self.pendingRequests[request.id] = PendingRequest(
+                    connectionID: connectionID,
+                    continuation: responseContinuation,
+                    timeoutTask: timeoutTask
+                )
 
-            // Send the WebSocket message
-            connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
-                if let error {
-                    Task {
-                        if let self {
-                            await self.removePendingAndResume(id: request.id, error: error)
-                        }
+                connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
+                    if let error {
+                        Task { await self?.removePendingAndResume(id: request.id, error: error) }
                     }
-                }
-            })
-
-            self.logger.debug("Sent bridge request: \(request.action) [\(request.id)]")
-
-            // Timeout task
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(timeout))
-                if let self {
-                    await self.removePendingAndResume(id: request.id, error: BridgeError.timeout)
-                }
+                })
+                self.logger.debug("Sent bridge request: \(request.action) [\(request.id)]")
             }
+        } onCancel: {
+            // Stops waiting; it cannot retract browser work already sent over the
+            // wire. Never report cancellation as evidence that a mutation did not run.
+            Task { await self.removePendingAndResume(id: request.id, error: CancellationError()) }
         }
     }
 
@@ -699,12 +700,14 @@ actor WebSocketBridge {
     /// but only if the continuation is still present (prevents double-resume).
     private func removePendingAndResume(id: String, error: any Error) {
         if let pending = pendingRequests.removeValue(forKey: id) {
+            pending.timeoutTask.cancel()
             pending.continuation.resume(throwing: error)
         }
     }
 
     private func drainPendingRequests(error: any Error) {
         for (_, pending) in pendingRequests {
+            pending.timeoutTask.cancel()
             pending.continuation.resume(throwing: error)
         }
         pendingRequests.removeAll()
@@ -717,6 +720,7 @@ actor WebSocketBridge {
         let connectionID = ObjectIdentifier(conn)
         for (id, pending) in pendingRequests where pending.connectionID == connectionID {
             pendingRequests.removeValue(forKey: id)
+            pending.timeoutTask.cancel()
             pending.continuation.resume(throwing: error)
         }
     }
@@ -876,6 +880,7 @@ actor WebSocketBridge {
                     return
                 }
                 pendingRequests.removeValue(forKey: response.id)
+                pending.timeoutTask.cancel()
                 pending.continuation.resume(returning: response)
             } else {
                 logger.warning("Received response for unknown request ID: \(response.id)")
