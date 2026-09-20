@@ -157,13 +157,23 @@ Both are `retryable`, because the same call works once access is granted. Granti
 
 ### Results
 
-Every result carries the same answer twice: readable text in `content`, and the same payload as data in `structuredContent` for anything that needs to branch on it rather than parse prose.
+Every successful tool result includes an object in `structuredContent`, alongside the existing `content` text or image blocks. The object envelope is required by the negotiated MCP 2025-11-25 protocol; its payload may contain arrays, objects, strings, numbers, booleans, or null.
 
-The structured half is always a JSON object with one named key, because the protocol revision this server negotiates requires that. The key says what the payload is: `snapshot`, `matches` (`find`), `messages` (`read_console`), `requests` (`read_network`), `page` (`read_page`), `tab`, `window`, `result` (`javascript_tool`), `wait`, `screenshot`.
+| Tools | Structured fields |
+|-|-|
+| `status` | `status` with listener, authentication and profile details |
+| `tabs_context` | `tabs` and `profileFailures`; an incomplete listing names the missing profiles |
+| `tabs_create`, `select_tab`, `close_tab` | `tab`, with the profile-qualified handle; close returns `id` and `closed` |
+| `read_page`, `snapshot`, `find` | `page`, `snapshot`, `matches` respectively |
+| `read_console`, `read_network` | `messages`, `requests` respectively |
+| `javascript_tool`, interaction and navigation tools | `result`; interactions can additionally return `wait`, `trace`, and `snapshot` when requested and supported |
+| `wait`, `resize_window` | `wait`, `window` respectively |
+| `screenshot` | `screenshot` metadata, including MIME type, byte count, scale, available capture context, and `filePath` when saved; PNG bytes remain in the image block or file |
+| `run_steps` | `results`, `completedSteps`, `failedStep`, plus requested `trace` and `snapshot`; each completed step includes its own structured result |
 
-Text that is not JSON stays text. `read_page` with `format: "text"` returns whatever the page says, including a page whose entire content is `42` or `null`, and those come back as the strings they are rather than retyped.
+`read_page` text and HTML always remain strings, including literal `42`, `null`, `{}`, or `[]`. Snapshot format returns data. `javascript_tool` decodes JSON primitives as their actual types; legacy replies carrying explanatory text (such as an isolated-world fallback note) remain strings so that context is preserved.
 
-No `outputSchema` is declared for these yet. Clients that hold one reject any result that does not match it, which would make every later shape change a hard break while the tool surface is still settling. Treat `structuredContent` as stable in spirit and not yet contractual; read `content` if you want the safer of the two.
+No `outputSchema` is declared yet. Result shapes are documented here and covered by protocol-level tests, but may evolve before 1.0. Clients should ignore unknown fields. A future declared schema will require every corresponding result to conform.
 
 ### Failures
 

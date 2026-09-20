@@ -65,4 +65,17 @@ struct StructuredOutputTests {
         #expect(SafariMCPServer.structuredPayload(AnyCodable(7)) == .int(7))
         #expect(SafariMCPServer.structuredPayload(AnyCodable(true)) == .bool(true))
     }
+    @Test func textFormatNeverSniffsJsonContainersOrPrimitives() {
+        for text in ["{}", "[]", #"{"a":1}"#, "42", "true", "null", #""quoted""#] {
+            #expect(SafariMCPServer.structuredPayload(AnyCodable(text), decoding: .text) == .string(text))
+        }
+    }
+
+    @Test func explicitJsonResultsPreservePrimitiveTypes() {
+        #expect(SafariMCPServer.structuredPayload(AnyCodable("42"), decoding: .json) == .int(42))
+        #expect(SafariMCPServer.structuredPayload(AnyCodable("true"), decoding: .json) == .bool(true))
+        #expect(SafariMCPServer.structuredPayload(AnyCodable("null"), decoding: .json) == .null)
+        #expect(SafariMCPServer.structuredPayload(AnyCodable(#""hello""#), decoding: .json) == .string("hello"))
+    }
+
 }
