@@ -64,7 +64,7 @@ function siteAccessMarkup(access) {
             ? '<p class="site-hint">Safari is asking whether to allow this site. Its dialog can '
               + "open behind another window.</p>"
             : '<p class="site-hint">Allow this site from Safari Settings &gt; Extensions to let '
-              + "MCPSafari read it. Everything runs on this Mac.</p>";
+              + "MCPSafari read it. Results are shared with your MCP client.</p>";
 
     return `<div class="site-row"><span class="site-host">${escapeHtml(host)}</span>${state}</div>${hint}`;
 }

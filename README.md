@@ -74,4 +74,4 @@ Console and network capture have limits. Pages can alter the captured data, and 
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).

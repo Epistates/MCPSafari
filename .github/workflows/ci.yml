@@ -14,10 +14,17 @@ on:
       - 'LICENSE'
       - '.gitignore'
 
+# Building and testing needs nothing but the source. Stated per workflow rather
+# than left to the repository default, so widening that default later cannot
+# quietly widen this.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build & Test
     runs-on: macos-26
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -54,37 +61,13 @@ jobs:
       - name: Test extension scripts
         run: node --test Tests/*.mjs
 
-      - name: Test MCP handshake
+      - name: Test release preparation
+        run: python3 .github/scripts/test_prepare_release.py
+
+      - name: Test MCP handshake and bridge status
         run: |
-          cd MCPServer
-          swift build -c release
-
-          # Create a named pipe for communication
-          mkfifo /tmp/mcp-stdin
-
-          # Start the server in the background reading from the pipe
-          .build/release/MCPSafari --port 0 < /tmp/mcp-stdin > /tmp/mcp-stdout 2>/dev/null &
-          SERVER_PID=$!
-
-          # Send initialize request (keep pipe open with exec)
-          exec 3>/tmp/mcp-stdin
-          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}' >&3
-
-          # Wait for response
-          sleep 3
-          exec 3>&-
-
-          RESPONSE=$(cat /tmp/mcp-stdout 2>/dev/null | head -1)
-          kill $SERVER_PID 2>/dev/null || true
-          rm -f /tmp/mcp-stdin /tmp/mcp-stdout
-
-          if echo "$RESPONSE" | grep -q '"mcp-safari"'; then
-            echo "✓ MCP handshake successful"
-          else
-            echo "✗ MCP handshake failed"
-            echo "Response: $RESPONSE"
-            exit 1
-          fi
+          swift build --package-path MCPServer -c release
+          python3 .github/scripts/smoke_mcp.py MCPServer/.build/release/MCPSafari
 
       - name: Build Safari Extension
         run: |

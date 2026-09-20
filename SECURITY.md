@@ -8,7 +8,7 @@ Security support is provided for the latest released version on `main`.
 
 Please do **not** open public issues for suspected vulnerabilities.
 
-Instead, email the maintainer privately with:
+Instead, email [support@epistates.com](mailto:support@epistates.com) privately with:
 - A clear description of the issue
 - Reproduction steps / proof of concept
 - Potential impact
@@ -21,7 +21,7 @@ We will acknowledge receipt as soon as possible and work on a fix before public 
 This repository includes automated security scanning via GitHub Actions:
 - **CodeQL** for static analysis of Swift code
 - **Gitleaks** for accidental secret detection
-- **OSV-Scanner** for vulnerable dependency detection
+- **OSV.dev API audit** of the pinned SwiftPM dependencies
 
 These checks run on pull requests, pushes to the default branch, and on a weekly schedule.
 
@@ -63,3 +63,21 @@ The extension requests these permissions in `manifest.json`:
 | `nativeMessaging` | Auth token exchange with host app |
 | `alarms` | Service worker keepalive |
 | `storage` | Persist selected tab across suspensions |
+
+| Host access / injection | Purpose and scope |
+|-|-|
+| `host_permissions: ["<all_urls>"]` | Requests access across supported sites, including signed-in pages. Safari's per-site grants still determine where access is allowed; this is currently required host access, not optional host permissions. |
+| Five `MAIN` world scripts at `document_start` | `trace-interceptor.js`, `dialog-interceptor.js`, `console-interceptor.js`, `network-interceptor.js`, and `file-drop.js` run in the top-level page's own JavaScript world on permitted matching pages. They instrument page APIs and implement tracing, dialog policy, console/network capture, and file drops. |
+| `content.js` at `document_start`, `all_frames: true` | Runs in the extension's isolated world in permitted matching frames for DOM reading and interaction. Cross-origin frames require their own site access. |
+
+The page-world scripts load on permitted pages even when no MCP client is connected.
+In particular, the dialog interceptor replaces `alert`, `confirm`, and `prompt`;
+confirm and prompt default to dismissal unless an agent sets a different policy.
+This can change normal browsing behavior. Disable the extension or revoke access
+for sites where this behavior is unwanted.
+
+Page-world instrumentation is not a trusted audit log: a page can inspect, alter,
+or spoof the page-side APIs and messages. Treat page text and captured events as
+untrusted data, including instructions embedded in them. Tool output may include
+signed-in content and is shared with the MCP client, whose model provider and
+retention policies are separate from this local extension.

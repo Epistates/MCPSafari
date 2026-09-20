@@ -535,16 +535,21 @@ actor WebSocketBridge {
                 }
 
                 if success {
+                    guard let boundPort = newListener.port?.rawValue else {
+                        newListener.cancel()
+                        continue
+                    }
+                    self.port = boundPort
                     listenerStatus = .listening
-                    if tryPort != requestedPort {
-                        logger.info("Port \(requestedPort) in use — listening on \(tryPort) instead")
+                    if requestedPort != 0 && boundPort != requestedPort {
+                        logger.info("Port \(requestedPort) in use — listening on \(boundPort) instead")
                     }
                     do {
-                        try writeAuthTokenFile(for: tryPort)
+                        try writeAuthTokenFile(for: boundPort)
                     } catch {
-                        logger.error("Could not write auth token file for port \(tryPort): \(error)")
+                        logger.error("Could not write auth token file for port \(boundPort): \(error)")
                     }
-                    logger.info("WebSocket server listening on port \(tryPort)")
+                    logger.info("WebSocket server listening on port \(boundPort)")
                     return
                 } else {
                     newListener.cancel()
@@ -865,12 +870,12 @@ actor WebSocketBridge {
             let response = try JSONDecoder().decode(BridgeResponse.self, from: data)
             logger.debug("Received bridge response: [\(response.id)] success=\(response.success)")
 
-            if let pending = pendingRequests.removeValue(forKey: response.id) {
+            if let pending = pendingRequests[response.id] {
                 guard pending.connectionID == ObjectIdentifier(conn) else {
                     logger.warning("Received response for request ID on a stale connection: \(response.id)")
-                    pending.continuation.resume(throwing: BridgeError.notConnected)
                     return
                 }
+                pendingRequests.removeValue(forKey: response.id)
                 pending.continuation.resume(returning: response)
             } else {
                 logger.warning("Received response for unknown request ID: \(response.id)")
