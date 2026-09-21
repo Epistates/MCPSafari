@@ -238,14 +238,14 @@ jobs:
             test -s "$dir/$archive"
             (cd "$dir" && shasum -a 256 -c "$binary.sha256" "$archive.sha256")
             codesign --verify --strict "$dir/$binary"
-            lipo -verify_arch "$arch" "$dir/$binary"
+            lipo "$dir/$binary" -verify_arch "$arch"
             cp "$dir/$binary" "$dir/$archive" final-release/
           done
           lipo -create release-artifacts/arm64/MCPSafari-Server-arm64-apple-darwin \
             release-artifacts/x86_64/MCPSafari-Server-x86_64-apple-darwin \
             -output final-release/MCPSafari-Server-universal-apple-darwin
           chmod +x final-release/MCPSafari-Server-*
-          lipo -verify_arch arm64 x86_64 final-release/MCPSafari-Server-universal-apple-darwin
+          lipo final-release/MCPSafari-Server-universal-apple-darwin -verify_arch arm64 x86_64
           codesign --verify --strict final-release/MCPSafari-Server-universal-apple-darwin
 
       - name: Notarize distributed CLI binaries
