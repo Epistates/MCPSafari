@@ -90,3 +90,10 @@ app and standalone CLI binaries, and creates relative-path checksums. Manual
 workflow dispatch builds artifacts for inspection and does not publish a release.
 Actual Developer ID signing and Apple service acceptance must still be verified
 in the release environment; local script tests cannot establish either.
+
+For full distribution qualification before a tag, dispatch the Release workflow
+with `validate_distribution: true` and the version recorded in the source and
+changelog. This requires valid Developer ID credentials, notarizes the app and all
+CLI binaries (including the universal binary), and uploads `validated-distribution`
+artifacts. The publication step only runs on a tag push. The default manual run
+remains a build-only dry run that permits missing signing credentials.
