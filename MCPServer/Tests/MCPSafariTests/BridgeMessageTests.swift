@@ -60,12 +60,12 @@ struct BridgeMessageTests {
             recoveryAction: "call_status"
         ))
 
-        #expect(WebSocketBridge.BridgeError.timeout.toolFailure == ToolFailure(
-            code: "bridge_timeout",
-            message: "Request to Safari extension timed out after 30 seconds.",
-            retryable: true,
-            recoveryAction: "retry"
-        ))
+        let timeout = WebSocketBridge.BridgeError.timeout(action: "click", seconds: 0.5).toolFailure
+        #expect(timeout.code == "bridge_timeout")
+        #expect(timeout.message.contains("click after 0.5 seconds"))
+        #expect(timeout.message.contains("may already have completed"))
+        #expect(timeout.retryable == false)
+        #expect(timeout.recoveryAction == "inspect_error")
     }
 
     @Test func legacyExtensionErrorsRemainDecodable() throws {
