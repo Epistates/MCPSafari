@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +49,31 @@ def release_notes(tag: str, root: Path = ROOT) -> str:
     )
 
 
+SOURCE_PATHS = ("MCPServer", "MCPSafari", ".github/workflows", ".github/scripts", "Tests")
+
+
+def qualification(tag: str, root: Path = ROOT) -> None:
+    evidence = json.loads((root / ".github/release-qualification.json").read_text())
+    if evidence.get("version") != tag.removeprefix("v"):
+        raise ValueError("No Safari qualification for this release version")
+    commit = evidence.get("sourceCommit", "")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Qualification must identify the tested source commit")
+    for field in ("macOS", "safari", "testedBy", "testedAt"):
+        if not isinstance(evidence.get(field), str) or not evidence[field].strip():
+            raise ValueError(f"Qualification is missing {field}")
+    for check in ("profileRouting", "profileReconnect", "permissions", "privateByDefault"):
+        result = evidence.get("checks", {}).get(check, {})
+        if result.get("status") != "passed" or not isinstance(result.get("evidence"), str) or not result["evidence"].strip():
+            raise ValueError(f"Safari qualification incomplete: {check}")
+    # The evidence is committed after testing. Permit documentation/evidence-only
+    # commits, but reject any change to the tested implementation or packaging.
+    subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=root, check=True)
+    result = subprocess.run(["git", "diff", "--quiet", commit, "HEAD", "--", *SOURCE_PATHS], cwd=root)
+    if result.returncode != 0:
+        raise ValueError("Release source differs from the Safari-qualified commit; rerun qualification")
+
+
 def prepare_artifacts(directory: Path) -> None:
     # Validate the complete set before writing any checksums.
     for name in ARTIFACTS:
@@ -69,15 +95,19 @@ def main() -> None:
     notes = commands.add_parser("notes")
     notes.add_argument("tag")
     notes.add_argument("output", type=Path)
+    qualify = commands.add_parser("qualify")
+    qualify.add_argument("tag")
     artifacts = commands.add_parser("artifacts")
     artifacts.add_argument("directory", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "notes":
             args.output.write_text(release_notes(args.tag))
+        elif args.command == "qualify":
+            qualification(args.tag)
         else:
             prepare_artifacts(args.directory)
-    except (ValueError, OSError, KeyError) as error:
+    except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Release preparation failed: {error}\n")
 
 

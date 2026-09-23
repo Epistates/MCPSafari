@@ -60,7 +60,7 @@ Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the pa
 
 | Tool | Description |
 |-|-|
-| `handle_dialog` | Accept or dismiss alerts, confirms, and prompts |
+| `handle_dialog` | Arm the next dialog (30-second expiry), or read its captured result |
 
 ### Screenshots
 
@@ -263,3 +263,29 @@ Use `run_steps` for a fixed sequence of existing interactions and waits with a s
 ```
 
 The batch stops at the first structured failure and reports `completedSteps`, `failedStep`, and ordered step results. Completed browser actions are not rolled back. Batch-level trace and snapshot options produce one trace and one final snapshot rather than one artifact per step.
+
+### Dialog automation
+
+Call `handle_dialog` before triggering an alert, confirm, or prompt. It arms one
+dialog for up to 30 seconds; the next dialog consumes the policy and restores native
+APIs. Call it again to read the captured result (this does not rearm). Already-open
+native dialogs require user interaction. Navigation clears an armed policy; a
+disconnect leaves it armed only until its existing deadline. Captured fields are
+limited to 4,096 UTF-16 code units with `truncated: true` when shortened.
+
+### Capture and filter limits
+
+Console messages retain at most 8,192 UTF-16 code units; network string fields retain
+at most 2,048. Shortened records have `truncated: true`. Console object serialization
+also limits traversal and arguments; omitted values are marked. Existing count
+limits (1,000 console messages, 500 network requests and 500 resource entries) apply.
+
+`pattern` and `urlPattern` support a bounded regex subset: literals, dots, anchors,
+character classes, escaped characters, and alternation, up to 200 characters.
+Repetition (`*`, `+`, `?`, `{}`), groups, and backreferences are rejected, as are
+invalid patterns. Filter rejection never silently returns unfiltered data. For
+example, use `error|warning` or `^https://example\.com/` rather than `(error)+`.
+
+The bridge accepts up to 128 in-flight requests and 32 MiB per WebSocket message.
+File uploads retain their separate 10 MiB aggregate file limit. Large captures may
+need narrower selectors, fewer results, or smaller screenshots.

@@ -1,9 +1,11 @@
 import hashlib
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from prepare_release import ARTIFACTS, prepare_artifacts, release_notes
+from prepare_release import ARTIFACTS, prepare_artifacts, release_notes, qualification
 
 
 class ReleasePreparationTests(unittest.TestCase):
@@ -71,6 +73,46 @@ class ReleasePreparationTests(unittest.TestCase):
                 prepare_artifacts(self.root)
             self.assertFalse((self.root / "SHA256SUMS").exists())
 
+
+
+class QualificationTests(unittest.TestCase):
+    def test_evidence_and_source_changes_are_enforced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+            git("init", "-q")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Qualification Test")
+            (root / "MCPServer").mkdir()
+            (root / "MCPServer/source.swift").write_text("original")
+            git("add", ".")
+            git("commit", "-qm", "candidate")
+            evidence = {
+                "version": "0.4.0", "sourceCommit": git("rev-parse", "HEAD"),
+                "macOS": "test-os", "safari": "test-browser", "testedBy": "test", "testedAt": "2026-09-23",
+                "checks": {name: {"status": "passed", "evidence": "test evidence"} for name in
+                           ("profileRouting", "profileReconnect", "permissions", "privateByDefault")},
+            }
+            (root / ".github").mkdir()
+            path = root / ".github/release-qualification.json"
+            path.write_text(json.dumps(evidence))
+            git("add", ".")
+            git("commit", "-qm", "evidence")
+            qualification("v0.4.0", root)
+            with self.assertRaises(ValueError):
+                qualification("v0.4.1", root)
+            evidence["checks"]["permissions"]["status"] = "pending"
+            path.write_text(json.dumps(evidence))
+            with self.assertRaisesRegex(ValueError, "permissions"):
+                qualification("v0.4.0", root)
+            evidence["checks"]["permissions"]["status"] = "passed"
+            path.write_text(json.dumps(evidence))
+            (root / "MCPServer/source.swift").write_text("changed")
+            git("add", ".")
+            git("commit", "-qm", "changed source")
+            with self.assertRaisesRegex(ValueError, "differs"):
+                qualification("v0.4.0", root)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+- Dialog automation is now opt-in and one-shot: call `handle_dialog` before triggering a dialog, within 30 seconds. Native dialogs are unchanged outside that window; reading a captured result does not rearm interception.
+- Console/network filters use a bounded regex subset and reject invalid or potentially expensive patterns instead of silently ignoring filters. Captured fields report truncation; bridge messages and in-flight requests have explicit limits.
+
+### Fixed
+- File uploads validate and read one descriptor within a strict remaining byte budget, including when caller-selected paths change concurrently.
+- Token publication failure stops the listener and reports a diagnostic. Stdio shutdown removes owned per-port tokens; extension token discovery merges both supported roots.
+- Popup website-access status refreshes without overlapping probes and reports messaging failures.
+
 ### Added
+- JavaScript CodeQL coverage, immutable workflow action references, locked dependency resolution, and a tag-publishing gate requiring recorded real-Safari qualification.
 - Structured results now cover every tool's success path, including status, profile-qualified tab listings, interactions, screenshots, timed waits, and nested batch results. Text and HTML page reads preserve JSON-looking text verbatim, JavaScript results preserve JSON primitive types, and screenshot metadata avoids duplicating image bytes. Protocol-level tests exercise all 27 advertised tools against the actual server.
 
 - Every tool result now carries its answer as data as well as prose. Failures have carried `structuredContent` since tool error codes shipped, so a caller got something parseable only when something went wrong; successes returned a paragraph. Each success now sets `structuredContent` to a one-key object naming its payload (`snapshot`, `matches`, `messages`, `requests`, `page`, `tab`, `window`, `result`, `wait`, `screenshot`), and a JSON listing arrives as an array a caller can index rather than a string they have to parse again. Text that is not JSON stays text, including a page whose whole content is `42` or `null`, which a parser alone would have retyped into a number or an absent value. The single key is required rather than stylistic: `structuredContent` may only be a JSON object before protocol revision 2026-07-28, and this server negotiates 2025-11-25. No `outputSchema` is declared to go with it, deliberately, since a declared schema makes clients reject any result that does not match and would turn every later shape change into a hard break while the tool surface is still settling.

@@ -97,3 +97,23 @@ changelog. This requires valid Developer ID credentials, notarizes the app and a
 CLI binaries (including the universal binary), and uploads `validated-distribution`
 artifacts. The publication step only runs on a tag push. The default manual run
 remains a build-only dry run that permits missing signing credentials.
+
+### Recording release qualification
+
+Tagged publishing requires `.github/release-qualification.json` to name the release
+version, tested source commit, exact macOS/Safari versions, tester, date, and passing
+evidence for profile routing, reconnect isolation, permissions, and private-by-default
+behavior. Pending entries deliberately prevent publishing. Never substitute mock
+extension tests or a distribution dry run for browser evidence.
+
+Commit evidence after testing the candidate. The release gate compares implementation,
+tests, and workflow paths against `sourceCommit`; changes in these paths require a
+new qualification. Documentation-only evidence commits are allowed. Check locally:
+
+```sh
+python3 .github/scripts/prepare_release.py qualify v0.4.0
+```
+
+Manual distribution validation remains available while browser qualification is
+pending and cannot publish. This is workflow enforcement, not repository access
+control: administrators able to change workflows can change this gate.

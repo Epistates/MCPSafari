@@ -71,10 +71,12 @@ The extension requests these permissions in `manifest.json`:
 | `content.js` at `document_start`, `all_frames: true` | Runs in the extension's isolated world in permitted matching frames for DOM reading and interaction. Cross-origin frames require their own site access. |
 
 The page-world scripts load on permitted pages even when no MCP client is connected.
-In particular, the dialog interceptor replaces `alert`, `confirm`, and `prompt`;
-confirm and prompt default to dismissal unless an agent sets a different policy.
-This can change normal browsing behavior. Disable the extension or revoke access
-for sites where this behavior is unwanted.
+Dialog APIs remain native until `handle_dialog` explicitly arms a one-dialog policy.
+That policy expires after 30 seconds or the next dialog, whichever comes first;
+navigation also restores native APIs. A disconnect does not retract an already
+armed policy, but cannot extend its lifetime. Captured text is capped at 4,096
+UTF-16 code units per field and reports truncation. Console and network capture
+still run on permitted pages without an MCP client.
 
 Page-world instrumentation is not a trusted audit log: a page can inspect, alter,
 or spoof the page-side APIs and messages. Treat page text and captured events as

@@ -75,20 +75,35 @@ function escapeHtml(value) {
     })[c]);
 }
 
+let siteRefreshPending = false;
+
 async function refreshSite() {
+    if (siteRefreshPending) return;
+    siteRefreshPending = true;
     try {
         const access = await browser.runtime.sendMessage({ type: "tabAccess" });
         document.getElementById("site").innerHTML = siteAccessMarkup(access);
-    } catch (_) { /* extension may not be ready */ }
+    } catch (_) {
+        document.getElementById("site").textContent = "Could not check website access. Reopen the popup to try again.";
+    } finally {
+        siteRefreshPending = false;
+    }
 }
 
+let connectionRefreshPending = false;
 async function refresh() {
+    if (connectionRefreshPending) return;
+    connectionRefreshPending = true;
     try {
         const response = await browser.runtime.sendMessage({ type: "getStatus" });
         if (response) {
             renderConnections(response.ports);
         }
-    } catch (_) { /* extension may not be ready */ }
+    } catch (_) {
+        document.getElementById("connections").textContent = "Could not reach the extension. Reopen the popup to try again.";
+    } finally {
+        connectionRefreshPending = false;
+    }
 }
 
 async function refreshConnections() {
@@ -106,7 +121,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     refreshSite();
     await refreshConnections();
 
-    const refreshTimer = setInterval(refresh, 1000);
+    const refreshTimer = setInterval(() => { refresh(); refreshSite(); }, 1000);
     window.addEventListener("unload", () => clearInterval(refreshTimer));
 
     document.getElementById("add-btn").addEventListener("click", async () => {

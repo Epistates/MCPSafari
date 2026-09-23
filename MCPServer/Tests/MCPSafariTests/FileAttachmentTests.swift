@@ -129,6 +129,32 @@ struct FileAttachmentTests {
         }
     }
 
+    @Test func openedDescriptorSurvivesPathReplacement() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("file")
+        try Data("original".utf8).write(to: path)
+        let handle = try FileHandle(forReadingFrom: path)
+        defer { try? handle.close() }
+        try FileManager.default.removeItem(at: path)
+        #expect(mkfifo(path.path, 0o600) == 0)
+        let data = try FileAttachmentLoader.read(descriptor: handle.fileDescriptor, budget: 8)
+        #expect(data == Data("original".utf8))
+    }
+
+    @Test func descriptorReadEnforcesExactRemainingBudget() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("file")
+        try Data(repeating: 1, count: 131_073).write(to: path)
+        let handle = try FileHandle(forReadingFrom: path)
+        defer { try? handle.close() }
+        #expect(throws: FileAttachmentError.self) {
+            try FileAttachmentLoader.read(descriptor: handle.fileDescriptor, budget: 131_072)
+        }
+        #expect(try FileAttachmentLoader.read(descriptor: handle.fileDescriptor, budget: 131_073).count == 131_073)
+    }
+
     private func makeSparseFile(at url: URL, size: Int) throws -> URL {
         FileManager.default.createFile(atPath: url.path, contents: nil)
         let handle = try FileHandle(forWritingTo: url)

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import UniformTypeIdentifiers
 
@@ -36,29 +37,20 @@ enum FileAttachmentLoader {
         var totalBytes = 0
 
         for path in paths {
-            let (url, name, reportedSize) = try resolve(path)
-            // Reject on the reported size before reading so an oversized path cannot be
-            // loaded into memory first.
-            guard reportedSize <= maxTotalBytes - totalBytes else {
-                throw FileAttachmentError(
-                    "Files exceed the \(maxTotalBytes / (1024 * 1024)) MB total limit for one call"
-                )
-            }
-
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw FileAttachmentError("File path must not be empty") }
+            let url = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath).standardizedFileURL
+            // Nonblocking open prevents a concurrently substituted FIFO from hanging.
+            // fstat and read use the same descriptor, even if the path is replaced.
+            let descriptor = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+            guard descriptor >= 0 else { throw FileAttachmentError("Cannot open file: \(url.path)") }
             let data: Data
             do {
-                data = try Data(contentsOf: url)
-            } catch {
-                throw FileAttachmentError("Cannot read file: \(url.path) (\(error.localizedDescription))")
+                defer { Darwin.close(descriptor) }
+                data = try read(descriptor: descriptor, budget: maxTotalBytes - totalBytes)
             }
-
-            // Re-check after reading in case the file grew between the two checks.
+            let name = url.lastPathComponent
             totalBytes += data.count
-            guard totalBytes <= maxTotalBytes else {
-                throw FileAttachmentError(
-                    "Files exceed the \(maxTotalBytes / (1024 * 1024)) MB total limit for one call"
-                )
-            }
 
             attachments.append(
                 FileAttachment(
@@ -72,39 +64,28 @@ enum FileAttachmentLoader {
         return attachments
     }
 
-    /// Resolves a caller path to a regular file, its attachment name, and its reported size.
-    ///
-    /// Checks and reads follow symlinks so they describe the file that is actually read,
-    /// while the attachment keeps the name the caller asked for. Only regular files are
-    /// accepted: a FIFO, socket, or device path would otherwise block or stream without
-    /// end once `Data(contentsOf:)` opened it.
-    private static func resolve(_ path: String) throws -> (url: URL, name: String, size: Int) {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw FileAttachmentError("File path must not be empty")
+    /// The descriptor stays owned by the caller. Reads never allocate more than the
+    /// remaining budget plus one detection byte, including when a file grows.
+    static func read(descriptor: Int32, budget: Int) throws -> Data {
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG else {
+            throw FileAttachmentError("Path is not a readable regular file")
         }
-
-        let expanded = (trimmed as NSString).expandingTildeInPath
-        let requested = URL(fileURLWithPath: expanded).standardizedFileURL
-        let url = requested.resolvingSymlinksInPath()
-
-        let values: URLResourceValues
-        do {
-            values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey])
-        } catch {
-            throw FileAttachmentError("Cannot access file: \(url.path) (\(error.localizedDescription))")
+        let limitError = FileAttachmentError("Files exceed the \(maxTotalBytes / (1024 * 1024)) MB total limit for one call")
+        guard budget >= 0, info.st_size <= budget else { throw limitError }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, min(buffer.count, budget - data.count + 1))
+            if count == 0 { return data }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw FileAttachmentError("Cannot read file: \(String(cString: strerror(errno)))")
+            }
+            guard count <= budget - data.count else { throw limitError }
+            data.append(contentsOf: buffer.prefix(count))
         }
-
-        if values.isDirectory == true {
-            throw FileAttachmentError("Path is a directory, not a file: \(url.path)")
-        }
-        guard values.isRegularFile == true else {
-            throw FileAttachmentError("Path is not a regular file: \(url.path)")
-        }
-        guard let size = values.fileSize else {
-            throw FileAttachmentError("Cannot determine file size: \(url.path)")
-        }
-        return (url, requested.lastPathComponent, size)
     }
 
     private static func mimeType(forName name: String) -> String {
