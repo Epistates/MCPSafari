@@ -184,7 +184,7 @@ test("popup version comes from the extension manifest", async () => {
     const elements = new Map();
     const renderedPorts = [];
     const element = () => ({ addEventListener() {}, textContent: "", value: "" });
-    for (const id of ["version", "connections", "add-btn", "port-input"]) {
+    for (const id of ["version", "connections", "add-btn", "port-input", "site"]) {
         elements.set(id, element());
     }
     elements.set("connections", {

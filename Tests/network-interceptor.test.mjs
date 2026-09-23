@@ -102,7 +102,7 @@ function readNetwork(window, params) {
     return JSON.parse(JSON.stringify(window.__mcpGetNetworkRequests(params)));
 }
 
-test("urlPattern filters resources by regex and ignores invalid patterns", () => {
+test("urlPattern filters resources and rejects invalid or expensive patterns", () => {
     const { observer, window } = loadInterceptor();
     pushResources(observer, [
         "https://example.test/variant-a.webp",
@@ -116,8 +116,8 @@ test("urlPattern filters resources by regex and ignores invalid patterns", () =>
         "https://example.test/variant-b.webp",
     ]);
 
-    const unfiltered = readNetwork(window, { type: "resource", urlPattern: "([" });
-    assert.equal(unfiltered.length, 3);
+    assert.throws(() => readNetwork(window, { type: "resource", urlPattern: "([" }));
+    assert.throws(() => readNetwork(window, { type: "resource", urlPattern: "(a+)+$" }), /Unsupported filter/);
 });
 
 test("maxResults returns the most recent entries", () => {
@@ -221,4 +221,13 @@ test("XHR and fetch capture still install when PerformanceObserver is unavailabl
         "https://example.test/api/feed",
     ]);
     assert.deepEqual(readNetwork(window, { type: "resource" }), []);
+});
+
+
+test("resource URLs have a per-entry cap with a truncation marker", () => {
+    const { observer, window } = loadInterceptor();
+    pushResources(observer, ["https://example.test/" + "x".repeat(100_000)]);
+    const result = readNetwork(window, { type: "resource" });
+    assert.equal(result[0].url.length, 2048);
+    assert.equal(result[0].truncated, true);
 });

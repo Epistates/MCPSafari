@@ -227,6 +227,7 @@ actor WebSocketBridge {
 
     private var pendingRequests: [String: PendingRequest] = [:]
     private let logger: Logger
+    private let tokenRoots: [URL]
     private let requestedPort: UInt16
     private(set) var port: UInt16
     private var listenerStatus = ListenerStatus.stopped
@@ -245,6 +246,8 @@ actor WebSocketBridge {
     /// Cap on connections held mid-handshake. Generous for real profile counts, and
     /// bounds what an unauthenticated local process can pin open.
     private static let maxAuthenticatingConnections = 8
+    static let maxMessageBytes = 32 * 1024 * 1024
+    static let maxPendingRequests = 128
     /// Primary token root. The sandboxed extension reads tokens through a
     /// home-relative-path exception that the sandbox evaluates against the
     /// *resolved* path, and `~/.config` is commonly symlinked into a dotfiles
@@ -411,7 +414,7 @@ actor WebSocketBridge {
     }
 
     func status() -> Status {
-        let tokenFilePath = Self.tokenFilePath(for: port)
+        let tokenFilePath = tokenRoots[0].appendingPathComponent("tokens/\(port)").path
         let fileManager = FileManager.default
         let tokenFileExists = fileManager.fileExists(atPath: tokenFilePath)
         let permissions = (try? fileManager.attributesOfItem(atPath: tokenFilePath)[.posixPermissions] as? NSNumber)?.intValue
@@ -443,11 +446,14 @@ actor WebSocketBridge {
 
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
+        wsOptions.maximumMessageSize = Self.maxMessageBytes
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
         return params
     }
 
-    init(port: UInt16 = 8089, logger: Logger) throws {
+    init(port: UInt16 = 8089, logger: Logger, tokenRoots: [URL] = WebSocketBridge.tokenRootURLs) throws {
+        precondition(!tokenRoots.isEmpty)
+        self.tokenRoots = tokenRoots
         self.requestedPort = port
         self.port = port
         self.logger = logger
@@ -460,11 +466,10 @@ actor WebSocketBridge {
     private func writeAuthTokenFile(for port: UInt16) throws {
         // The preferred root must succeed; the legacy root is best effort so a
         // broken or unwritable `~/.config` cannot stop the server from starting.
-        try writeToken(for: port, under: Self.applicationSupportDirectoryURL)
-        do {
-            try writeToken(for: port, under: Self.configDirectoryURL)
-        } catch {
-            logger.debug("Could not write legacy token under \(Self.configDirectoryURL.path): \(error)")
+        try writeToken(for: port, under: tokenRoots[0])
+        for root in tokenRoots.dropFirst() {
+            do { try writeToken(for: port, under: root) }
+            catch { logger.debug("Could not write legacy token under \(root.path): \(error)") }
         }
     }
 
@@ -488,6 +493,8 @@ actor WebSocketBridge {
     }
 
     func start() async {
+        guard listener == nil else { return }
+        lastError = nil
         listenerStatus = .binding
         // Try the requested port, then successive ports if in use
         let lastPort = min(
@@ -541,15 +548,23 @@ actor WebSocketBridge {
                         continue
                     }
                     self.port = boundPort
-                    listenerStatus = .listening
                     if requestedPort != 0 && boundPort != requestedPort {
                         logger.info("Port \(requestedPort) in use — listening on \(boundPort) instead")
                     }
                     do {
                         try writeAuthTokenFile(for: boundPort)
                     } catch {
+                        stop()
+                        listenerStatus = .failed
+                        lastError = Failure(
+                            code: "token_write_failed",
+                            message: "Could not publish the authentication token for port \(boundPort).",
+                            recovery: "Check permissions for \(tokenRoots[0].path), then restart the MCP client."
+                        )
                         logger.error("Could not write auth token file for port \(boundPort): \(error)")
+                        return
                     }
+                    listenerStatus = .listening
                     logger.info("WebSocket server listening on port \(boundPort)")
                     return
                 } else {
@@ -566,6 +581,15 @@ actor WebSocketBridge {
     }
 
     func stop() {
+        // Remove only owned per-port tokens while this listener still owns its port.
+        // The shared legacy `token` is deliberately left alone: another process
+        // can replace it between an ownership check and unlink.
+        for root in tokenRoots {
+            let url = root.appendingPathComponent("tokens/\(port)")
+            if (try? String(contentsOf: url, encoding: .utf8)) == authToken {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         listener?.cancel()
         listener = nil
         for pending in authenticatingConnections { pending.cancel() }
@@ -591,6 +615,9 @@ actor WebSocketBridge {
         timeout: TimeInterval = 30,
         profileIndex: Int? = nil
     ) async throws -> BridgeResponse {
+        guard pendingRequests.count < Self.maxPendingRequests else {
+            throw BridgeError.extensionError("Too many in-flight requests (maximum \(Self.maxPendingRequests)). Wait for pending operations to finish.")
+        }
         let connection = try connection(forProfileIndex: profileIndex)
         let connectionID = ObjectIdentifier(connection)
 
@@ -600,6 +627,9 @@ actor WebSocketBridge {
             throw BridgeError.encodingFailed
         }
 
+        guard data.count <= Self.maxMessageBytes else {
+            throw BridgeError.encodingFailed
+        }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "ws", metadata: [metadata])
 
@@ -743,6 +773,10 @@ actor WebSocketBridge {
     }
 
     private func handleNewConnection(_ newConnection: NWConnection) {
+        guard listenerStatus == .listening else {
+            newConnection.cancel()
+            return
+        }
         // Accept the socket, but don't make it active until the token handshake
         // succeeds. This prevents unauthenticated local clients from receiving
         // or spoofing MCP tool traffic.

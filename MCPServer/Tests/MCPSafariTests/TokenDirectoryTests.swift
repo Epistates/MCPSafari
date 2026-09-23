@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 import Testing
 @testable import MCPSafari
 
@@ -83,6 +84,36 @@ struct TokenDirectoryTests {
     @Test func theLegacyRootIsStillTheConfigDirectory() {
         #expect(WebSocketBridge.legacyTokenFilePath.hasSuffix(".config/mcp-safari/token"))
         #expect(WebSocketBridge.configDirectoryURL.path.hasSuffix(".config/mcp-safari"))
+    }
+
+    @Test func tokenPublicationFailureStopsListenerAndIsDiagnosable() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blocked = root.appendingPathComponent("not-a-directory")
+        try Data().write(to: blocked)
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoots: [blocked])
+        await bridge.start()
+        let status = await bridge.status()
+        #expect(status.listener == .failed)
+        #expect(status.lastError?.code == "token_write_failed")
+        await bridge.stop()
+    }
+
+    @Test func shutdownRemovesOnlyOwnedPerPortTokens() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoots: [root])
+        await bridge.start()
+        let port = await bridge.port
+        let token = root.appendingPathComponent("tokens/\(port)")
+        #expect(FileManager.default.fileExists(atPath: token.path))
+        await bridge.stop()
+        #expect(!FileManager.default.fileExists(atPath: token.path))
+        await bridge.start()
+        let nextToken = root.appendingPathComponent("tokens/\(await bridge.port)")
+        try "different-owner".write(to: nextToken, atomically: true, encoding: .utf8)
+        await bridge.stop()
+        #expect(try String(contentsOf: nextToken, encoding: .utf8) == "different-owner")
     }
 
     private func makeDirectory() throws -> URL {

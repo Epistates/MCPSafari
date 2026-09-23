@@ -11,6 +11,15 @@
     const MAX_REQUESTS = 500;
     const requests = [];
     const resources = [];
+    function boundRecord(record) {
+        for (const key of Object.keys(record)) {
+            if (typeof record[key] === "string" && record[key].length > 2048) {
+                record[key] = record[key].slice(0, 2048);
+                record.truncated = true;
+            }
+        }
+        return record;
+    }
 
     function recordTraceEvent(type, request) {
         try {
@@ -58,7 +67,7 @@
                 timestamp: performance.timeOrigin + entry.startTime,
             };
             if (isTimingRestricted(entry)) record.timingRestricted = true;
-            resources.push(record);
+            resources.push(boundRecord(record));
         }
     }
 
@@ -80,7 +89,8 @@
     XMLHttpRequest.prototype.open = function (method, url, ...args) {
         this.__mcpMeta = {
             method: method.toUpperCase(),
-            url: String(url),
+            url: String(url).slice(0, 2048),
+            truncated: String(url).length > 2048,
             type: "xhr",
             startTime: null,
         };
@@ -97,15 +107,15 @@
                     type: "xhr",
                     method: this.__mcpMeta.method,
                     url: this.__mcpMeta.url,
+                    truncated: this.__mcpMeta.truncated,
                     status: this.status,
                     statusText: this.statusText,
                     duration: Date.now() - this.__mcpMeta.startTime,
-                    responseSize: this.responseText
-                        ? this.responseText.length
-                        : 0,
+                    responseSize: (this.responseType === "" || this.responseType === "text" || this.responseType == null)
+                        ? (this.responseText?.length ?? 0) : null,
                     timestamp: this.__mcpMeta.startTime,
                 };
-                requests.push(request);
+                requests.push(boundRecord(request));
                 recordTraceEvent("xhr", request);
             });
         }
@@ -139,7 +149,7 @@
                 duration: Date.now() - startTime,
                 timestamp: startTime,
             };
-            requests.push(request);
+            requests.push(boundRecord(request));
             recordTraceEvent("fetch", request);
 
             return response;
@@ -155,7 +165,7 @@
                 timestamp: startTime,
                 error: String(err.message || err),
             };
-            requests.push(request);
+            requests.push(boundRecord(request));
             recordTraceEvent("fetch", request);
             throw err;
         }
@@ -173,12 +183,15 @@
         }
 
         if (params.urlPattern) {
-            try {
-                const regex = new RegExp(params.urlPattern);
-                filtered = filtered.filter((r) => regex.test(r.url));
-            } catch {
-                // Invalid regex, ignore filter
+            // Bounded regex subset: no repetitions, groups, or backreferences.
+            // Without these constructs, matching work is bounded by pattern × input.
+            const pattern = String(params.urlPattern);
+            const unescaped = pattern.replace(/\\./g, "");
+            if (pattern.length > 200 || /[()*+?{}]/.test(unescaped) || /\\[1-9k]/.test(pattern)) {
+                throw new Error("Unsupported filter: use at most 200 characters, with literals, dots, anchors, character classes, or alternation; no repetition, groups, or backreferences.");
             }
+            const regex = new RegExp(pattern);
+            filtered = filtered.filter((entry) => regex.test(entry.url));
         }
 
         if (params.status != null) {
@@ -208,10 +221,13 @@
         if (event.source !== window || message?.source !== "MCPSafariContent") return;
         if (message.type !== "get_network_requests") return;
 
-        window.postMessage({
-            source: "MCPSafariPage",
-            id: message.id,
-            data: window.__mcpGetNetworkRequests(message.params || {}),
-        }, "*");
+        try {
+            window.postMessage({
+                source: "MCPSafariPage", id: message.id,
+                data: window.__mcpGetNetworkRequests(message.params || {}),
+            }, "*");
+        } catch (error) {
+            window.postMessage({ source: "MCPSafariPage", id: message.id, error: String(error.message || error) }, "*");
+        }
     });
 })();

@@ -187,7 +187,7 @@ Safari asks for website access the first time the extension touches a site, and 
 
 Click the MCPSafari toolbar button to see where you stand: the popup names the current site and whether MCPSafari can reach it, and opening it is also what prompts Safari to ask if it has not already. That is on purpose, since a question about MCPSafari is easiest to answer while you are looking at MCPSafari.
 
-To stop being asked per site, click "Always Allow on Every Website" in Safari > Settings > Extensions > MCPSafari Extension. That is also the only way to reach cross-origin iframes, because Safari's per-site grant covers the top-level page only. Everything runs on your Mac either way; MCPSafari sends nothing anywhere.
+To stop being asked per site, click "Always Allow on Every Website" in Safari > Settings > Extensions > MCPSafari Extension. That is also the only way to reach cross-origin iframes, because Safari's per-site grant covers the top-level page only. MCPSafari runs locally, but tool results are sent to your MCP client and may be processed by its model provider. Grant only the sites you intend that client to access.
 
 ### Port already in use
 

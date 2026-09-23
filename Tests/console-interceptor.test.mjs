@@ -71,3 +71,15 @@ test("level and pattern filters compose when clearing", () => {
         ["render failed", "fetch started for /a"]
     );
 });
+
+
+test("capture bounds large arguments and rejects pathological filters", () => {
+    const { console: patched, window } = loadInterceptor();
+    patched.log("a".repeat(100_000));
+    const entries = window.__mcpGetConsoleMessages({});
+    assert.equal(entries[0].text.length, 8192);
+    assert.equal(entries[0].truncated, true);
+    assert.throws(() => window.__mcpGetConsoleMessages({ pattern: "(a+)+$" }), /Unsupported filter/);
+    assert.throws(() => window.__mcpGetConsoleMessages({ pattern: "a*a*Z" }), /Unsupported filter/);
+    assert.throws(() => window.__mcpGetConsoleMessages({ pattern: "[" }));
+});

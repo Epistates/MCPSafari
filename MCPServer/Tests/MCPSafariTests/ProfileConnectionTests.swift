@@ -8,6 +8,8 @@ import Testing
 /// live connections interact, so these drive real loopback WebSockets: a faked
 /// transport cannot reproduce one connection evicting another.
 struct ProfileConnectionTests {
+    private let tokenRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
 
     // MARK: - Harness
 
@@ -17,9 +19,12 @@ struct ProfileConnectionTests {
         port: UInt16,
         _ body: (WebSocketBridge, UInt16) async throws -> Void
     ) async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
         let bridge = try WebSocketBridge(
             port: port,
-            logger: Logger(label: "ProfileConnectionTests")
+            logger: Logger(label: "ProfileConnectionTests"),
+            tokenRoots: [tokenRoot]
         )
         await bridge.start()
         let boundPort = await bridge.port
@@ -28,19 +33,10 @@ struct ProfileConnectionTests {
             try await body(bridge, boundPort)
         } catch {
             await bridge.stop()
-            removeTokenFile(for: boundPort)
             throw error
         }
 
         await bridge.stop()
-        removeTokenFile(for: boundPort)
-    }
-
-    private func removeTokenFile(for port: UInt16) {
-        for root in WebSocketBridge.tokenRootURLs {
-            let path = root.appendingPathComponent("tokens").appendingPathComponent(String(port))
-            try? FileManager.default.removeItem(at: path)
-        }
     }
 
     /// Connects and completes the handshake, returning the server's auth reply.
@@ -168,7 +164,7 @@ struct ProfileConnectionTests {
             #expect(status.requestedPort == 0)
             #expect(status.port == port)
             #expect(status.tokenFileSecure == true)
-            let token = try String(contentsOfFile: WebSocketBridge.tokenFilePath(for: port), encoding: .utf8)
+            let token = try String(contentsOfFile: tokenRoot.appendingPathComponent("tokens/\(port)").path, encoding: .utf8)
             let client = makeTask(port: port)
             defer { client.cancel() }
             let reply = try await authenticate(port: port, token: token, profileId: "default", task: client)

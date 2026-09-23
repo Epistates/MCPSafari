@@ -78,21 +78,24 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     private static func loadTokens() -> TokenLoadResult {
         var checkedPaths: [String] = []
 
+        var allTokens: [String: String] = [:]
+        var legacyToken: String?
         for configDirectory in tokenConfigDirectories() {
             let tokenDirectory = configDirectory.appendingPathComponent("tokens")
             checkedPaths.append(tokenDirectory.path)
-
-            let tokens = readPortTokens(from: tokenDirectory)
-            if !tokens.isEmpty {
-                return TokenLoadResult(tokens: tokens, legacyToken: nil, checkedPaths: checkedPaths)
+            // A stale primary token must not hide live ports in the legacy root.
+            for (port, token) in readPortTokens(from: tokenDirectory) where allTokens[port] == nil {
+                allTokens[port] = token
             }
-
             let legacyTokenPath = configDirectory.appendingPathComponent("token")
             checkedPaths.append(legacyTokenPath.path)
-
-            if let token = readToken(at: legacyTokenPath) {
-                return TokenLoadResult(tokens: [:], legacyToken: token, checkedPaths: checkedPaths)
-            }
+            if legacyToken == nil { legacyToken = readToken(at: legacyTokenPath) }
+        }
+        if !allTokens.isEmpty {
+            return TokenLoadResult(tokens: allTokens, legacyToken: nil, checkedPaths: checkedPaths)
+        }
+        if let legacyToken {
+            return TokenLoadResult(tokens: [:], legacyToken: legacyToken, checkedPaths: checkedPaths)
         }
 
         return TokenLoadResult(tokens: [:], legacyToken: nil, checkedPaths: checkedPaths)

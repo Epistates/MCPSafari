@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Select Xcode 26.6
         run: |
@@ -51,7 +51,7 @@ jobs:
       - name: Build MCP Server
         run: |
           cd MCPServer
-          swift build
+          swift build --force-resolved-versions
 
       - name: Test MCP Server
         run: |
@@ -69,7 +69,7 @@ jobs:
 
       - name: Test MCP handshake and bridge status
         run: |
-          swift build --package-path MCPServer -c release
+          swift build --package-path MCPServer --force-resolved-versions -c release
           python3 .github/scripts/smoke_mcp.py MCPServer/.build/release/MCPSafari
 
       - name: Build Safari Extension

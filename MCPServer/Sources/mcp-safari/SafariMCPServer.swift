@@ -130,9 +130,15 @@ actor SafariMCPServer {
             wrapping: StdioTransport(),
             logger: logger
         )
-        try await server.start(transport: transport)
-        logger.info("Safari MCP server started")
-        await server.waitUntilCompleted()
+        do {
+            try await server.start(transport: transport)
+            logger.info("Safari MCP server started")
+            await server.waitUntilCompleted()
+        } catch {
+            await bridge.stop()
+            throw error
+        }
+        await bridge.stop()
     }
 
     // MARK: - Tool Registration
@@ -493,7 +499,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "handle_dialog",
-                description: "Accept/dismiss alert, confirm, or prompt dialog.",
+                description: "Arm accept/dismiss for the next alert, confirm, or prompt within 30 seconds. Call before triggering the dialog, then call again to read the captured result. Native dialogs already open cannot be handled.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -542,7 +548,7 @@ actor SafariMCPServer {
                     "properties": .object([
                         "level": .object(["type": .string("string"), "enum": .array([.string("all"), .string("log"), .string("warn"), .string("error"), .string("info"), .string("debug")])]),
                         "clear": .object(["type": .string("boolean")]),
-                        "pattern": .object(["type": .string("string"), "description": .string("Regex filter")]),
+                        "pattern": .object(["type": .string("string"), "description": .string("Bounded regex: literals, dots, anchors, character classes, alternation; no repetitions or groups (max 200 characters)")]),
                         "tabId": Self.tab,
                     ]),
                 ]),
@@ -555,7 +561,7 @@ actor SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object([
                         "type": .object(["type": .string("string"), "enum": .array([.string("all"), .string("xhr"), .string("fetch"), .string("resource")])]),
-                        "urlPattern": .object(["type": .string("string"), "description": .string("Regex filter on URL")]),
+                        "urlPattern": .object(["type": .string("string"), "description": .string("Bounded regex on URL: literals, dots, anchors, character classes, alternation; no repetitions or groups (max 200 characters)")]),
                         "status": .object(["type": .string("integer"), "description": .string("Filter by HTTP status code (fetch/xhr only; 0 means network error)")]),
                         "maxResults": .object(["type": .string("integer"), "description": .string("Return at most this many most recent entries")]),
                         "clear": .object(["type": .string("boolean")]),
