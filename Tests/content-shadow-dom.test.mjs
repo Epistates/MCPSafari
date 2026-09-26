@@ -63,7 +63,9 @@ function el(tag, options = {}, children = []) {
                 : null;
         },
         getBoundingClientRect: () => options.rect || { x: 0, y: 0, left: 0, top: 0, width: 10, height: 10 },
-        scrollIntoView() {},
+        scrollIntoView() { lastScrolled = node; },
+        closest: () => null,
+        contains: (other) => other === node,
         focus() {},
         dispatchEvent() {
             node.clicked += 1;
@@ -95,6 +97,7 @@ function shadowRoot(children) {
     Object.defineProperty(root, "textContent", {
         get: () => root.childNodes.map((c) => c.textContent ?? "").join(""),
     });
+    root.elementFromPoint = () => lastScrolled;
     return addQueries(root);
 }
 
@@ -110,6 +113,8 @@ function markRoot(node, root) {
 }
 
 let documentRef;
+// Nothing covers anything in these fixtures: a hit lands on the scrolled-to element.
+let lastScrolled = null;
 
 // The click path constructs real event objects; only the type and the options
 // matter to these fixtures.
@@ -148,6 +153,7 @@ function loadContent(body) {
             .concat(matchesSelector(body, selector) ? [body] : [])
             .filter((element) => matchesSelector(element, selector));
     document.querySelector = (selector) => document.querySelectorAll(selector)[0] || null;
+    document.elementFromPoint = () => lastScrolled;
     documentRef = document;
 
     vm.runInNewContext(source, {
@@ -166,6 +172,7 @@ function loadContent(body) {
             addEventListener: () => {},
             removeEventListener: () => {},
             postMessage: () => {},
+            innerWidth: 1200,
             innerHeight: 800,
             getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
         },

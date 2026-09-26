@@ -174,6 +174,7 @@ actor SafariMCPServer {
     private static let uid: Value = .object(["type": .string("string"), "description": .string("Element UID from snapshot")])
     private static let sel: Value = .object(["type": .string("string"), "description": .string("CSS selector")])
     private static let txt: Value = .object(["type": .string("string"), "description": .string("Visible text to match")])
+    private static let force: Value = .object(["type": .string("boolean"), "description": .string("Dispatch even when another element covers the target")])
     private static let snap: Value = .object(["type": .string("boolean"), "description": .string("Return snapshot after action")])
     private static let coordX: Value = .object(["type": .string("number"), "description": .string("Viewport x in CSS px; events dispatch at this exact point (overrides uid/selector/text)")])
     private static let coordY: Value = .object(["type": .string("number"), "description": .string("Viewport y in CSS px")])
@@ -349,7 +350,7 @@ actor SafariMCPServer {
 
             Tool(
                 name: "click",
-                description: "Click element by UID, selector, text, or x/y coordinates.",
+                description: "Click element by UID, selector, text, or x/y coordinates. Text that matches several elements equally fails with their UIDs. A target covered by another element (modal, banner) fails with target_covered, and one outside the viewport with target_not_visible, unless force=true.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
@@ -357,6 +358,7 @@ actor SafariMCPServer {
                         "x": Self.coordX,
                         "y": Self.coordY,
                         "doubleClick": .object(["type": .string("boolean")]),
+                        "force": Self.force,
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
                 ])
@@ -440,7 +442,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "hover",
-                description: "Hover element to trigger tooltips/menus. Dispatches pointer and mouse events; synthetic events never apply CSS :hover. Set native=true to move the real OS pointer there, producing true :hover state and boundary events along the path.",
+                description: "Hover element to trigger tooltips/menus. Dispatches pointer and mouse events; synthetic events never apply CSS :hover. Set native=true to move the real OS pointer there, producing true :hover state and boundary events along the path. Synthetic hover fails with target_covered or target_not_visible when a real pointer could not reach the target, unless force=true.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
@@ -451,6 +453,7 @@ actor SafariMCPServer {
                             "type": .string("boolean"),
                             "description": .string("Move the real OS pointer. " + Self.nativeRequirements),
                         ]),
+                        "force": Self.force,
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
                 ])
