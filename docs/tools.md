@@ -128,6 +128,10 @@ Targeting options vary by tool. `click` accepts all four:
 | **Text** | `text: "Sign In"` | Interactive elements are ranked higher |
 | **Coordinates** | `x: 100, y: 200` | Last resort — click at exact position |
 
+Text resolves to one element or fails. An exact match beats a longer label that contains the text, and a control beats plain text. When several elements still tie, the call fails with `ambiguous_target` and lists their UIDs.
+
+A synthetic `click` or `hover` hit-tests the middle of the target's visible part first. It fails with `target_covered` when something else is there, such as a modal, a cookie banner, or the page behind a `pointer-events: none` control, and names that element. It fails with `target_not_visible` when no part of the target is inside the viewport after scrolling. `force: true` dispatches anyway. Coordinates target whatever is at the point, so they never fail this way. The check runs inside the target's own frame, so an overlay drawn by a parent page over an iframe is not detected.
+
 ### Shadow DOM
 
 Every targeting strategy reaches into open shadow roots, so pages built on web components (Lit, Stencil, Salesforce Lightning, most design-system elements) are readable and clickable. `snapshot` follows the flattened tree the user actually sees, so content passed into a `<slot>` is reported once, where the slot places it.
