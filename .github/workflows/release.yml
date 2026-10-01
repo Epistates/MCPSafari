@@ -221,6 +221,11 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
+      # Both are needed to mint a provenance attestation: the OIDC token
+      # identifies this workflow to Sigstore, and the write scope records the
+      # signed statement against the repository.
+      id-token: write
+      attestations: write
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.validate_distribution)
 
     steps:
@@ -268,6 +273,15 @@ jobs:
             --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" --wait --timeout 30m --output-format json > notary-result.json
           python3 -c 'import json; r=json.load(open("notary-result.json")); print(r); assert r.get("status") == "Accepted", "CLI notarization was not accepted"'
+
+      # Before the checksums are written, so the subjects are the five shipped
+      # artifacts and not the .sha256 files describing them. Only on a tag: a
+      # dry run must not record provenance for something nobody can download.
+      - name: Attest build provenance
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: final-release/*
 
       - name: Prepare checksums and release notes
         run: |
