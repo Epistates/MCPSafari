@@ -36,11 +36,17 @@ What is outside it:
 ## Security Controls in this Repository
 
 This repository includes automated security scanning via GitHub Actions:
-- **CodeQL** for static analysis of Swift code
+- **CodeQL** for static analysis of the Swift server and the extension JavaScript
 - **Gitleaks** for accidental secret detection
 - **OSV.dev API audit** of the pinned SwiftPM dependencies
 
 These checks run on pull requests, pushes to the default branch, and on a weekly schedule.
+
+Release assets from v0.4.0 onward carry a signed SLSA build provenance attestation, minted by the
+release workflow through Sigstore. `gh attestation verify <file> --repo Epistates/MCPSafari` ties a
+downloaded file back to the workflow run and commit that produced it, which a checksum cannot do.
+Every workflow action is pinned by commit SHA, and dependency resolution is locked to
+`Package.resolved`.
 
 ## Browser access and data
 
