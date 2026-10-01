@@ -746,7 +746,7 @@
         if (!point.visible)
             throw toolError(
                 "target_not_visible",
-                `<${tag}> has no area inside the viewport, so a real click could not reach it.`,
+                `<${tag}> has no area inside the viewport, so a real pointer could not reach it.`,
                 false,
                 "take_snapshot"
             );
@@ -759,7 +759,7 @@
         const desc = hit ? describeElement(hit) : null;
         throw toolError(
             "target_covered",
-            `<${tag}> is covered at (${Math.round(point.x)}, ${Math.round(point.y)}) by ${desc ? `${desc.uid} <${desc.tag}>${desc.id ? `#${desc.id}` : ""}` : "nothing hit-testable"}. A real click would land there. Dismiss it first, or pass force: true to dispatch anyway.`,
+            `<${tag}> is covered at (${Math.round(point.x)}, ${Math.round(point.y)}) by ${desc ? `${desc.uid} <${desc.tag}>${desc.id ? `#${desc.id}` : ""}` : "nothing hit-testable"}. A real pointer would land there. Dismiss it first, or pass force: true to dispatch anyway.`,
             false,
             "take_snapshot"
         );
@@ -800,10 +800,16 @@
         return `Clicked <${desc}>${el.textContent ? ': "' + el.textContent.trim().substring(0, 50) + '"' : ""}`;
     }
 
-    // Aims at the middle of the element's part inside the viewport, so an
-    // element wider or taller than the viewport is not aimed off-screen.
     function scrollToTarget(element) {
         element.scrollIntoView({ behavior: "instant", block: "center" });
+        return aimPoint(element);
+    }
+
+    // Aims at the middle of the element's part inside the viewport, so an
+    // element wider or taller than the viewport is not aimed off-screen.
+    // Separate from the scrolling because `drag` has two ends to scroll and
+    // has to measure both of them once the page has stopped moving.
+    function aimPoint(element) {
         const rect = element.getBoundingClientRect();
         const left = Math.max(rect.left, 0);
         const top = Math.max(rect.top, 0);
@@ -1300,14 +1306,20 @@
             );
         }
 
+        // One gesture has to reach both ends, so both are scrolled to before
+        // either is measured. The destination uses "nearest" so that a target
+        // already on screen does not move the source back off it.
         fromEl.scrollIntoView({ behavior: "instant", block: "center" });
-        const fromRect = fromEl.getBoundingClientRect();
-        const toRect = toEl.getBoundingClientRect();
+        toEl.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
+        const from = aimPoint(fromEl);
+        const to = aimPoint(toEl);
+        if (!params.force) {
+            assertReachable(fromEl, from);
+            assertReachable(toEl, to);
+        }
 
-        const fromX = fromRect.left + fromRect.width / 2;
-        const fromY = fromRect.top + fromRect.height / 2;
-        const toX = toRect.left + toRect.width / 2;
-        const toY = toRect.top + toRect.height / 2;
+        const { x: fromX, y: fromY } = from;
+        const { x: toX, y: toY } = to;
 
         const baseOpts = { bubbles: true, cancelable: true, view: window };
         const pointerBase = { ...baseOpts, pointerId: 1, pointerType: "mouse", isPrimary: true };

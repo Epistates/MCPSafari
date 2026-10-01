@@ -130,7 +130,9 @@ Targeting options vary by tool. `click` accepts all four:
 
 Text resolves to one element or fails. An exact match beats a longer label that contains the text, and a control beats plain text. When several elements still tie, the call fails with `ambiguous_target` and lists their UIDs.
 
-A synthetic `click` or `hover` hit-tests the middle of the target's visible part first. It fails with `target_covered` when something else is there, such as a modal, a cookie banner, or the page behind a `pointer-events: none` control, and names that element. It fails with `target_not_visible` when no part of the target is inside the viewport after scrolling. `force: true` dispatches anyway. Coordinates target whatever is at the point, so they never fail this way. The check runs inside the target's own frame, so an overlay drawn by a parent page over an iframe is not detected.
+A synthetic `click`, `hover`, or `drag` hit-tests the middle of the target's visible part first. It fails with `target_covered` when something else is there, such as a modal, a cookie banner, or the page behind a `pointer-events: none` control, and names that element. It fails with `target_not_visible` when no part of the target is inside the viewport after scrolling. `force: true` dispatches anyway. Coordinates target whatever is at the point, so they never fail this way. The check runs inside the target's own frame, so an overlay drawn by a parent page over an iframe is not detected.
+
+`drag` scrolls to both ends before measuring either, and checks both before dispatching anything, so a refused drag never leaves the page holding a pointer down with nothing to drop. The destination is scrolled with `nearest` so that a target already on screen does not push the source back off it. Two elements that cannot be on screen at once fail with `target_not_visible` rather than being dragged between off-screen coordinates.
 
 ### Shadow DOM
 
