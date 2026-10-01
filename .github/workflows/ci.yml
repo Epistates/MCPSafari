@@ -56,7 +56,7 @@ jobs:
       - name: Test MCP Server
         run: |
           cd MCPServer
-          swift test
+          swift test --force-resolved-versions
 
       - name: Test extension scripts
         run: node --test Tests/*.mjs
