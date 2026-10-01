@@ -15,6 +15,9 @@ ARTIFACTS = (
     "MCPSafari-Extension-arm64.tar.gz",
     "MCPSafari-Extension-x86_64.tar.gz",
 )
+# The release body is the changelog entry verbatim, so a stray section name or a
+# second "Changed" ships to the release page as-is. Keep a Changelog's set.
+CHANGELOG_SECTIONS = ("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security")
 
 
 def release_notes(tag: str, root: Path = ROOT) -> str:
@@ -42,6 +45,16 @@ def release_notes(tag: str, root: Path = ROOT) -> str:
     notes = changelog[entries[index].end():end].strip()
     if not notes:
         raise ValueError("Release changelog entry is empty")
+    sections = re.findall(r"^### +(.*?) *$", notes, re.MULTILINE)
+    unknown = sorted({name for name in sections if name not in CHANGELOG_SECTIONS})
+    if unknown:
+        raise ValueError(
+            f"Unknown CHANGELOG.md sections for {version}: {unknown}. "
+            f"Use one of: {', '.join(CHANGELOG_SECTIONS)}"
+        )
+    repeated = sorted({name for name in sections if sections.count(name) > 1})
+    if repeated:
+        raise ValueError(f"Repeated CHANGELOG.md sections for {version}: {repeated}")
     return f"# MCPSafari {tag}\n\n{notes}\n\n## Installation\n\n" + (
         "```sh\nbrew trust epistates/tap\nbrew install --cask epistates/tap/mcp-safari\n```\n\n"
         f"See [setup instructions](https://github.com/Epistates/MCPSafari/blob/{tag}/docs/setup.md) "
