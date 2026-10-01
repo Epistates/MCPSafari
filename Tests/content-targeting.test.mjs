@@ -89,7 +89,7 @@ function descendants(root) {
     return all;
 }
 
-function loadContent(body, { hit = () => lastScrolled } = {}) {
+function loadContent(body, { hit = () => lastScrolled, maxArity = Infinity } = {}) {
     let listener;
     class FakeMouseEvent {
         constructor(type, options = {}) {
@@ -125,6 +125,15 @@ function loadContent(body, { hit = () => lastScrolled } = {}) {
         document,
         Node: { ELEMENT_NODE, TEXT_NODE },
         NodeFilter: { SHOW_ELEMENT: 1, FILTER_ACCEPT: 1, FILTER_SKIP: 3 },
+        // Engines cap how many arguments one spread call may pass, and the real
+        // ceiling needs a six-figure fixture to reach. Lowering it here reaches
+        // the same failure for the price of a few thousand nodes.
+        Math: Object.assign(Object.create(Math), {
+            max: (...values) => {
+                if (values.length > maxArity) throw new RangeError("Maximum call stack size exceeded");
+                return Math.max(...values);
+            },
+        }),
         WeakRef,
         setTimeout,
         clearTimeout,
@@ -169,6 +178,18 @@ test("the listed uids target the candidates they name", async () => {
 
     assert.equal(response.error, null);
     assert.ok(clicked(second) && !clicked(first));
+});
+
+test("a page full of equal candidates is refused rather than overflowing the stack", async () => {
+    const buttons = Array.from({ length: 2000 }, () => el("button", {}, [text("Delete")]));
+    const call = loadContent(el("body", {}, buttons), { maxArity: 1000 });
+
+    const response = await call("click", { text: "Delete" });
+
+    assert.equal(response.errorCode, "ambiguous_target");
+    assert.match(response.error, /matches 2000 elements/);
+    assert.match(response.error, /and 1995 more/);
+    assert.ok(buttons.every((button) => !clicked(button)));
 });
 
 test("an exact match wins over a longer label containing the text", async () => {

@@ -709,14 +709,21 @@
 
         // Exact text beats a substring ("Save" over "Save as draft"), then a
         // control beats plain text (a "Delete" button over a "Delete" heading).
-        const score = (node) =>
-            (node.textContent.trim().replace(/\s+/g, " ").toLowerCase() === needle ? 2 : 0) +
-            (node.closest(INTERACTIVE_SELECTOR) ? 1 : 0);
-        const best = Math.max(...innermost.map(score));
-        // Act on the control that holds the text, as a real click would focus it.
-        const top = [...new Set(innermost
-            .filter((node) => score(node) === best)
-            .map((node) => node.closest(INTERACTIVE_SELECTOR) || node))];
+        // Scored in one pass: Math.max(...scores) passes one argument per match,
+        // which overflows the call stack on a page with enough of them, and
+        // scoring twice walked every candidate's ancestors twice over.
+        let best = 0;
+        const scored = innermost.map((node) => {
+            // Act on the control that holds the text, as a real click would focus it.
+            const control = node.closest(INTERACTIVE_SELECTOR);
+            const exact = node.textContent.trim().replace(/\s+/g, " ").toLowerCase() === needle;
+            const value = (exact ? 2 : 0) + (control ? 1 : 0);
+            if (value > best) best = value;
+            return { target: control || node, value };
+        });
+        const top = [...new Set(
+            scored.filter((entry) => entry.value === best).map((entry) => entry.target)
+        )];
         if (top.length === 1) return top[0];
 
         const listed = top.slice(0, MAX_LISTED_CANDIDATES).map((node) => {
