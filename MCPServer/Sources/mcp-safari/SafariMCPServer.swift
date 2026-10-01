@@ -460,7 +460,7 @@ actor SafariMCPServer {
             ),
             Tool(
                 name: "drag",
-                description: "Drag and drop between elements along an interpolated pointer-event path plus HTML5 drag events. Set native=true for a real macOS mouse drag that threshold-based drag libraries (pointer sensors) accept.",
+                description: "Drag and drop between elements along an interpolated pointer-event path plus HTML5 drag events. Set native=true for a real macOS mouse drag that threshold-based drag libraries (pointer sensors) accept. A synthetic drag scrolls to both ends and hit-tests each, failing with target_covered or target_not_visible when one of them is somewhere a real pointer could not reach, unless force=true.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
@@ -472,6 +472,7 @@ actor SafariMCPServer {
                             "type": .string("boolean"),
                             "description": .string("Use real macOS mouse events. " + Self.nativeRequirements),
                         ]),
+                        "force": Self.force,
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
                 ])

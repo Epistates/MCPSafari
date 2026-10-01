@@ -32,7 +32,9 @@ function el(tag, options = {}, children = []) {
         scrollIntoView() {},
         focus() {},
         dispatchEvent() { return true; },
-        getRootNode: () => ({ elementFromPoint: () => node }),
+        // Accessible-name lookup reaches for `label[for=...]` on the root, so a
+        // root that only hit-tests breaks any code path that describes a node.
+        getRootNode: () => ({ elementFromPoint: () => node, querySelector: () => null }),
         closest: () => null,
         contains: (other) => other === node,
         ...options.extra,
@@ -326,13 +328,18 @@ test("hover without x/y still dispatches at the element center", async () => {
 
 // ─── drag pointer path and no-op detection ───────────────────────────
 
-function dragHarness({ throwOn } = {}) {
+// Both ends default to a small on-screen rect with nothing covering them.
+// `coverFrom` and `coverTo` stand in for an overlay the hit test lands on.
+function dragHarness({ throwOn, fromRect, toRect, coverFrom, coverTo } = {}) {
     const fromEvents = [];
     const toEvents = [];
+    const scrolled = [];
     const fromEl = el("div", {
         id: "from",
         extra: {
-            getBoundingClientRect: () => ({ left: 0, top: 0, x: 0, y: 0, width: 10, height: 10 }),
+            getBoundingClientRect: () => fromRect || { left: 0, top: 0, x: 0, y: 0, width: 10, height: 10 },
+            scrollIntoView: () => scrolled.push("from"),
+            getRootNode: () => ({ elementFromPoint: () => coverFrom || fromEl, querySelector: () => null }),
             dispatchEvent(event) {
                 if (event.type === throwOn) throw new Error(`dispatch failed on ${event.type}`);
                 fromEvents.push(event);
@@ -343,14 +350,16 @@ function dragHarness({ throwOn } = {}) {
     const toEl = el("div", {
         id: "to",
         extra: {
-            getBoundingClientRect: () => ({ left: 100, top: 100, x: 100, y: 100, width: 10, height: 10 }),
+            getBoundingClientRect: () => toRect || { left: 100, top: 100, x: 100, y: 100, width: 10, height: 10 },
+            scrollIntoView: () => scrolled.push("to"),
+            getRootNode: () => ({ elementFromPoint: () => coverTo || toEl, querySelector: () => null }),
             dispatchEvent(event) { toEvents.push(event); return true; },
         },
     });
     const call = loadContent(el("body", {}, [fromEl, toEl]), {
         querySelector: (selector) => (selector === "#from" ? fromEl : toEl),
     });
-    return { fromEvents, toEvents, call };
+    return { fromEvents, toEvents, scrolled, call };
 }
 
 test("drag moves along an interpolated pointer path and completes at the target", async () => {
@@ -406,4 +415,71 @@ test("drag disconnects its observer even when the gesture throws partway", async
 
     assert.match(response.error, /dispatch failed on dragstart/);
     assert.equal(FakeMutationObserver.active, null, "the observer is disconnected on the throwing path");
+});
+
+test("drag refuses a covered source and never starts the gesture", async () => {
+    const overlay = el("div", { id: "modal" });
+    const { fromEvents, toEvents, call } = dragHarness({ coverFrom: overlay });
+
+    const response = await call("drag", { fromSelector: "#from", toSelector: "#to" });
+
+    assert.equal(response.errorCode, "target_covered");
+    assert.match(response.error, /<div>#modal/);
+    assert.deepEqual(fromEvents, []);
+    assert.deepEqual(toEvents, []);
+});
+
+test("drag refuses a covered destination before touching the source", async () => {
+    // Checking both ends up front is the point: half a drag leaves the page
+    // holding a pointer down with nothing to drop.
+    const overlay = el("div", { id: "banner" });
+    const { fromEvents, toEvents, call } = dragHarness({ coverTo: overlay });
+
+    const response = await call("drag", { fromSelector: "#from", toSelector: "#to" });
+
+    assert.equal(response.errorCode, "target_covered");
+    assert.match(response.error, /<div>#banner/);
+    assert.deepEqual(fromEvents, [], "the source never receives pointerdown");
+    assert.deepEqual(toEvents, []);
+});
+
+test("drag refuses a destination with no area in the viewport", async () => {
+    const below = { left: 0, top: 900, x: 0, y: 900, width: 10, height: 10 };
+    const { call } = dragHarness({ toRect: below });
+
+    const response = await call("drag", { fromSelector: "#from", toSelector: "#to" });
+
+    assert.equal(response.errorCode, "target_not_visible");
+});
+
+test("drag scrolls the destination into view, not only the source", async () => {
+    const { scrolled, call } = dragHarness();
+    const done = call("drag", { fromSelector: "#from", toSelector: "#to" });
+    setTimeout(() => FakeMutationObserver.active?.mutate(), 100);
+
+    assert.equal((await done).error, null);
+    assert.deepEqual(scrolled, ["from", "to"]);
+});
+
+test("drag aims inside the viewport for a destination wider than it", async () => {
+    // Midpoint of the full rect would be x=1000, which is off the 1200px
+    // viewport once the element starts 500px to its left.
+    const wide = { left: -500, top: 100, x: -500, y: 100, width: 3000, height: 40 };
+    const { toEvents, call } = dragHarness({ toRect: wide });
+    const done = call("drag", { fromSelector: "#from", toSelector: "#to" });
+    setTimeout(() => FakeMutationObserver.active?.mutate(), 100);
+
+    assert.equal((await done).error, null);
+    const drop = toEvents.find((event) => event.type === "drop");
+    assert.equal(drop.clientX, 600);
+    assert.equal(drop.clientY, 120);
+});
+
+test("force drags to a covered destination", async () => {
+    const { toEvents, call } = dragHarness({ coverTo: el("div", { id: "banner" }) });
+    const done = call("drag", { fromSelector: "#from", toSelector: "#to", force: true });
+    setTimeout(() => FakeMutationObserver.active?.mutate(), 100);
+
+    assert.equal((await done).error, null);
+    assert.ok(toEvents.some((event) => event.type === "drop"));
 });
