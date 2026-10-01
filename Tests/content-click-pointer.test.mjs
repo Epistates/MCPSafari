@@ -31,6 +31,9 @@ function loadClick({ cancelsPointerDown = false, cancelsMouseDown = false } = {}
         scrollIntoView() {},
         getBoundingClientRect: () => ({ x: 0, y: 0, left: 0, top: 0, width: 300, height: 100 }),
         focus() { focused += 1; },
+        getRootNode: () => ({ elementFromPoint: () => target }),
+        closest: () => null,
+        contains: (other) => other === target,
         dispatchEvent(event) {
             seen.push(`${event instanceof FakePointerEvent ? "P" : "M"}:${event.type}`);
             if (event.type === "pointerdown" && cancelsPointerDown) {
@@ -43,7 +46,7 @@ function loadClick({ cancelsPointerDown = false, cancelsMouseDown = false } = {}
     let listener;
     vm.runInNewContext(source, {
         browser: { runtime: { onMessage: { addListener: (fn) => { listener = fn; } } } },
-        document: { body: null, documentElement: null, activeElement: null, querySelector: () => target },
+        document: { body: null, documentElement: null, activeElement: null, querySelector: () => target, elementFromPoint: () => target },
         Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 },
         NodeFilter: { SHOW_ELEMENT: 1, FILTER_ACCEPT: 1, FILTER_SKIP: 3 },
         WeakRef,
@@ -51,7 +54,7 @@ function loadClick({ cancelsPointerDown = false, cancelsMouseDown = false } = {}
         clearTimeout,
         MouseEvent: FakeMouseEvent,
         PointerEvent: FakePointerEvent,
-        window: { addEventListener() {}, removeEventListener() {} },
+        window: { addEventListener() {}, removeEventListener() {}, innerWidth: 1200, innerHeight: 800 },
     });
     const call = (action, params) => new Promise((r) => listener({ action, params }, {}, r));
     return { call, seen, focused: () => focused, open: () => open };

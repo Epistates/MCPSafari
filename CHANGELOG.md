@@ -6,6 +6,7 @@
 - Console/network filters use a bounded regex subset and reject invalid or potentially expensive patterns instead of silently ignoring filters. Captured fields report truncation; bridge messages and in-flight requests have explicit limits.
 
 ### Fixed
+- `click` and `hover` no longer report success on an element the user cannot reach. Text targeting took the first ranked match, so `text: "Delete"` on a list of rows silently acted on one of them; it now fails with `ambiguous_target` and the candidates' UIDs when several elements tie. A synthetic event also reached a target under a modal or banner; `click` and `hover` now hit-test the target first and fail with `target_covered` naming the element a real click would reach, or `target_not_visible` when the target has no area in the viewport. `force: true` restores the old dispatch. Text matches inside a control now act on the control, so a click on a button's label focuses the button.
 - File uploads validate and read one descriptor within a strict remaining byte budget, including when caller-selected paths change concurrently.
 - Token publication failure stops the listener and reports a diagnostic. Stdio shutdown removes owned per-port tokens; extension token discovery merges both supported roots.
 - Popup website-access status refreshes without overlapping probes and reports messaging failures.

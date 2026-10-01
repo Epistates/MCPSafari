@@ -656,56 +656,106 @@
             return el;
         }
 
-        // By text content — collect candidates and rank by interactivity
-        if (params.text) {
-            const searchText = params.text.toLowerCase();
-            const candidates = [];
-            for (const root of allRoots()) {
-                if (candidates.length >= 30) break;
-                const walkRoot = walkRootFor(root);
-                if (!walkRoot) continue;
-                const walker = document.createTreeWalker(
-                    walkRoot,
-                    NodeFilter.SHOW_ELEMENT,
-                    {
-                        acceptNode: (node) =>
-                            node.textContent &&
-                            node.textContent.trim().toLowerCase().includes(searchText) &&
-                            isVisible(node) &&
-                            (node.children.length === 0 ||
-                                node.textContent.trim().length < 500)
-                                ? NodeFilter.FILTER_ACCEPT
-                                : NodeFilter.FILTER_SKIP,
-                    }
-                );
-                let node;
-                while ((node = walker.nextNode()) && candidates.length < 30) {
-                    candidates.push(node);
-                }
-            }
-            if (candidates.length === 0)
-                throw toolError(
-                    "target_not_found",
-                    `No element found with text: "${params.text}"`,
-                    false,
-                    "take_snapshot"
-                );
-
-            // Rank: interactive elements first, then by text length (shorter = more specific)
-            const interactiveTags = new Set(["button", "a", "input", "select", "textarea", "summary"]);
-            candidates.sort((a, b) => {
-                const aTag = a.tagName.toLowerCase();
-                const bTag = b.tagName.toLowerCase();
-                const aInteractive = interactiveTags.has(aTag) || a.getAttribute("role") === "button" || a.getAttribute("role") === "link" || a.getAttribute("tabindex") !== null;
-                const bInteractive = interactiveTags.has(bTag) || b.getAttribute("role") === "button" || b.getAttribute("role") === "link" || b.getAttribute("tabindex") !== null;
-                if (aInteractive !== bInteractive) return aInteractive ? -1 : 1;
-                // Prefer shorter text content (more specific match)
-                return (a.textContent?.trim().length || 0) - (b.textContent?.trim().length || 0);
-            });
-            return candidates[0];
-        }
+        if (params.text) return resolveByText(params.text);
 
         return null;
+    }
+
+    // Elements a click anywhere inside activates. A focusable [tabindex]
+    // container is not one: a click on one child does not reach another.
+    const INTERACTIVE_SELECTOR =
+        'button, a, input, select, textarea, summary, [role="button"], [role="link"]';
+    const MAX_LISTED_CANDIDATES = 5;
+
+    // Every ancestor of a matching element matches too, so only the innermost
+    // match on each branch is a candidate. Several equally good candidates are
+    // refused: picking one would act on an element the caller may not mean.
+    function resolveByText(text) {
+        const needle = text.trim().toLowerCase();
+        const matches = [];
+        for (const root of allRoots()) {
+            const walkRoot = walkRootFor(root);
+            if (!walkRoot) continue;
+            const walker = document.createTreeWalker(
+                walkRoot,
+                NodeFilter.SHOW_ELEMENT,
+                {
+                    acceptNode: (node) =>
+                        node.textContent &&
+                        node.textContent.toLowerCase().includes(needle) &&
+                        isVisible(node) &&
+                        node.getClientRects().length > 0
+                            ? NodeFilter.FILTER_ACCEPT
+                            : NodeFilter.FILTER_SKIP,
+                }
+            );
+            let node;
+            while ((node = walker.nextNode())) matches.push(node);
+        }
+        const enclosing = new Set();
+        for (const node of matches) {
+            for (let up = node.parentElement; up && !enclosing.has(up); up = up.parentElement) {
+                enclosing.add(up);
+            }
+        }
+        const innermost = matches.filter((node) => !enclosing.has(node));
+        if (innermost.length === 0)
+            throw toolError(
+                "target_not_found",
+                `No element found with text: "${text}"`,
+                false,
+                "take_snapshot"
+            );
+
+        // Exact text beats a substring ("Save" over "Save as draft"), then a
+        // control beats plain text (a "Delete" button over a "Delete" heading).
+        const score = (node) =>
+            (node.textContent.trim().replace(/\s+/g, " ").toLowerCase() === needle ? 2 : 0) +
+            (node.closest(INTERACTIVE_SELECTOR) ? 1 : 0);
+        const best = Math.max(...innermost.map(score));
+        // Act on the control that holds the text, as a real click would focus it.
+        const top = [...new Set(innermost
+            .filter((node) => score(node) === best)
+            .map((node) => node.closest(INTERACTIVE_SELECTOR) || node))];
+        if (top.length === 1) return top[0];
+
+        const listed = top.slice(0, MAX_LISTED_CANDIDATES).map((node) => {
+            const desc = describeElement(node);
+            return `${desc.uid} <${desc.tag}> "${(desc.name || desc.text || "").substring(0, 40)}"`;
+        });
+        const more = top.length > listed.length ? `, and ${top.length - listed.length} more` : "";
+        throw toolError(
+            "ambiguous_target",
+            `Text "${text}" matches ${top.length} elements equally: ${listed.join("; ")}${more}. Target one by uid.`,
+            false,
+            "fix_input"
+        );
+    }
+
+    // A synthetic event reaches its target even under a modal or a banner, so
+    // without this a click no user could make would still report success.
+    function assertReachable(element, point) {
+        const tag = element.tagName.toLowerCase();
+        if (!point.visible)
+            throw toolError(
+                "target_not_visible",
+                `<${tag}> has no area inside the viewport, so a real click could not reach it.`,
+                false,
+                "take_snapshot"
+            );
+        const hit = element.getRootNode().elementFromPoint(point.x, point.y);
+        // The hit may be decoration inside the control, not only inside the target.
+        const control = element.closest(INTERACTIVE_SELECTOR) || element;
+        if (hit && control.contains(hit)) return;
+        // Styled checkboxes and radios hide the input under its label's content.
+        if (hit?.closest("label")?.control === element) return;
+        const desc = hit ? describeElement(hit) : null;
+        throw toolError(
+            "target_covered",
+            `<${tag}> is covered at (${Math.round(point.x)}, ${Math.round(point.y)}) by ${desc ? `${desc.uid} <${desc.tag}>${desc.id ? `#${desc.id}` : ""}` : "nothing hit-testable"}. A real click would land there. Dismiss it first, or pass force: true to dispatch anyway.`,
+            false,
+            "take_snapshot"
+        );
     }
 
     // ─── Click ───────────────────────────────────────────────────────
@@ -736,24 +786,32 @@
             );
         }
 
-        simulateClick(el, params.doubleClick);
+        const point = scrollToTarget(el);
+        if (!params.force) assertReachable(el, point);
+        simulateClick(el, params.doubleClick, point);
         const desc = el.tagName.toLowerCase();
         return `Clicked <${desc}>${el.textContent ? ': "' + el.textContent.trim().substring(0, 50) + '"' : ""}`;
     }
 
+    // Aims at the middle of the element's part inside the viewport, so an
+    // element wider or taller than the viewport is not aimed off-screen.
+    function scrollToTarget(element) {
+        element.scrollIntoView({ behavior: "instant", block: "center" });
+        const rect = element.getBoundingClientRect();
+        const left = Math.max(rect.left, 0);
+        const top = Math.max(rect.top, 0);
+        const right = Math.min(rect.left + rect.width, window.innerWidth);
+        const bottom = Math.min(rect.top + rect.height, window.innerHeight);
+        const visible = right > left && bottom > top;
+        return visible
+            ? { x: (left + right) / 2, y: (top + bottom) / 2, visible }
+            : { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, visible };
+    }
+
+    // A caller-supplied point is not scrolled to: elementFromPoint already
+    // proved it visible, and scrolling would move the element out from under it.
     function simulateClick(element, doubleClick, point) {
-        let x, y;
-        if (point) {
-            // elementFromPoint already proved the point is visible; scrolling
-            // would move the element out from under the requested coordinates.
-            x = point.x;
-            y = point.y;
-        } else {
-            element.scrollIntoView({ behavior: "instant", block: "center" });
-            const rect = element.getBoundingClientRect();
-            x = rect.left + rect.width / 2;
-            y = rect.top + rect.height / 2;
-        }
+        const { x, y } = point;
 
         const eventOpts = {
             bubbles: true,
@@ -1187,10 +1245,9 @@
                     "fix_input"
                 );
             }
-            el.scrollIntoView({ behavior: "instant", block: "center" });
-            const rect = el.getBoundingClientRect();
-            x = rect.left + rect.width / 2;
-            y = rect.top + rect.height / 2;
+            const point = scrollToTarget(el);
+            if (!params.force) assertReachable(el, point);
+            ({ x, y } = point);
         }
 
         const eventOpts = {

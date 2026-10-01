@@ -32,6 +32,9 @@ function el(tag, options = {}, children = []) {
         scrollIntoView() {},
         focus() {},
         dispatchEvent() { return true; },
+        getRootNode: () => ({ elementFromPoint: () => node }),
+        closest: () => null,
+        contains: (other) => other === node,
         ...options.extra,
     };
     Object.defineProperty(node, "children", {
@@ -136,6 +139,7 @@ function loadContent(body, documentOverrides = {}, windowOverrides = {}) {
             addEventListener: () => {},
             removeEventListener: () => {},
             postMessage: () => {},
+            innerWidth: 1200,
             innerHeight: 800,
             scrollBy: (options) => scrolls.push(options),
             getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
