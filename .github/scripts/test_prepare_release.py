@@ -45,6 +45,24 @@ class ReleasePreparationTests(unittest.TestCase):
             with self.subTest(changelog=changelog), self.assertRaises(ValueError):
                 release_notes("v0.3.2", self.root)
 
+    def test_unknown_or_repeated_sections_fail(self):
+        entry = "## [Unreleased]\n\n## [0.3.2] - 2026-09-14\n{}\n\n## [0.3.1]\nOld notes\n"
+        for sections, expected in (
+            ("### Bug Fixes\nA.", "Unknown"),
+            ("### Fixed\nA.\n\n### Fixed\nB.", "Repeated"),
+            ("### Changed\nA.\n\n### Added\nB.\n\n### Changed\nC.", "Repeated"),
+        ):
+            (self.root / "CHANGELOG.md").write_text(entry.format(sections))
+            with self.subTest(sections=sections), self.assertRaisesRegex(ValueError, expected):
+                release_notes("v0.3.2", self.root)
+
+    def test_every_keep_a_changelog_section_is_accepted(self):
+        entry = "## [Unreleased]\n\n## [0.3.2] - 2026-09-14\n{}\n\n## [0.3.1]\nOld notes\n"
+        body = "\n\n".join(f"### {name}\nA." for name in
+                           ("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"))
+        (self.root / "CHANGELOG.md").write_text(entry.format(body))
+        self.assertIn("### Security", release_notes("v0.3.2", self.root))
+
     def test_an_individual_component_version_mismatch_fails(self):
         path = self.root / "MCPSafari/MCPSafari Extension/Resources/manifest.json"
         path.write_text('{"version":"0.3.1"}')
