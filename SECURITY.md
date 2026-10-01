@@ -16,6 +16,23 @@ Instead, email [support@epistates.com](mailto:support@epistates.com) privately w
 
 We will acknowledge receipt as soon as possible and work on a fix before public disclosure.
 
+## Threat model
+
+What we consider a vulnerability:
+
+- A web page, a remote host, or a local process getting MCPSafari to act, or to return page data, without a grant the user made.
+- Anything that leaks the bridge token, or that authenticates to the bridge without it.
+- Reaching a tab or an origin the user has not allowed, or otherwise getting around Safari's per-site access grants.
+- A sensitive value reaching a tool result outside the redaction limits described below.
+- A tool accepting input that escapes its documented validation, such as a path outside the caller-provided set or a regex outside the accepted subset.
+
+What is outside it:
+
+- An attacker already running code as your macOS user. They can read the token file, drive Safari themselves, and open the same pages, so the bridge is not a boundary against them.
+- Instructions embedded in page content steering the model. Page text is untrusted data by design, which the browser access section below says in full; your MCP client decides what to do with it.
+- Tool results reaching the model provider your MCP client is configured to use. That is what the tools are for, and that client's retention policy governs it.
+- A site misbehaving after you have granted it access.
+
 ## Security Controls in this Repository
 
 This repository includes automated security scanning via GitHub Actions:
@@ -34,6 +51,10 @@ The details below describe `main`; installed releases may differ.
 ### WebSocket authentication
 
 The server generates a random UUID token at startup, writes it to `~/Library/Application Support/MCPSafari/tokens/<port>` (mode `0600`), and requires it as the first WebSocket message before any MCP tool traffic is sent. The extension reads the per-port token map via native messaging from the host app, so multiple server instances can authenticate independently. Connections without a valid token are closed.
+
+The listener binds to the loopback address, so only processes on this machine can reach it, and a connection is never given MCP traffic before its handshake succeeds.
+
+The server does not check the WebSocket `Origin` header. A page in any browser can open a connection to a loopback port and learn that something is listening there, which is a fingerprinting surface. It cannot authenticate, because the token is a random UUID in a `0600` file it has no way to read. At most eight connections may wait mid-handshake and a ninth evicts the oldest, so a flood of them cannot hold the bridge shut against a real Safari profile.
 
 The token is also written to the previous location, `~/.config/mcp-safari/tokens/<port>`, so an extension build predating the move keeps authenticating. Application Support is preferred because the Safari extension is sandboxed: its read access is granted on a literal home-relative path, which the sandbox checks against the *resolved* path. A `~/.config` symlinked into a dotfiles repo therefore puts the token outside the granted path, and the extension silently never connects. `mcp-safari doctor` reports this as a `token_path` warning.
 

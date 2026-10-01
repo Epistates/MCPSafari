@@ -69,7 +69,8 @@ Console and network capture have limits. Pages can alter the captured data, and 
 - [Setup and troubleshooting](docs/setup.md): manual installation, client configuration, ports, and diagnostics.
 - [Tools and usage](docs/tools.md): tool list, targeting, forms, uploads, waits, and batches.
 - [Development](docs/development.md): source builds, tests, and architecture.
-- [Security](SECURITY.md): permissions, redaction, and vulnerability reporting.
+- [Contributing](CONTRIBUTING.md): what a change needs before it can be merged.
+- [Security](SECURITY.md): permissions, redaction, threat model, and vulnerability reporting.
 - [Changelog](CHANGELOG.md) and [releases](https://github.com/Epistates/MCPSafari/releases).
 
 ## License
