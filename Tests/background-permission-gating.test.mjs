@@ -26,6 +26,7 @@ function loadBackground({
     blockTabsAfterProbe = false,
 } = {}) {
     const timers = [];
+    const tabUpdatedListeners = [];
     let probeStarted = false;
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
@@ -61,7 +62,10 @@ function loadBackground({
             update: async () => {},
             captureVisibleTab,
             sendMessage,
-            onUpdated: { addListener() {}, removeListener() {} },
+            onUpdated: {
+                addListener: (listener) => { tabUpdatedListeners.push(listener); },
+                removeListener() {},
+            },
             onRemoved: { addListener() {} },
         },
         webNavigation: { getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: tabUrl }] },
@@ -89,6 +93,11 @@ function loadBackground({
 
     return {
         call: (expression) => vm.runInContext(expression, context),
+        /// Drives `tabs.onUpdated`, which the extension listens to so a tab
+        /// that navigates loses its cached access grant.
+        navigateTab(tabId, url) {
+            for (const listener of tabUpdatedListeners) listener(tabId, { url });
+        },
         pendingDeadlines: () => timers.filter((timer) => !timer.cancelled).length,
         fireDeadlines() {
             for (const timer of timers) {
@@ -258,4 +267,55 @@ test("an unreadable tab url still produces a usable refusal", async () => {
 
     assert.equal(err.code, "permission_required");
     assert.match(err.message, /this tab/);
+});
+
+test("a refused tab is not probed again for every frame in one request", async () => {
+    // The counterpart to the granted case above. Only successes were cached, so
+    // the blocked case, which is the one the cache exists for, probed again on
+    // every call and a frame search paid one per frame.
+    let probes = 0;
+    const harness = loadBackground({
+        probe: async () => {
+            probes += 1;
+            throw new Error("This extension does not have access to this tab");
+        },
+    });
+
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    assert.equal(probes, 1);
+});
+
+test("a cached refusal still names the origin and the recovery", async () => {
+    const harness = loadBackground({
+        probe: async () => { throw new Error("This extension does not have access to this tab"); },
+    });
+
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+    const err = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    // The second caller gets the same refusal, not a bare cache miss.
+    assert.equal(err.code, "permission_required");
+    assert.equal(err.recoveryAction, "ask_user");
+    assert.match(err.message, /https:\/\/blocked\.example/);
+});
+
+test("a tab that navigates loses its cached grant", async () => {
+    let probes = 0;
+    const harness = loadBackground({
+        probe: async () => { probes += 1; return [{ result: true }]; },
+    });
+
+    await harness.call('sendToContentScript(1, { action: "read_page" })');
+    assert.equal(probes, 1);
+
+    // Safari grants per origin, so a pass stops meaning anything once the tab
+    // goes elsewhere. Keyed by tab alone, a navigate followed straight away by
+    // a read reused the previous origin's grant and went back to waiting on the
+    // new origin's dialog with nothing bounding it.
+    harness.navigateTab(1, "https://elsewhere.example/");
+    await harness.call('sendToContentScript(1, { action: "read_page" })');
+
+    assert.equal(probes, 2);
 });

@@ -47,8 +47,17 @@ const TAB_LISTING_TIMEOUT_MS = 25_000;
 // short enough that granting access is picked up on the next retry.
 const PERMISSION_CACHE_MS = 2000;
 
-/** @type {Map<number, number>} tabId to when its last successful probe landed. */
-const tabAccessProbedAt = new Map();
+/**
+ * tabId to its last probe: when it landed, and what it threw if it failed.
+ *
+ * Failures are remembered too. Only successes were, so the blocked case, which
+ * is the one this cache exists for, probed again on every call: a frame search
+ * over eight frames paid a probe each and ran past the server's 30-second
+ * timeout, reporting the generic failure the gating was written to replace.
+ *
+ * @type {Map<number, {at: number, error: Error|null}>}
+ */
+const tabAccessProbes = new Map();
 
 class DeadlineExceeded extends Error {}
 
@@ -169,8 +178,11 @@ function probeTabAccess() {
 // raises Safari's dialog when there is no decision yet, which is wanted: the
 // user cannot answer a question nobody asked.
 async function ensureTabAccess(tabId) {
-    const probedAt = tabAccessProbedAt.get(tabId);
-    if (probedAt !== undefined && Date.now() - probedAt < PERMISSION_CACHE_MS) return;
+    const cached = tabAccessProbes.get(tabId);
+    if (cached && Date.now() - cached.at < PERMISSION_CACHE_MS) {
+        if (cached.error) throw cached.error;
+        return;
+    }
 
     // Read the origin first. The probe below is what raises Safari's dialog, and
     // once that dialog is up `tabs.get` blocks on it as well, so asking
@@ -183,10 +195,11 @@ async function ensureTabAccess(tabId) {
             browser.scripting.executeScript({ target: { tabId }, func: probeTabAccess }),
             PERMISSION_PROBE_TIMEOUT_MS
         );
-        tabAccessProbedAt.set(tabId, Date.now());
+        tabAccessProbes.set(tabId, { at: Date.now(), error: null });
     } catch (err) {
-        tabAccessProbedAt.delete(tabId);
-        throw permissionRequiredError(origin, err instanceof DeadlineExceeded);
+        const refusal = permissionRequiredError(origin, err instanceof DeadlineExceeded);
+        tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
+        throw refusal;
     }
 }
 
@@ -956,12 +969,13 @@ async function handleJavaScript(params) {
 // ─── Window Resize Handler ───────────────────────────────────────────
 
 async function handleResizeWindow(params) {
-    const tabs = await browser.tabs.query({
-        active: true,
-        currentWindow: true,
-    });
-    if (tabs.length === 0) throw new Error("No active window");
-    await browser.windows.update(tabs[0].windowId, {
+    // Routed like every other handler. Reading `currentWindow` directly ignored
+    // both `tabId` and the pin `select_tab` sets, so with the agent's tab in one
+    // window and the user clicked into another, the resize landed on the user's
+    // and a screenshot afterwards did not match the viewport that was asked for.
+    const tabId = params.tabId || (await getActiveTabId());
+    const tab = await browser.tabs.get(tabId);
+    await browser.windows.update(tab.windowId, {
         width: params.width,
         height: params.height,
     });
@@ -1250,7 +1264,17 @@ function delay(ms) {
 // Entries expire on their own, but a long-lived background page would otherwise
 // accumulate one per tab ever touched.
 browser.tabs.onRemoved.addListener((tabId) => {
-    tabAccessProbedAt.delete(tabId);
+    tabAccessProbes.delete(tabId);
+});
+
+// Safari grants access per origin, so a pass stops meaning anything the moment
+// the tab goes somewhere else. Keyed by tab alone, a `navigate` followed
+// straight away by a read fitted inside the window and reused the old origin's
+// grant, which put the read back on an unbounded wait for the new origin's
+// dialog. Clearing here rather than reading the origin on every call keeps the
+// hot path free of an extra `tabs.get`.
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.url) tabAccessProbes.delete(tabId);
 });
 
 /// Whether MCPSafari can reach whatever the user is looking at.
