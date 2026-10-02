@@ -74,11 +74,18 @@ test("a site awaiting Safari's dialog is reported as asking, not as refused", as
     const harness = loadBackground({ probe: () => new Promise(() => {}) });
 
     const running = harness.call("describeActiveTabAccess()");
-    for (let i = 0; i < 100 && harness.pending() === 0; i += 1) {
+    // Deadlines arm in sequence rather than all at once: resolving the active
+    // tab has one of its own before the probe gets there. Firing at whichever
+    // is armed first leaves the handler parked on the next one, so drain and
+    // fire repeatedly until the call settles. Yielding before each fire lets a
+    // call that was going to resolve by itself get there first.
+    const settled = { done: false };
+    const tracked = running.finally(() => { settled.done = true; });
+    for (let i = 0; i < 200 && !settled.done; i += 1) {
         await new Promise((r) => setImmediate(r));
+        harness.fire();
     }
-    harness.fire();
-    const access = await running;
+    const access = await tracked;
 
     // The distinction is the whole point: "asking" resolves by itself once
     // someone finds the dialog, "refused" does not.

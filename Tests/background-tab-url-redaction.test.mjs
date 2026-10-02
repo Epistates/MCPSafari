@@ -22,6 +22,9 @@ function loadBackground() {
             onMessage: { addListener() {} },
             sendNativeMessage: async () => ({ tokens: {} }),
         },
+        // These tests are about redaction, not gating, so the access probe that
+        // `handleSelectTab` runs before reading a tab is granted outright.
+        scripting: { executeScript: async () => [{ result: true }] },
         storage: {
             local: { get: async () => ({}), set() {} },
             session: { get: async () => ({}), set() {}, remove: async () => {} },
