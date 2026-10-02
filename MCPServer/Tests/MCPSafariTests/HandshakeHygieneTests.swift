@@ -115,6 +115,53 @@ struct HandshakeHygieneTests {
         }
     }
 
+    @Test func aRejectedOldBuildDoesNotRelabelAConnectedProfile() async throws {
+        try await withStartedBridge(port: 8351) { bridge, port in
+            let task = makeTask(port: port)
+            defer { task.cancel() }
+            task.resume()
+
+            let token = await bridge.authToken
+            try await authenticate(token: token, profileId: "default", on: task)
+
+            // A mismatched build used to overwrite the one shared pair of
+            // version fields, so `status` described the healthy profile above
+            // using the numbers of the build it had just turned away.
+            let stale = makeTask(port: port)
+            defer { stale.cancel() }
+            stale.resume()
+            let mismatch = #"{"auth":"\#(token)","extensionVersion":"99.0.0","protocolVersion":2}"#
+            try await stale.send(.string(mismatch))
+            try await Task.sleep(for: .milliseconds(250))
+
+            let status = await bridge.status()
+            #expect(status.extensionVersion == "0.3.2")
+            #expect(status.extensionProtocolVersion == MCPSafariProduct.bridgeProtocolVersion)
+            // The refusal is still reported, just not as the live profile's own.
+            #expect(status.lastError?.code == "protocol_version_mismatch")
+            #expect(status.profiles.map(\.id) == ["default"])
+        }
+    }
+
+    @Test func cancellingABroadcastIsNotReportedAsABrowserFailure() async throws {
+        try await withStartedBridge(port: 8361) { bridge, port in
+            let task = makeTask(port: port)
+            defer { task.cancel() }
+            task.resume()
+            try await authenticate(token: await bridge.authToken, profileId: "default", on: task)
+
+            // Nothing answers, so the broadcast is still waiting when it is
+            // cancelled. Each child turns its own CancellationError into an
+            // `.unreachable` outcome, so without a cancellation check the call
+            // returns normally and blames Safari for the caller's own decision.
+            let broadcast = Task { try await bridge.broadcast(action: "tabs_context") }
+            try await Task.sleep(for: .milliseconds(200))
+            broadcast.cancel()
+
+            await #expect(throws: CancellationError.self) { try await broadcast.value }
+        }
+    }
+
     @Test func aSocketThatNeverSpeaksGivesUpItsSlot() async throws {
         // Refusing the newest only works if silent sockets age out, otherwise a
         // handful of them would hold every slot and the refusal would land on

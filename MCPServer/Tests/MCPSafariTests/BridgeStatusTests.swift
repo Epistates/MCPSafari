@@ -4,6 +4,27 @@ import Testing
 @testable import MCPSafari
 
 struct BridgeStatusTests {
+    /// The id is logged and reaches the MCP client, so a handshake cannot be
+    /// allowed to put arbitrary text in either place.
+    @Test func aProfileIDIsBoundedAndStrippedOfAnythingUnprintable() throws {
+        let forged = "work\n2026-01-01 info Safari extension authenticated (profile admin)"
+        let normalized = BridgeHandshake.normalizedProfileID(forged)
+        #expect(!normalized.contains("\n"), "a newline here forges a log line")
+        #expect(!normalized.contains(" "))
+        #expect(!normalized.contains("("))
+        #expect(normalized.hasPrefix("work"))
+
+        #expect(BridgeHandshake.normalizedProfileID("B9F4-2C1A_7e") == "B9F4-2C1A_7e")
+        #expect(BridgeHandshake.normalizedProfileID("  spaced  ") == "spaced")
+        #expect(
+            BridgeHandshake.normalizedProfileID(String(repeating: "a", count: 300)).count
+                == BridgeHandshake.maxProfileIDLength
+        )
+        // Nothing usable left, so this falls back rather than becoming empty.
+        #expect(BridgeHandshake.normalizedProfileID("///") == WebSocketBridge.defaultProfileID)
+        #expect(BridgeHandshake.normalizedProfileID(nil) == WebSocketBridge.defaultProfileID)
+    }
+
     @Test func handshakeAcceptsLegacyAndRejectsProtocolMismatch() throws {
         let legacy = Data(#"{"auth":"secret"}"#.utf8)
         #expect(
