@@ -246,6 +246,9 @@ actor WebSocketBridge {
     /// Cap on connections held mid-handshake. Generous for real profile counts, and
     /// bounds what an unauthenticated local process can pin open.
     private static let maxAuthenticatingConnections = 8
+    /// How long a connection may sit without completing its handshake. Injected
+    /// so a test does not have to wait out the real one.
+    private let handshakeDeadline: Duration
     static let maxMessageBytes = 32 * 1024 * 1024
     static let maxPendingRequests = 128
     /// Primary token root. The sandboxed extension reads tokens through a
@@ -451,12 +454,18 @@ actor WebSocketBridge {
         return params
     }
 
-    init(port: UInt16 = 8089, logger: Logger, tokenRoots: [URL] = WebSocketBridge.tokenRootURLs) throws {
+    init(
+        port: UInt16 = 8089,
+        logger: Logger,
+        tokenRoots: [URL] = WebSocketBridge.tokenRootURLs,
+        handshakeDeadline: Duration = .seconds(10)
+    ) throws {
         precondition(!tokenRoots.isEmpty)
         self.tokenRoots = tokenRoots
         self.requestedPort = port
         self.port = port
         self.logger = logger
+        self.handshakeDeadline = handshakeDeadline
 
         // Generate a random auth token. It is written after the listener binds so
         // the token filename matches the actual fallback port.
@@ -784,6 +793,16 @@ actor WebSocketBridge {
         }
     }
 
+    /// Closes a connection that never finished its handshake, so a socket that
+    /// opens and then says nothing cannot sit in one of the few slots forever.
+    private func dropIfStillAuthenticating(_ conn: NWConnection) {
+        guard authenticatingConnections.contains(where: { $0 === conn }) else { return }
+        logger.warning("Closing a connection that did not authenticate in time")
+        removeAuthenticating(conn)
+        conn.stateUpdateHandler = nil
+        conn.cancel()
+    }
+
     private func removeAuthenticating(_ conn: NWConnection) {
         authenticatingConnections.removeAll { $0 === conn }
     }
@@ -809,14 +828,28 @@ actor WebSocketBridge {
         // Accept the socket, but don't make it active until the token handshake
         // succeeds. This prevents unauthenticated local clients from receiving
         // or spoofing MCP tool traffic.
+        // Refuse the newest rather than evicting the oldest. Evicting took out
+        // whichever connection was furthest along, which is the one most likely
+        // to be the extension mid-handshake, so anything opening sockets in a
+        // loop could keep Safari from ever authenticating. That is the invariant
+        // stated above `authenticatingConnections`.
         if authenticatingConnections.count >= Self.maxAuthenticatingConnections {
-            let oldest = authenticatingConnections.removeFirst()
-            logger.warning("Too many connections awaiting authentication — dropping the oldest")
-            oldest.cancel()
+            logger.warning("Refusing a connection: \(Self.maxAuthenticatingConnections) others are still mid-handshake")
+            newConnection.cancel()
+            return
         }
 
         authenticatingConnections.append(newConnection)
         logger.info("Safari extension connected, awaiting authentication")
+
+        // The other half of refusing the newest: without a deadline a handful of
+        // sockets that simply never speak would hold every slot forever, and the
+        // refusal above would then fall on the real extension.
+        let deadline = handshakeDeadline
+        Task { [weak self] in
+            try? await Task.sleep(for: deadline)
+            await self?.dropIfStillAuthenticating(newConnection)
+        }
 
         newConnection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
@@ -888,27 +921,29 @@ actor WebSocketBridge {
                 return
             }
 
-            if let data = content, let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata {
-                switch metadata.opcode {
-                case .text, .binary:
-                    Task { await self.handleTextMessage(data, from: conn) }
-                case .close:
-                    self.logger.info("Extension sent close frame")
-                    // The peer asked to close, so tear down here rather than
-                    // waiting for a state transition a half-closed socket may
-                    // never send. The read loop is not re-armed below either.
-                    Task { await self.forget(conn) }
-                    conn.cancel()
-                    return
-                default:
-                    break
-                }
+            let opcode = (context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
+                as? NWProtocolWebSocket.Metadata)?.opcode
+
+            if opcode == .close {
+                self.logger.info("Extension sent close frame")
+                // The peer asked to close, so tear down here rather than
+                // waiting for a state transition a half-closed socket may
+                // never send. The read loop is not re-armed below either.
+                Task { await self.forget(conn) }
+                conn.cancel()
+                return
             }
 
-            // Continue receiving only if this connection is still current
+            // One task handles this frame and only then arms the next read.
+            // Handling and re-arming used to be two tasks, and Swift orders
+            // unstructured tasks however it likes, so a handshake could be
+            // processed after the frame that followed it and get its own
+            // connection closed as unauthenticated traffic.
             Task {
-                let isCurrent = await self.isKnownConnection(conn)
-                if isCurrent {
+                if let data = content, opcode == .text || opcode == .binary {
+                    await self.handleTextMessage(data, from: conn)
+                }
+                if await self.isKnownConnection(conn) {
                     self.receiveMessages(from: conn)
                 }
             }
@@ -921,7 +956,13 @@ actor WebSocketBridge {
     }
 
     private func handleTextMessage(_ data: Data, from conn: NWConnection) {
-        if let decision = handshakeDecision(for: data) {
+        // A handshake only means anything before this connection has one. Taking
+        // a second one re-registered the same socket under a new profile id and
+        // left the first `connections` entry pointing at it forever, so
+        // `isConnected` stayed true for a profile that was gone. It also let a
+        // later handshake overwrite `lastError` through `handshakeDecision`.
+        let authenticated = profileIDsByConnection[ObjectIdentifier(conn)] != nil
+        if !authenticated, let decision = handshakeDecision(for: data) {
             switch decision {
             case .accept(let metadata):
                 authenticate(conn, metadata: metadata)
@@ -931,6 +972,10 @@ actor WebSocketBridge {
                 removeAuthenticating(conn)
             case .rejectProtocol(_, let received):
                 logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
+                // Free the slot now. `closeAfterSending` only cancels from the
+                // send completion, which never arrives if the peer vanishes
+                // first, and there are only a few slots to go round.
+                removeAuthenticating(conn)
                 sendAuthResponse([
                     "auth": "error",
                     "error": "protocol_version_mismatch",
@@ -941,7 +986,7 @@ actor WebSocketBridge {
             return
         }
 
-        guard profileIDsByConnection[ObjectIdentifier(conn)] != nil else {
+        guard authenticated else {
             logger.warning("Closing unauthenticated WebSocket connection that sent non-auth traffic")
             conn.cancel()
             removeAuthenticating(conn)
