@@ -38,12 +38,21 @@ enum BridgeHandshake {
     /// Blank or absent means the default profile, which is also what Safari sends
     /// for it and what an extension build without profile support sends for every
     /// profile. Trimmed because it is reflected back in log lines.
+    /// Safari sends a `SFExtensionProfileKey` UUID or nothing at all, so this is
+    /// generous rather than a UUID check. Both halves earn their place: the id is
+    /// logged and reaches the MCP client, where an embedded newline forges log
+    /// lines and control characters land in the model's context.
+    static let maxProfileIDLength = 64
+
     static func normalizedProfileID(_ raw: String?) -> String {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty
         else { return WebSocketBridge.defaultProfileID }
 
-        return trimmed
+        let bounded = String(trimmed.prefix(maxProfileIDLength).filter {
+            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_")
+        })
+        return bounded.isEmpty ? WebSocketBridge.defaultProfileID : bounded
     }
 
     static func decision(for data: Data, expectedToken: String) -> HandshakeDecision? {
@@ -231,9 +240,12 @@ actor WebSocketBridge {
     private let requestedPort: UInt16
     private(set) var port: UInt16
     private var listenerStatus = ListenerStatus.stopped
-    private var extensionVersion: String?
-    private var extensionProtocolVersion: Int?
     private var lastError: Failure?
+    /// The build turned away by the most recent protocol mismatch, reported only
+    /// while no profile is connected. `doctor` has to be able to name the version
+    /// it refused, and with nothing connected there is nothing better to report.
+    /// A connected profile's own numbers always win.
+    private var rejectedExtension: ExtensionMetadata?
     private let networkQueue = DispatchQueue(label: "mcp-safari.websocket", qos: .userInitiated)
 
     /// Authentication token that the extension must send as its first message.
@@ -246,6 +258,8 @@ actor WebSocketBridge {
     /// Cap on connections held mid-handshake. Generous for real profile counts, and
     /// bounds what an unauthenticated local process can pin open.
     private static let maxAuthenticatingConnections = 8
+    /// How many distinct profile ids this bridge will ever hand a handle to.
+    private static let maxProfiles = 32
     /// How long a connection may sit without completing its handshake. Injected
     /// so a test does not have to wait out the real one.
     private let handshakeDeadline: Duration
@@ -291,10 +305,6 @@ actor WebSocketBridge {
     static let legacyTokenFilePath: String = configDirectoryURL
         .appendingPathComponent("token", isDirectory: false)
         .path
-
-    static func tokenFilePath(for port: UInt16) -> String {
-        tokenDirectoryURL.appendingPathComponent(String(port), isDirectory: false).path
-    }
 
     enum BridgeError: Error, CustomStringConvertible {
         case notConnected
@@ -417,7 +427,10 @@ actor WebSocketBridge {
     }
 
     func status() -> Status {
-        let tokenFilePath = tokenRoots[0].appendingPathComponent("tokens/\(port)").path
+        let tokenFilePath = tokenFile(for: port, under: tokenRoots[0]).path
+        // Whichever profile a call with no tab handle would drive, falling back
+        // to a rejected build only when nothing is connected to report instead.
+        let reported = activeProfileID.flatMap { metadataByProfile[$0] } ?? rejectedExtension
         let fileManager = FileManager.default
         let tokenFileExists = fileManager.fileExists(atPath: tokenFilePath)
         let permissions = (try? fileManager.attributesOfItem(atPath: tokenFilePath)[.posixPermissions] as? NSNumber)?.intValue
@@ -434,8 +447,8 @@ actor WebSocketBridge {
             bridge: connectionStatus,
             tokenFileExists: tokenFileExists,
             tokenFileSecure: tokenFileExists ? permissions == 0o600 : nil,
-            extensionVersion: extensionVersion,
-            extensionProtocolVersion: extensionProtocolVersion,
+            extensionVersion: reported?.version,
+            extensionProtocolVersion: reported?.protocolVersion,
             profiles: profileStatuses(),
             lastError: lastError
         )
@@ -482,6 +495,18 @@ actor WebSocketBridge {
         }
     }
 
+    /// The per-port token file under one root.
+    ///
+    /// Every component says whether it is a directory. The one-argument
+    /// `appendingPathComponent` asks the filesystem instead and appends a
+    /// trailing slash only for a path that already exists, so the same
+    /// expression produced different values depending on whether the server had
+    /// ever run. That was a real CI flake once; two callers still had that form.
+    private func tokenFile(for port: UInt16, under root: URL) -> URL {
+        root.appendingPathComponent("tokens", isDirectory: true)
+            .appendingPathComponent(String(port), isDirectory: false)
+    }
+
     private func writeToken(for port: UInt16, under root: URL) throws {
         let fileManager = FileManager.default
         let tokenDirectory = root.appendingPathComponent("tokens", isDirectory: true)
@@ -490,7 +515,7 @@ actor WebSocketBridge {
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenDirectory.path)
 
-        let tokenFilePath = tokenDirectory.appendingPathComponent(String(port), isDirectory: false).path
+        let tokenFilePath = tokenFile(for: port, under: root).path
         try authToken.write(toFile: tokenFilePath, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFilePath)
 
@@ -618,7 +643,7 @@ actor WebSocketBridge {
         // The shared legacy `token` is deliberately left alone: another process
         // can replace it between an ownership check and unlink.
         for root in tokenRoots {
-            let url = root.appendingPathComponent("tokens/\(port)")
+            let url = tokenFile(for: port, under: root)
             if (try? String(contentsOf: url, encoding: .utf8)) == authToken {
                 try? FileManager.default.removeItem(at: url)
             }
@@ -639,8 +664,7 @@ actor WebSocketBridge {
         profileOrder.removeAll()
         selectedProfileIndex = nil
         listenerStatus = .stopped
-        extensionVersion = nil
-        extensionProtocolVersion = nil
+        rejectedExtension = nil
         drainPendingRequests(error: BridgeError.notConnected)
         logger.info("WebSocket server stopped")
     }
@@ -716,7 +740,7 @@ actor WebSocketBridge {
         let targets = profileStatuses().map { (index: $0.index, id: $0.id) }
         guard !targets.isEmpty else { throw BridgeError.notConnected }
 
-        return await withTaskGroup(of: ProfileOutcome.self) { group in
+        let outcomes = await withTaskGroup(of: ProfileOutcome.self) { group in
             for target in targets {
                 group.addTask {
                     do {
@@ -743,6 +767,13 @@ actor WebSocketBridge {
             for await outcome in group { outcomes.append(outcome) }
             return outcomes.sorted { $0.index < $1.index }
         }
+
+        // Cancelling is not a browser failure. Each child turns its own error
+        // into `.unreachable`, including the CancellationError it gets when the
+        // caller walks away, so without this a cancelled `tabs_context` reports
+        // that no profile answered and blames Safari for it.
+        try Task.checkCancellation()
+        return outcomes
     }
 
     // MARK: - Private
@@ -900,11 +931,6 @@ actor WebSocketBridge {
         }
 
         drainPendingRequests(for: conn, error: BridgeError.notConnected)
-
-        if connections.isEmpty {
-            extensionVersion = nil
-            extensionProtocolVersion = nil
-        }
     }
 
     private nonisolated func receiveMessages(from conn: NWConnection) {
@@ -1015,9 +1041,11 @@ actor WebSocketBridge {
 
     func handshakeDecision(for data: Data) -> HandshakeDecision? {
         let decision = BridgeHandshake.decision(for: data, expectedToken: authToken)
+        // Held separately from any connected profile's metadata. This used to
+        // overwrite the shared version fields, so an old build rejected in a
+        // second profile relabelled a healthy first one with its version.
         if case .rejectProtocol(let rejectedVersion, let protocolVersion) = decision {
-            extensionVersion = rejectedVersion
-            extensionProtocolVersion = protocolVersion
+            rejectedExtension = ExtensionMetadata(version: rejectedVersion, protocolVersion: protocolVersion)
             lastError = .protocolMismatch(extensionProtocolVersion: protocolVersion)
         }
         return decision
@@ -1039,12 +1067,28 @@ actor WebSocketBridge {
         profileIDsByConnection[ObjectIdentifier(conn)] = profileID
         metadataByProfile[profileID] = metadata
         if !profileOrder.contains(profileID) {
+            // Bounded rather than pruned. The index into this array *is* the
+            // `p0` handle that every tab handle carries, so dropping a
+            // disconnected entry would renumber the live ones and quietly point
+            // `p1t5` at a different profile. Capping keeps handles stable while
+            // still refusing to grow forever for a client that reconnects under
+            // a fresh id each time. Safari has nothing like this many profiles.
+            guard profileOrder.count < Self.maxProfiles else {
+                logger.warning("Refusing profile \(profileID): already tracking \(Self.maxProfiles)")
+                connections.removeValue(forKey: profileID)
+                profileIDsByConnection.removeValue(forKey: ObjectIdentifier(conn))
+                metadataByProfile.removeValue(forKey: profileID)
+                removeAuthenticating(conn)
+                conn.stateUpdateHandler = nil
+                conn.cancel()
+                return
+            }
             profileOrder.append(profileID)
         }
 
-        extensionVersion = metadata.version
-        extensionProtocolVersion = metadata.protocolVersion
+        // Something works now, so a refusal recorded earlier is stale.
         lastError = nil
+        rejectedExtension = nil
         removeAuthenticating(conn)
 
         logger.info("Safari extension authenticated (profile \(profileID))")
