@@ -523,7 +523,12 @@ actor WebSocketBridge {
                                 cont.resume(returning: true)
                             }
                             Task { await self.handleListenerState(state, listener: newListener) }
-                        case .failed:
+                        // `.cancelled` is terminal too, and a concurrent `stop()`
+                        // can produce it while this continuation is still
+                        // suspended. Without it here, `start()` never returns and
+                        // takes the whole MCP server down with it, since
+                        // `withCheckedContinuation` cannot be cancelled either.
+                        case .failed, .cancelled:
                             if !resumed {
                                 resumed = true
                                 cont.resume(returning: false)
@@ -544,7 +549,7 @@ actor WebSocketBridge {
 
                 if success {
                     guard let boundPort = newListener.port?.rawValue else {
-                        newListener.cancel()
+                        discard(listener: newListener)
                         continue
                     }
                     self.port = boundPort
@@ -568,7 +573,7 @@ actor WebSocketBridge {
                     logger.info("WebSocket server listening on port \(boundPort)")
                     return
                 } else {
-                    newListener.cancel()
+                    discard(listener: newListener)
                     logger.debug("Port \(tryPort) unavailable, trying next")
                 }
             } catch {
@@ -577,7 +582,26 @@ actor WebSocketBridge {
         }
 
         listenerStatus = .failed
+        lastError = Failure(
+            code: "bridge_bind_failed",
+            message: "No free port in \(requestedPort)-\(lastPort) for the extension bridge.",
+            recovery: "Quit whatever is holding those ports, or start the server with --port on a free one."
+        )
         logger.error("Could not bind to any port in range \(requestedPort)-\(lastPort)")
+    }
+
+    /// Releases a listener this bridge is finished with.
+    ///
+    /// Both halves matter. `stateUpdateHandler` captures the listener and is
+    /// stored on it, so the two keep each other alive until the handler is
+    /// cleared. And `self.listener` has to go back to nil, because `start()`
+    /// returns early while it is set: a cancelled listener left in place turns
+    /// every later `start()` into a silent no-op with nothing listening.
+    private func discard(listener candidate: NWListener) {
+        candidate.stateUpdateHandler = nil
+        candidate.newConnectionHandler = nil
+        candidate.cancel()
+        if listener === candidate { listener = nil }
     }
 
     func stop() {
@@ -590,11 +614,16 @@ actor WebSocketBridge {
                 try? FileManager.default.removeItem(at: url)
             }
         }
-        listener?.cancel()
-        listener = nil
-        for pending in authenticatingConnections { pending.cancel() }
+        if let listener { discard(listener: listener) }
+        for pending in authenticatingConnections {
+            pending.stateUpdateHandler = nil
+            pending.cancel()
+        }
         authenticatingConnections.removeAll()
-        for connection in connections.values { connection.cancel() }
+        for connection in connections.values {
+            connection.stateUpdateHandler = nil
+            connection.cancel()
+        }
         connections.removeAll()
         profileIDsByConnection.removeAll()
         metadataByProfile.removeAll()
@@ -821,6 +850,11 @@ actor WebSocketBridge {
     /// same profile: the identity check keeps a late `.cancelled` from the old socket
     /// from evicting the new one.
     private func forget(_ conn: NWConnection) {
+        // Same cycle as a listener: `stateUpdateHandler` captures `conn` and is
+        // stored on `conn`, so without this the connection and its receive
+        // buffers outlive every reference dropped below, once per reconnect for
+        // the life of the process.
+        conn.stateUpdateHandler = nil
         removeAuthenticating(conn)
 
         guard let profileID = profileIDsByConnection.removeValue(forKey: ObjectIdentifier(conn))
@@ -846,6 +880,11 @@ actor WebSocketBridge {
 
             if let error {
                 self.logger.error("WebSocket receive error: \(error)")
+                // The read loop ends here and is not re-armed below, so without
+                // dropping the registry entry the profile keeps reporting as
+                // connected and every later send to it waits out the full
+                // timeout against a socket nobody is reading.
+                Task { await self.forget(conn) }
                 return
             }
 
@@ -855,6 +894,11 @@ actor WebSocketBridge {
                     Task { await self.handleTextMessage(data, from: conn) }
                 case .close:
                     self.logger.info("Extension sent close frame")
+                    // The peer asked to close, so tear down here rather than
+                    // waiting for a state transition a half-closed socket may
+                    // never send. The read loop is not re-armed below either.
+                    Task { await self.forget(conn) }
+                    conn.cancel()
                     return
                 default:
                     break
