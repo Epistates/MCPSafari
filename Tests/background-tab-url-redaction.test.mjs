@@ -109,3 +109,42 @@ test("tab handlers return the redacted URL", async () => {
     const navigated = await evaluate("handleNavigate({ tabId: 7, action: 'reload' })");
     assert.equal(navigated, `Reloaded ${REDACTED} (Signing in)`);
 });
+
+test("the ordinary spellings of a bearer or session value are covered", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    // Bare `token` and `session` were both missing while the comment on the
+    // list already claimed session values were redacted.
+    assert.equal(redact("https://a.example/?token=abc"), "https://a.example/?token=[redacted]");
+    assert.equal(redact("https://a.example/?session=abc"), "https://a.example/?session=[redacted]");
+    assert.equal(redact("https://a.example/?sessionId=abc"), "https://a.example/?sessionId=[redacted]");
+    assert.equal(
+        redact("https://a.example/?jwt=abc&sig=def"),
+        "https://a.example/?jwt=[redacted]&sig=[redacted]"
+    );
+    // A presigned URL's signature is the credential, and the whole URL is then
+    // the thing worth not handing to a transcript.
+    assert.equal(
+        redact("https://b.s3.amazonaws.com/f?X-Amz-Signature=deadbeef&X-Amz-Expires=60"),
+        "https://b.s3.amazonaws.com/f?X-Amz-Signature=[redacted]&X-Amz-Expires=60"
+    );
+});
+
+test("a name that describes a secret rather than carrying one stays readable", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    // Matching the secret words as substrings takes every one of these, and
+    // none is a credential. Requiring `=` straight after the whole name is what
+    // keeps them, so it is worth pinning rather than leaving to the mechanism.
+    for (const url of [
+        "https://a.example/?token_type=bearer",
+        "https://a.example/?password_hint=cat",
+        "https://a.example/?tokenizer=bpe",
+        "https://a.example/?authority=eu",
+        "https://a.example/?design=flat",
+    ]) {
+        assert.equal(redact(url), url);
+    }
+});

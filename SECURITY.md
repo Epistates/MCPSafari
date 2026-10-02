@@ -77,6 +77,12 @@ The token is also written to the previous location, `~/.config/mcp-safari/tokens
 
 `snapshot` reports that a sensitive field has a value without reporting the value itself. Password inputs, and inputs whose `autocomplete` marks them as a password, one-time code, or payment card field, come back as `"value": "[redacted]"`. Other field values are reported verbatim. This redaction does not cover every place a page may display a secret, or other outputs such as screenshots, HTML, and JavaScript results.
 
+### Tab URL redaction
+
+A tab's URL is reported by `tabs_context`, `tabs_create`, `select_tab`, and `navigate`, and an OAuth callback or a presigned download carries its credential in the query or fragment. Those values come back as `[redacted]`: bearer and session parameters by name (`token`, `access_token`, `session`, `jwt`, `signature`, `X-Amz-Signature`, and the rest), plus `code` when `state` sits alongside it, since `code` on its own is more often a SKU than an OAuth code.
+
+Matching is on the whole parameter name, so a name that describes a secret rather than carrying one stays readable: `token_type=bearer` and `password_hint` are reported as they are. Two limits follow from that. The list is maintained by hand, so a credential under a name nobody has thought of is reported verbatim, and only the query and fragment are considered, so a secret in the path is not redacted.
+
 ### Permissions
 
 The extension requests these permissions in `manifest.json`:
