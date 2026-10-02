@@ -73,6 +73,23 @@ enum BridgeHandshake {
     }
 }
 
+/// One accepted socket, carrying an identity that is not its address.
+///
+/// The registries used to be keyed on `ObjectIdentifier`, which is the object's
+/// address, and an address is reused once the object behind it is gone. A new
+/// connection landing where a dead one used to be inherited its profile mapping
+/// and could take delivery of a response meant for it. A counter cannot collide,
+/// and `NWConnection` has nowhere to hang one, so it gets a wrapper.
+final class BridgeConnection: Sendable {
+    let id: UInt64
+    let socket: NWConnection
+
+    init(id: UInt64, socket: NWConnection) {
+        self.id = id
+        self.socket = socket
+    }
+}
+
 /// WebSocket server that bridges MCP tool calls to the Safari extension.
 ///
 /// Listens on a local port for a WebSocket connection from the extension's
@@ -214,9 +231,12 @@ actor WebSocketBridge {
     /// the same token and dial the same port. Holding a single connection here meant
     /// each instance evicted the last one, whose reconnect then evicted it back, and a
     /// two-profile setup flapped instead of working (#54).
-    private var connections: [String: NWConnection] = [:]
+    private var connections: [String: BridgeConnection] = [:]
     /// Reverse lookup so a connection's own callbacks can find their profile.
-    private var profileIDsByConnection: [ObjectIdentifier: String] = [:]
+    private var profileIDsByConnection: [UInt64: String] = [:]
+    /// Handed out at accept time. See `BridgeConnection` for why this is not an
+    /// `ObjectIdentifier`.
+    private var nextConnectionID: UInt64 = 0
     private var metadataByProfile: [String: ExtensionMetadata] = [:]
     /// Profiles in the order they first authenticated. A profile keeps its index for
     /// this server's lifetime, including across its own reconnects, so the short
@@ -227,9 +247,9 @@ actor WebSocketBridge {
     /// Accepted connections that have not completed the token handshake, oldest first.
     /// Kept as a list rather than a single slot for the same reason as `connections`:
     /// a second profile dialing in must not cancel the first one mid-handshake.
-    private var authenticatingConnections: [NWConnection] = []
+    private var authenticatingConnections: [BridgeConnection] = []
     private struct PendingRequest {
-        let connectionID: ObjectIdentifier
+        let connectionID: UInt64
         let continuation: CheckedContinuation<BridgeResponse, any Error>
         let timeoutTask: Task<Void, Never>
     }
@@ -650,13 +670,13 @@ actor WebSocketBridge {
         }
         if let listener { discard(listener: listener) }
         for pending in authenticatingConnections {
-            pending.stateUpdateHandler = nil
-            pending.cancel()
+            pending.socket.stateUpdateHandler = nil
+            pending.socket.cancel()
         }
         authenticatingConnections.removeAll()
         for connection in connections.values {
-            connection.stateUpdateHandler = nil
-            connection.cancel()
+            connection.socket.stateUpdateHandler = nil
+            connection.socket.cancel()
         }
         connections.removeAll()
         profileIDsByConnection.removeAll()
@@ -681,7 +701,7 @@ actor WebSocketBridge {
             throw BridgeError.extensionError("Too many in-flight requests (maximum \(Self.maxPendingRequests)). Wait for pending operations to finish.")
         }
         let connection = try connection(forProfileIndex: profileIndex)
-        let connectionID = ObjectIdentifier(connection)
+        let connectionID = connection.id
 
         let request = BridgeRequest(action: action, params: params)
 
@@ -715,7 +735,7 @@ actor WebSocketBridge {
                     timeoutTask: timeoutTask
                 )
 
-                connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
+                connection.socket.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
                     if let error {
                         Task { await self?.removePendingAndResume(id: request.id, error: error) }
                     }
@@ -782,7 +802,7 @@ actor WebSocketBridge {
     /// connected is an error rather than a silent fallback: the caller asked for a
     /// specific browser window, and answering from a different one would be worse
     /// than refusing.
-    private func connection(forProfileIndex index: Int?) throws -> NWConnection {
+    private func connection(forProfileIndex index: Int?) throws -> BridgeConnection {
         guard let index else {
             guard let profileID = activeProfileID, let connection = connections[profileID] else {
                 throw BridgeError.notConnected
@@ -815,9 +835,8 @@ actor WebSocketBridge {
     /// Fails only the work that was in flight on one connection. One profile going
     /// away must not fail another profile's requests, which is what a blanket drain
     /// would do now that several are held at once.
-    private func drainPendingRequests(for conn: NWConnection, error: any Error) {
-        let connectionID = ObjectIdentifier(conn)
-        for (id, pending) in pendingRequests where pending.connectionID == connectionID {
+    private func drainPendingRequests(for conn: BridgeConnection, error: any Error) {
+        for (id, pending) in pendingRequests where pending.connectionID == conn.id {
             pendingRequests.removeValue(forKey: id)
             pending.timeoutTask.cancel()
             pending.continuation.resume(throwing: error)
@@ -826,16 +845,16 @@ actor WebSocketBridge {
 
     /// Closes a connection that never finished its handshake, so a socket that
     /// opens and then says nothing cannot sit in one of the few slots forever.
-    private func dropIfStillAuthenticating(_ conn: NWConnection) {
-        guard authenticatingConnections.contains(where: { $0 === conn }) else { return }
+    private func dropIfStillAuthenticating(_ conn: BridgeConnection) {
+        guard authenticatingConnections.contains(where: { $0.id == conn.id }) else { return }
         logger.warning("Closing a connection that did not authenticate in time")
         removeAuthenticating(conn)
-        conn.stateUpdateHandler = nil
-        conn.cancel()
+        conn.socket.stateUpdateHandler = nil
+        conn.socket.cancel()
     }
 
-    private func removeAuthenticating(_ conn: NWConnection) {
-        authenticatingConnections.removeAll { $0 === conn }
+    private func removeAuthenticating(_ conn: BridgeConnection) {
+        authenticatingConnections.removeAll { $0.id == conn.id }
     }
 
     private func handleListenerState(_ state: NWListener.State, listener source: NWListener) {
@@ -851,9 +870,9 @@ actor WebSocketBridge {
         }
     }
 
-    private func handleNewConnection(_ newConnection: NWConnection) {
+    private func handleNewConnection(_ socket: NWConnection) {
         guard listenerStatus == .listening else {
-            newConnection.cancel()
+            socket.cancel()
             return
         }
         // Accept the socket, but don't make it active until the token handshake
@@ -866,10 +885,12 @@ actor WebSocketBridge {
         // stated above `authenticatingConnections`.
         if authenticatingConnections.count >= Self.maxAuthenticatingConnections {
             logger.warning("Refusing a connection: \(Self.maxAuthenticatingConnections) others are still mid-handshake")
-            newConnection.cancel()
+            socket.cancel()
             return
         }
 
+        nextConnectionID += 1
+        let newConnection = BridgeConnection(id: nextConnectionID, socket: socket)
         authenticatingConnections.append(newConnection)
         logger.info("Safari extension connected, awaiting authentication")
 
@@ -882,19 +903,19 @@ actor WebSocketBridge {
             await self?.dropIfStillAuthenticating(newConnection)
         }
 
-        newConnection.stateUpdateHandler = { [weak self] state in
+        socket.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             Task { await self.handleConnectionState(state, connection: newConnection) }
         }
 
-        newConnection.start(queue: networkQueue)
+        socket.start(queue: networkQueue)
 
         // Start receiving messages immediately.
         // If the first message is an auth handshake, handle it inline.
         receiveMessages(from: newConnection)
     }
 
-    private func handleConnectionState(_ state: NWConnection.State, connection conn: NWConnection) {
+    private func handleConnectionState(_ state: NWConnection.State, connection conn: BridgeConnection) {
         switch state {
         case .ready:
             logger.info("Extension connection ready")
@@ -913,18 +934,18 @@ actor WebSocketBridge {
     /// never authenticated, and for one already superseded by a reconnect from the
     /// same profile: the identity check keeps a late `.cancelled` from the old socket
     /// from evicting the new one.
-    private func forget(_ conn: NWConnection) {
-        // Same cycle as a listener: `stateUpdateHandler` captures `conn` and is
-        // stored on `conn`, so without this the connection and its receive
-        // buffers outlive every reference dropped below, once per reconnect for
-        // the life of the process.
-        conn.stateUpdateHandler = nil
+    private func forget(_ conn: BridgeConnection) {
+        // Same cycle as a listener: `stateUpdateHandler` captures the connection
+        // and is stored on its socket, so without this the connection and its
+        // receive buffers outlive every reference dropped below, once per
+        // reconnect for the life of the process.
+        conn.socket.stateUpdateHandler = nil
         removeAuthenticating(conn)
 
-        guard let profileID = profileIDsByConnection.removeValue(forKey: ObjectIdentifier(conn))
+        guard let profileID = profileIDsByConnection.removeValue(forKey: conn.id)
         else { return }
 
-        if connections[profileID] === conn {
+        if connections[profileID]?.id == conn.id {
             connections.removeValue(forKey: profileID)
             metadataByProfile.removeValue(forKey: profileID)
             logger.info("Safari extension disconnected (profile \(profileID))")
@@ -933,8 +954,8 @@ actor WebSocketBridge {
         drainPendingRequests(for: conn, error: BridgeError.notConnected)
     }
 
-    private nonisolated func receiveMessages(from conn: NWConnection) {
-        conn.receiveMessage { [weak self] content, context, _, error in
+    private nonisolated func receiveMessages(from conn: BridgeConnection) {
+        conn.socket.receiveMessage { [weak self] content, context, _, error in
             guard let self else { return }
 
             if let error {
@@ -956,7 +977,7 @@ actor WebSocketBridge {
                 // waiting for a state transition a half-closed socket may
                 // never send. The read loop is not re-armed below either.
                 Task { await self.forget(conn) }
-                conn.cancel()
+                conn.socket.cancel()
                 return
             }
 
@@ -976,25 +997,25 @@ actor WebSocketBridge {
         }
     }
 
-    private func isKnownConnection(_ conn: NWConnection) -> Bool {
-        profileIDsByConnection[ObjectIdentifier(conn)] != nil
-            || authenticatingConnections.contains { $0 === conn }
+    private func isKnownConnection(_ conn: BridgeConnection) -> Bool {
+        profileIDsByConnection[conn.id] != nil
+            || authenticatingConnections.contains { $0.id == conn.id }
     }
 
-    private func handleTextMessage(_ data: Data, from conn: NWConnection) {
+    private func handleTextMessage(_ data: Data, from conn: BridgeConnection) {
         // A handshake only means anything before this connection has one. Taking
         // a second one re-registered the same socket under a new profile id and
         // left the first `connections` entry pointing at it forever, so
         // `isConnected` stayed true for a profile that was gone. It also let a
         // later handshake overwrite `lastError` through `handshakeDecision`.
-        let authenticated = profileIDsByConnection[ObjectIdentifier(conn)] != nil
+        let authenticated = profileIDsByConnection[conn.id] != nil
         if !authenticated, let decision = handshakeDecision(for: data) {
             switch decision {
             case .accept(let metadata):
                 authenticate(conn, metadata: metadata)
             case .rejectToken:
                 logger.warning("Auth token mismatch — closing connection")
-                conn.cancel()
+                conn.socket.cancel()
                 removeAuthenticating(conn)
             case .rejectProtocol(_, let received):
                 logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
@@ -1014,7 +1035,7 @@ actor WebSocketBridge {
 
         guard authenticated else {
             logger.warning("Closing unauthenticated WebSocket connection that sent non-auth traffic")
-            conn.cancel()
+            conn.socket.cancel()
             removeAuthenticating(conn)
             return
         }
@@ -1024,7 +1045,7 @@ actor WebSocketBridge {
             logger.debug("Received bridge response: [\(response.id)] success=\(response.success)")
 
             if let pending = pendingRequests[response.id] {
-                guard pending.connectionID == ObjectIdentifier(conn) else {
+                guard pending.connectionID == conn.id else {
                     logger.warning("Received response for request ID on a stale connection: \(response.id)")
                     return
                 }
@@ -1051,20 +1072,21 @@ actor WebSocketBridge {
         return decision
     }
 
-    private func authenticate(_ conn: NWConnection, metadata: ExtensionMetadata) {
+    private func authenticate(_ conn: BridgeConnection, metadata: ExtensionMetadata) {
         let profileID = metadata.profileID
 
         // Replace only this profile's own connection, which is a genuine reconnect.
         // Evicting across profiles is what made two of them flap against each other.
-        if let existing = connections[profileID], existing !== conn {
+        if let existing = connections[profileID], existing.id != conn.id {
             logger.info("Replacing authenticated extension connection (profile \(profileID))")
-            profileIDsByConnection.removeValue(forKey: ObjectIdentifier(existing))
-            existing.cancel()
+            profileIDsByConnection.removeValue(forKey: existing.id)
+            existing.socket.stateUpdateHandler = nil
+            existing.socket.cancel()
             drainPendingRequests(for: existing, error: BridgeError.notConnected)
         }
 
         connections[profileID] = conn
-        profileIDsByConnection[ObjectIdentifier(conn)] = profileID
+        profileIDsByConnection[conn.id] = profileID
         metadataByProfile[profileID] = metadata
         if !profileOrder.contains(profileID) {
             // Bounded rather than pruned. The index into this array *is* the
@@ -1076,11 +1098,11 @@ actor WebSocketBridge {
             guard profileOrder.count < Self.maxProfiles else {
                 logger.warning("Refusing profile \(profileID): already tracking \(Self.maxProfiles)")
                 connections.removeValue(forKey: profileID)
-                profileIDsByConnection.removeValue(forKey: ObjectIdentifier(conn))
+                profileIDsByConnection.removeValue(forKey: conn.id)
                 metadataByProfile.removeValue(forKey: profileID)
                 removeAuthenticating(conn)
-                conn.stateUpdateHandler = nil
-                conn.cancel()
+                conn.socket.stateUpdateHandler = nil
+                conn.socket.cancel()
                 return
             }
             profileOrder.append(profileID)
@@ -1102,18 +1124,18 @@ actor WebSocketBridge {
 
     private func sendAuthResponse(
         _ response: [String: Any],
-        to conn: NWConnection,
+        to conn: BridgeConnection,
         closeAfterSending: Bool = false
     ) {
         guard let data = try? JSONSerialization.data(withJSONObject: response) else { return }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "ws-auth", metadata: [metadata])
-        conn.send(
+        conn.socket.send(
             content: data,
             contentContext: context,
             isComplete: true,
             completion: .contentProcessed { _ in
-                if closeAfterSending { conn.cancel() }
+                if closeAfterSending { conn.socket.cancel() }
             }
         )
     }
