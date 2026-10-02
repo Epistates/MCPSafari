@@ -1083,20 +1083,57 @@ async function collectFromFrames(tabId, message) {
     return collected;
 }
 
+// The only failures that mean "the target is not in this frame". Anything else
+// means the frame resolved the target and the action did not go through, which
+// is already the caller's answer.
+//
+// `permission_required` is in here because that frame could not be asked at
+// all, so another one is still worth trying. `wait_timeout` is in here for the
+// same reason, which is why `wait` does not use the sequential path below.
+const FRAME_MISS_CODES = new Set(["target_not_found", "wait_timeout", "permission_required"]);
+
 // Targeting by selector or text has no frame in it, so the frames are tried in
 // order and the first that resolves the target wins. The top frame is tried
 // first, which keeps single-frame pages behaving exactly as before.
 async function sendToFirstMatchingFrame(tabId, message) {
     const frames = await listFrames(tabId);
-    let firstFailure;
+    // Asked of every frame at once rather than in turn. A `wait` whose selector
+    // never appears costs its entire timeout in each frame otherwise, so a page
+    // with a few iframes runs past the server's bridge timeout and the agent
+    // gets a generic failure in place of the `wait_timeout` the content script
+    // built for it. Racing is also what the caller meant: wait until this shows
+    // up anywhere. Nothing is mutated, so there is no double-action risk here.
+    if (message.action === "wait") return waitInAnyFrame(tabId, message, frames);
+
+    let firstMiss;
     for (const frame of frames) {
         try {
             return await sendToContentScript(tabId, message, frame.frameId);
         } catch (err) {
-            if (!firstFailure) firstFailure = err;
+            // Carrying on past a frame that found the target would act in a
+            // frame the caller never meant, and for a `click` that already
+            // fired before throwing it would fire a second time.
+            if (!FRAME_MISS_CODES.has(err.code)) throw err;
+            if (!firstMiss) firstMiss = err;
         }
     }
-    throw firstFailure || new Error("No frame handled the request");
+    throw firstMiss || new Error("No frame handled the request");
+}
+
+async function waitInAnyFrame(tabId, message, frames) {
+    try {
+        return await Promise.any(
+            frames.map((frame) => sendToContentScript(tabId, message, frame.frameId))
+        );
+    } catch (err) {
+        // Every frame failed. The AggregateError itself carries no tool error
+        // code, so report one of the real ones and keep `wait_timeout` and its
+        // recovery action intact. Read off `errors` rather than tested with
+        // `instanceof`, which is false for an AggregateError raised in another
+        // realm than the one this code is evaluated in.
+        const reasons = Array.isArray(err && err.errors) ? err.errors : [];
+        throw reasons.find((reason) => reason && reason.code) || reasons[0] || err;
+    }
 }
 
 // Reads the whole tab as one tree by asking each frame for its own and hanging
