@@ -571,6 +571,10 @@ async function handleTabsClose(params) {
 
 async function handleSelectTab(params) {
     const tabId = params.tabId;
+    // Before the `tabs.get`, for the reason spelled out in `handleScreenshot`:
+    // that call parks on Safari's dialog too, so leaving it ungated means a
+    // blocked tab rides the bridge timeout and reports the wrong thing.
+    await ensureTabAccess(tabId);
     const tab = await browser.tabs.get(tabId);
     selectedTabId = tabId;
     persistSelectedTab(tabId);
@@ -591,6 +595,9 @@ async function handleSelectTab(params) {
 
 async function focusTabForNativeInput(tabIdParam) {
     const tabId = tabIdParam || (await getActiveTabId());
+    // Native input needs the page anyway, and this ran before any gating, so a
+    // blocked tab spent the whole bridge timeout here and then blamed the bridge.
+    await ensureTabAccess(tabId);
     const tab = await browser.tabs.get(tabId);
     await browser.tabs.update(tabId, { active: true });
     await browser.windows.update(tab.windowId, { focused: true });
@@ -698,7 +705,13 @@ async function restoreSessionState() {
 async function handleNavigate(params) {
     const tabId = params.tabId || (await getActiveTabId());
     const action = params.action || "goto";
-    const beforeTab = await browser.tabs.get(tabId);
+    // Best effort, and deliberately not gated on access to the page being left.
+    // This only tells a real navigation from a same-document one, and
+    // `waitForTabLoad` already reads it as `beforeTab?.url || ""`. Requiring a
+    // grant here would take away the one move that gets a caller off a page
+    // they cannot use, and leaving it unbounded spent the bridge timeout on it.
+    const beforeTab = await withDeadline(browser.tabs.get(tabId), PERMISSION_DEADLINE_MS)
+        .catch(() => null);
 
     let message;
     let tab;
@@ -1221,22 +1234,38 @@ async function injectContentScripts(tabId) {
 
 // ─── Utilities ───────────────────────────────────────────────────────
 
+// Every call that names no tab resolves its target here, so an unbounded wait
+// on either line below puts the whole tool surface back on the 30-second bridge
+// timeout that `handleTabsQuery` is deadlined to avoid. Neither call can be
+// probed first, because the tab they are looking up is the thing being decided.
 async function getActiveTabId() {
     // Use pinned tab if set via select_tab
     if (selectedTabId !== null) {
         try {
-            const tab = await browser.tabs.get(selectedTabId);
+            const tab = await withDeadline(browser.tabs.get(selectedTabId), TAB_LISTING_TIMEOUT_MS);
             return tab.id;
-        } catch {
+        } catch (err) {
+            // A tab parked on Safari's dialog is not a closed one. Falling
+            // through here would drop the caller's pinned tab over a question
+            // the user has not answered yet.
+            if (err instanceof DeadlineExceeded) throw permissionRequiredError(null, true);
             // Tab was closed, clear selection
             selectedTabId = null;
             persistSelectedTab(null);
         }
     }
-    const tabs = await browser.tabs.query({
-        active: true,
-        currentWindow: true,
-    });
+    let tabs;
+    try {
+        tabs = await withDeadline(
+            browser.tabs.query({ active: true, currentWindow: true }),
+            TAB_LISTING_TIMEOUT_MS
+        );
+    } catch (err) {
+        if (!(err instanceof DeadlineExceeded)) throw err;
+        // No origin to name: the block belongs to whichever tab Safari is
+        // asking about, and that is the lookup that just failed.
+        throw permissionRequiredError(null, true);
+    }
     if (tabs.length === 0) throw new Error("No active tab found");
     return tabs[0].id;
 }
