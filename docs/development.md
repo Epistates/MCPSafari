@@ -50,7 +50,14 @@ A Swift executable using the official [modelcontextprotocol/swift-sdk](https://g
 A Manifest V3 Safari Web Extension with:
 
 - `background.js` — WebSocket client, request router, tab/navigation/screenshot handlers
-- `content.js` — DOM interaction, accessibility snapshots, element finding, click/type/scroll simulation
+- The content script, split across seven files that the manifest injects in order. Each is its own IIFE and they share one namespace on the isolated world, `window.__mcpSafari`, because the background script re-injects them by name and top-level declarations would collide on the second pass. A file reads only what the ones before it published, so the load order below is also the dependency order:
+  - `content-core.js` — the namespace, element uid bookkeeping, tool errors, event primitives, the bridge to the MAIN-world interceptors
+  - `content-snapshot.js` — page text, shadow-DOM traversal, the accessibility snapshot with its roles, names and redaction
+  - `content-target.js` — turning a uid, selector or text into one element, and whether a real pointer could reach it
+  - `content-input.js` — clicks, React-compatible value setting, typing, form fills, select options
+  - `content-gesture.js` — scrolling, key presses, hover, drag, native-pointer measurement
+  - `content-io.js` — file attachment, element measurement, waiting, interceptor delegates
+  - `content.js` — loaded last, routes one bridge action to the handler that owns it
 - `trace-interceptor.js` — Captures action-window URL, history, console, network, and DOM mutation events
 - `dialog-interceptor.js` — Patches `window.alert/confirm/prompt` before page scripts run
 - `console-interceptor.js` — Captures console messages for `read_console`
