@@ -26,7 +26,15 @@
         "all_frames": false,
         "world": "MAIN"
     }, {
-        "js": ["content.js"],
+        "js": [
+            "content-core.js",
+            "content-snapshot.js",
+            "content-target.js",
+            "content-input.js",
+            "content-gesture.js",
+            "content-io.js",
+            "content.js"
+        ],
         "matches": ["<all_urls>"],
         "run_at": "document_start",
         "all_frames": true

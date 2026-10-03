@@ -1315,6 +1315,19 @@ async function sendToContentScript(tabId, message, frameId = 0) {
     }
 }
 
+// Must stay in step with `content_scripts` in the manifest, in this order:
+// each file reads what the ones before it published onto the namespace, and
+// the dispatcher goes last because it needs every handler.
+const CONTENT_SCRIPT_FILES = [
+    "content-core.js",
+    "content-snapshot.js",
+    "content-target.js",
+    "content-input.js",
+    "content-gesture.js",
+    "content-io.js",
+    "content.js",
+];
+
 async function injectContentScripts(tabId) {
     try {
         await browser.scripting.executeScript({
@@ -1328,11 +1341,13 @@ async function injectContentScripts(tabId) {
             ],
             world: "MAIN",
         });
-        // content.js is declared for all frames, so a re-injection has to cover
-        // them too or the frames stay unreachable until the next navigation.
+        // The content script is declared for all frames, so a re-injection has
+        // to cover them too or the frames stay unreachable until the next
+        // navigation. The order has to match `content_scripts` in the manifest:
+        // each file reads what the ones before it published.
         await browser.scripting.executeScript({
             target: { tabId, allFrames: true },
-            files: ["content.js"],
+            files: CONTENT_SCRIPT_FILES,
         });
         await delay(100);
     } catch (err) {

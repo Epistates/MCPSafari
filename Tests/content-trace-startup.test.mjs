@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { contentScriptSource } from "./helpers/extension-sources.mjs";
 
-const source = readFileSync(
-    new URL("../MCPSafari/MCPSafari Extension/Resources/content.js", import.meta.url),
-    "utf8"
-);
+const source = contentScriptSource();
 
 // Loads content.js with a controllable clock and a fake MAIN-world bridge so
 // tests can decide which start_trace requests the interceptor answers.
