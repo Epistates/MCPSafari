@@ -64,6 +64,10 @@ function backgroundHarness(contentResponse) {
             get: async () => ({ id: 1, windowId: 7 }),
             sendMessage: async () => contentResponses.shift(),
             update: async (...args) => { tabUpdates.push(args); },
+            // Both listeners are registered at load: the access probe cache is
+            // cleared when a tab closes and when it navigates, since Safari
+            // grants per origin.
+            onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },
         windows: {
@@ -201,4 +205,24 @@ test("native input preparation foregrounds the target Safari tab", async () => {
     assert.equal(handleRequest.windowUpdates.length, 1);
     assert.equal(handleRequest.windowUpdates[0][0], 7);
     assert.equal(handleRequest.windowUpdates[0][1].focused, true);
+});
+
+test("resize_window uses the tab it was given rather than the current window", async () => {
+    const handleRequest = backgroundHarness({ data: null, error: null });
+
+    const response = await handleRequest({
+        id: "r1",
+        action: "resize_window",
+        params: { tabId: 1, width: 900, height: 700 },
+    });
+
+    assert.equal(response.success, true);
+    // windowId 7 is the one `tabs.get` reports for the named tab. Reading
+    // `tabs.query({ currentWindow: true })` instead resizes whichever window
+    // the user happens to be looking at, which on a two-window setup is not
+    // the one the agent is driving.
+    const [windowId, size] = handleRequest.windowUpdates[0];
+    assert.equal(windowId, 7);
+    assert.equal(size.width, 900);
+    assert.equal(size.height, 700);
 });
