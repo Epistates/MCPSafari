@@ -259,3 +259,83 @@ test("an unreadable tab url still produces a usable refusal", async () => {
     assert.equal(err.code, "permission_required");
     assert.match(err.message, /this tab/);
 });
+
+// `handleTabsQuery` above is deadlined because `tabs.query` parks on the dialog.
+// `getActiveTabId` makes the same two calls and had no deadline at all, and it
+// resolves the target for every request that names no tab, which is most of
+// them. One unbounded line there puts the whole tool surface back on the
+// 30-second bridge timeout the deadlines exist to stay under.
+test("resolving the active tab reports why instead of riding the bridge timeout", async () => {
+    const harness = loadBackground();
+    harness.call("browser.tabs.query = () => new Promise(() => {})");
+
+    const pending = track(rejection(harness.call("getActiveTabId()")));
+    await fireWhenParked(harness, pending);
+    const err = await pending.promise;
+
+    assert.equal(err.code, "permission_required");
+    assert.equal(err.recoveryAction, "ask_user");
+    assert.match(err.message, /behind another window/);
+});
+
+test("a pinned tab parked on the dialog is not mistaken for a closed one", async () => {
+    const harness = loadBackground();
+    harness.call("selectedTabId = 7");
+    harness.call("browser.tabs.get = () => new Promise(() => {})");
+
+    const pending = track(rejection(harness.call("getActiveTabId()")));
+    await fireWhenParked(harness, pending);
+    const err = await pending.promise;
+
+    assert.equal(err.code, "permission_required");
+    // The old catch-all treated any failure here as "the tab went away" and
+    // cleared the pin, losing the caller's chosen tab over a question the user
+    // simply had not answered yet.
+    assert.equal(harness.call("selectedTabId"), 7);
+});
+
+test("select_tab parked on the dialog names the reason", async () => {
+    const harness = loadBackground({ probe: parked });
+
+    const pending = track(rejection(harness.call("handleSelectTab({ tabId: 1 })")));
+    await fireWhenParked(harness, pending);
+    const err = await pending.promise;
+
+    assert.equal(err.code, "permission_required");
+    assert.match(err.message, /https:\/\/blocked\.example/);
+});
+
+test("native input focus parked on the dialog names the reason", async () => {
+    const harness = loadBackground({ probe: parked });
+
+    const pending = track(rejection(harness.call("focusTabForNativeInput(1)")));
+    await fireWhenParked(harness, pending);
+    const err = await pending.promise;
+
+    assert.equal(err.code, "permission_required");
+    assert.match(err.message, /https:\/\/blocked\.example/);
+});
+
+test("navigating away from a blocked tab is not stopped by reading it first", async () => {
+    // Leaving is the one move that gets a caller off a page they cannot use, so
+    // reading the page being left is best effort rather than a precondition.
+    const harness = loadBackground();
+    harness.call("globalThis.navigated = []");
+    harness.call("browser.tabs.get = () => new Promise(() => {})");
+    harness.call("browser.tabs.update = async (id, info) => { navigated.push(info.url); }");
+
+    // Deliberately not awaiting the handler: with `tabs.get` parked forever the
+    // load wait it arms afterwards cannot finish either. What this pins down is
+    // the step before that, which used to park and spend the bridge timeout
+    // without the navigation ever being attempted.
+    const running = harness.call('handleNavigate({ tabId: 1, url: "https://ok.example/" })');
+    running.catch(() => {});
+    for (let i = 0; i < 200 && harness.call("navigated.length") === 0; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        harness.fireDeadlines();
+    }
+
+    // Joined inside the context: an array built in there carries that realm's
+    // prototype, which strict deep equality counts as a difference.
+    assert.equal(harness.call('navigated.join("|")'), "https://ok.example/");
+});
