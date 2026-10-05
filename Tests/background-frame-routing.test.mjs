@@ -270,3 +270,70 @@ test("a targeted screenshot refuses a subframe target instead of cropping the wr
 
     assert.equal(sent.length, 0, "it should refuse before scrolling the page");
 });
+
+test("a frame that resolved the target but failed does not hand the action on", async () => {
+    const { call, sent } = loadBackground({
+        respond: (frameId) => {
+            // Resolved here and did not go through. A covered target is this
+            // shape, and so is a click that fired before something after it
+            // threw.
+            if (frameId === 0) {
+                return { data: null, error: "covered by f0e9 <div>#modal", errorCode: "target_covered" };
+            }
+            return ok("Clicked <input>");
+        },
+    });
+
+    await assert.rejects(
+        () => call('dispatchToContent("click", { tabId: 1, selector: "#buy" })'),
+        /covered/
+    );
+
+    // Frame 3 matches `#buy` as well. Clicking it would be a second click, on a
+    // page the caller never named, after the first one may already have fired.
+    assert.deepEqual(sent.map((s) => s.frameId), [0]);
+});
+
+test("a frame that simply does not have the target is still skipped", async () => {
+    // The counterpart to the test above: stopping on every failure would undo
+    // the frame search entirely.
+    const { call, sent } = loadBackground({
+        respond: (frameId) => {
+            if (frameId === 0) return { data: null, error: "no element", errorCode: "target_not_found" };
+            return ok("Clicked <input>");
+        },
+    });
+
+    assert.equal(await call('dispatchToContent("click", { tabId: 1, selector: "#card" })'), "Clicked <input>");
+    assert.deepEqual(sent.map((s) => s.frameId), [0, 3]);
+});
+
+test("wait is put to every frame at once rather than one timeout at a time", async () => {
+    const asked = [];
+    const { call } = loadBackground({
+        respond: (frameId) => {
+            asked.push(frameId);
+            if (frameId === 3) return ok("appeared");
+            // Never settles, which is how a selector that is not coming behaves
+            // until its own timeout runs out. Asked in turn, frame 3 is never
+            // reached and the whole call rides the bridge timeout instead.
+            return new Promise(() => {});
+        },
+    });
+
+    assert.equal(await call('dispatchToContent("wait", { tabId: 1, selector: ".late" })'), "appeared");
+    assert.deepEqual(asked, [0, 3]);
+});
+
+test("a wait no frame satisfies still reports wait_timeout", async () => {
+    const { call } = loadBackground({
+        respond: () => ({ data: null, error: "no match in 10s", errorCode: "wait_timeout" }),
+    });
+
+    // Promise.any rejects with an AggregateError, which carries no tool error
+    // code, so reporting it directly would lose the recovery action the content
+    // script attached.
+    const err = await call('dispatchToContent("wait", { tabId: 1, selector: ".never" })')
+        .then(() => null, (caught) => caught);
+    assert.equal(err.code, "wait_timeout");
+});
