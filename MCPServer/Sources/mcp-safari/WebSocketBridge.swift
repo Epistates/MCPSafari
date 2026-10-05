@@ -271,6 +271,15 @@ actor WebSocketBridge {
     /// Authentication token that the extension must send as its first message.
     let authToken: String
 
+    /// The `Origin` the most recent handshake arrived with, or nil if it sent
+    /// none. Nothing turns on this yet; it exists so that what Safari sends can
+    /// be read off a real run instead of guessed at. See #121.
+    private(set) var lastHandshakeOrigin: String?
+
+    private func recordHandshakeOrigin(_ origin: String?) {
+        lastHandshakeOrigin = origin
+    }
+
     /// Stands in for Safari's default profile, which sends no `SFExtensionProfileKey`.
     /// Must match `SafariWebExtensionHandler.defaultProfileID`.
     static let defaultProfileID = "default"
@@ -476,13 +485,29 @@ actor WebSocketBridge {
 
     private static let maxPortRetries: UInt16 = 10
 
-    private static func makeWebSocketParameters(for port: NWEndpoint.Port) -> NWParameters {
+    private func makeWebSocketParameters(for port: NWEndpoint.Port) -> NWParameters {
         let params = NWParameters(tls: nil)
         params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: port)
 
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
         wsOptions.maximumMessageSize = Self.maxMessageBytes
+
+        // Records the Origin each handshake arrives with and refuses nothing on
+        // it. Browsers do not apply same-origin to WebSockets, so a page on any
+        // site can open one against a loopback port; the token is what stops it
+        // getting further. Checking Origin would be defence in depth, but what
+        // Safari's own extension sends here has never been observed, and
+        // enforcing a guess would break every install at once. Logging it means
+        // the next real-Safari run answers that, and #121 can then enforce it.
+        let logger = logger
+        wsOptions.setClientRequestHandler(networkQueue) { [weak self] _, headers in
+            let origin = headers.first { $0.name.lowercased() == "origin" }?.value
+            logger.notice("WebSocket handshake origin: \(origin ?? "<none sent>")")
+            Task { await self?.recordHandshakeOrigin(origin) }
+            return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+        }
+
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
         return params
     }
@@ -561,7 +586,7 @@ actor WebSocketBridge {
             guard let nwPort = NWEndpoint.Port(rawValue: tryPort) else { continue }
 
             do {
-                let newListener = try NWListener(using: Self.makeWebSocketParameters(for: nwPort))
+                let newListener = try NWListener(using: makeWebSocketParameters(for: nwPort))
                 self.listener = newListener
                 self.port = tryPort
 
