@@ -13,6 +13,11 @@ const AUTO_SCAN_RANGE = 10; // Ports 8089-8098 are auto-managed
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 5000;
 const AUTO_CLEANUP_MS = 120_000;
+// How many failed attempts an auto-scanned port that has never answered gets
+// before it is left alone. One home for it: the two places that read it had
+// drifted to `>= 3` and `> 3`, so whether a port survived its fourth failure
+// depended on which one happened to look first.
+const AUTO_GIVE_UP_ATTEMPTS = 3;
 const DEFAULT_PROFILE_ID = "default";
 
 // ─── Website permission gating ───────────────────────────────────────
@@ -206,7 +211,17 @@ function failureResponse(id, error) {
 
 function ensurePort(port, manual = false) {
     if (!connections.has(port)) {
-        connections.set(port, { ws: null, state: "disconnected", attempts: 0, manual, lastConnected: 0 });
+        connections.set(port, {
+            ws: null,
+            state: "disconnected",
+            attempts: 0,
+            manual,
+            lastConnected: 0,
+            // When the socket last went away, which is a different question from
+            // when it last authenticated. The cleanup below wants "how long has
+            // this server been gone", and `lastConnected` cannot answer it.
+            disconnectedAt: 0,
+        });
     }
     if (manual) {
         const conn = connections.get(port);
@@ -265,6 +280,7 @@ function connectToPort(port) {
                     conn.lastConnected = Date.now();
                     conn.state = "connected";
                     conn.attempts = 0;
+                    conn.disconnectedAt = 0;
                     console.log(`[MCPSafari:${port}] Authenticated`);
                 } else {
                     console.error(`[MCPSafari:${port}] Auth rejected: ${msg.error || "unknown error"}`);
@@ -304,6 +320,7 @@ function connectToPort(port) {
     socket.onclose = () => {
         conn.state = "disconnected";
         conn.ws = null;
+        if (conn.disconnectedAt === 0) conn.disconnectedAt = Date.now();
         scheduleReconnect(port);
     };
 
@@ -313,7 +330,7 @@ function connectToPort(port) {
 function scheduleReconnect(port) {
     const conn = connections.get(port);
     if (!conn) return;
-    if (!conn.manual && conn.lastConnected === 0 && conn.attempts >= 3) {
+    if (!conn.manual && conn.lastConnected === 0 && conn.attempts >= AUTO_GIVE_UP_ATTEMPTS) {
         suppressStaleTokenPort(port);
         return;
     }
@@ -358,6 +375,12 @@ function ensurePortsForKnownTokens() {
 function suppressStaleTokenPort(port) {
     const token = authTokensByPort.get(port);
     if (token) staleTokensByPort.set(port, token);
+    // Close it as `disconnectPort` does. Dropping the record while a socket was
+    // still opening left one nothing managed: it would finish its handshake,
+    // answer requests, and have no entry in `connections`, so the popup showed
+    // nothing and its eventual close found no connection to reconnect.
+    const conn = connections.get(port);
+    if (conn && conn.ws) conn.ws.close();
     connections.delete(port);
 }
 
@@ -1396,18 +1419,9 @@ if (typeof browser.alarms !== "undefined") {
     browser.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === "mcp-keepalive") {
             loadAuthTokens().finally(() => {
-                // Try to reconnect disconnected ports.
-                // Only reset backoff for previously-connected ports (quick recovery
-                // when a known server restarts). Never-connected auto-scan ports
-                // keep their attempt count so they get cleaned up below.
-                for (const [port, conn] of connections) {
-                    if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
-                        if (conn.lastConnected > 0 || conn.manual) {
-                            conn.attempts = 0;
-                        }
-                        connectToPort(port);
-                    }
-                }
+                // Was a second copy of this loop, which is how the give-up
+                // threshold below ended up disagreeing with `scheduleReconnect`.
+                reconnectKnownPorts();
 
                 // Clean up auto-scan ports that have never connected or have been
                 // disconnected for longer than AUTO_CLEANUP_MS
@@ -1416,11 +1430,18 @@ if (typeof browser.alarms !== "undefined") {
                     if (conn.manual) continue;
                     if (!isAutoScanPort(port)) continue;
                     if (conn.state === "connected") continue;
-                    if (conn.lastConnected === 0 && conn.attempts > 3) {
+                    if (conn.lastConnected === 0 && conn.attempts >= AUTO_GIVE_UP_ATTEMPTS) {
                         // Never connected — remove after a few failed attempts
                         suppressStaleTokenPort(port);
-                    } else if (conn.lastConnected > 0 && (now - conn.lastConnected) > AUTO_CLEANUP_MS) {
-                        // Was connected but server has been gone for 2+ minutes
+                    } else if (conn.disconnectedAt > 0 && (now - conn.disconnectedAt) > AUTO_CLEANUP_MS) {
+                        // Gone for 2+ minutes. Measured from when the socket went
+                        // away, not from when it authenticated: `lastConnected`
+                        // is never refreshed, so reading it here suppressed any
+                        // server that had simply been up longer than the grace
+                        // period, the first time Safari suspended this page. The
+                        // suppression then records the live token as stale and
+                        // the server only mints a new one on restart, so the
+                        // bridge went quiet until something was restarted.
                         suppressStaleTokenPort(port);
                     }
                 }
