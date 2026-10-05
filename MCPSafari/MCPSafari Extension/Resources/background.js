@@ -282,6 +282,16 @@ function connectToPort(port) {
             request = JSON.parse(event.data);
         } catch (_) { return; }
 
+        // `JSON.parse` is happy with `null`, `5`, or a bare string, and none of
+        // those has an id to answer. Destructuring one threw out of
+        // `handleRequest`, and the catch below then threw a second time reading
+        // `request.id`, so nothing was ever sent back. Dropping it here is
+        // loud and cannot cascade.
+        if (!request || typeof request !== "object" || typeof request.id !== "string") {
+            console.error(`[MCPSafari:${port}] Ignoring a frame that carries no request id`);
+            return;
+        }
+
         try {
             const response = await handleRequest(request);
             socket.send(JSON.stringify(response));
@@ -496,7 +506,13 @@ async function handleRequest(request) {
         return {
             id,
             success: true,
-            data: typeof data === "string" ? data : JSON.stringify(data),
+            // `JSON.stringify(undefined)` is the value undefined rather than a
+            // string, and the outer stringify then drops the key altogether, so
+            // the server saw a successful reply with no data at all and reported
+            // it as a failure with no reason. `snapshotAcrossFrames` returning
+            // nothing for a falsy top-level tree is one way in; the coalesce is
+            // a floor under every handler rather than a fix for that one.
+            data: typeof data === "string" ? data : JSON.stringify(data ?? null),
             error: null,
         };
     } catch (err) {
