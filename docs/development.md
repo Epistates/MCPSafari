@@ -41,9 +41,22 @@ The binary is `MCPServer/.build/release/MCPSafari`.
 A Swift executable using the official [modelcontextprotocol/swift-sdk](https://github.com/modelcontextprotocol/swift-sdk). Communicates with MCP clients via **stdio** and with the Safari extension via a **WebSocket** bridge using `Network.framework`.
 
 - `main.swift` — Entry point, parses CLI flags, starts the server
-- `SafariMCPServer.swift` — Tool definitions and handlers (actor)
+- `SafariMCPServer.swift` — The actor itself: tool dispatch, profile routing, and the tool handlers
 - `WebSocketBridge.swift` — WebSocket server with request/response correlation (actor)
 - `BridgeMessage.swift` — Wire protocol types and `AnyCodable` serialization
+- `Diagnostics.swift` — CLI flag parsing and the `doctor` checks
+- `TabHandle.swift` / `FileAttachment.swift` — Profile-qualified tab handles, and loading local files for upload
+- `ClientCapabilityTransport.swift` — Repairs the one `initialize` shape swift-sdk 0.12.1 cannot decode
+
+Four `extension SafariMCPServer` files carry the parts that need no actor state, so the actor file stays about dispatch and handlers:
+
+- `ToolCatalog.swift` — Every advertised `inputSchema` and the fragments they are built from
+- `NativeInput.swift` — Real keyboard and mouse events for the `native: true` paths (Carbon, `CGEvent`)
+- `ScreenshotCapture.swift` — Writing, clipping, scaling and describing a capture
+- `ResultFormatting.swift` — Turning a bridge response or an error into a `CallTool.Result`
+- `RunStepsPlan.swift` — Validates a whole `run_steps` batch before any of it runs
+
+In those files, an `internal` member is one the handlers call; everything else is `private`. Swift scopes `private` to the file, so the access level marks the seam between a subsystem and the rest of the server.
 
 ### Safari extension (`MCPSafari/`)
 
