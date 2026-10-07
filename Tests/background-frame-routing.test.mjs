@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(
-    new URL("../MCPSafari/MCPSafari Extension/Resources/background.js", import.meta.url),
-    "utf8"
-);
+import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
+
+const source = backgroundScriptSource();
 
 const TOP = { frameId: 0, parentFrameId: -1, url: "https://top.example/" };
 const EMBED = { frameId: 3, parentFrameId: 0, url: "https://embed.example/form" };

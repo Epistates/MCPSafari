@@ -3,10 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const backgroundSource = readFileSync(
-    new URL("../MCPSafari/MCPSafari Extension/Resources/background.js", import.meta.url),
-    "utf8"
-);
+import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
+
+const backgroundSource = backgroundScriptSource();
 const popupSource = readFileSync(
     new URL("../MCPSafari/MCPSafari Extension/Resources/popup.js", import.meta.url),
     "utf8"
