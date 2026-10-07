@@ -42,7 +42,7 @@ A Swift executable using the official [modelcontextprotocol/swift-sdk](https://g
 
 - `main.swift` — Entry point, parses CLI flags, starts the server
 - `SafariMCPServer.swift` — The actor itself: tool dispatch, profile routing, and the tool handlers
-- `WebSocketBridge.swift` — WebSocket server with request/response correlation (actor)
+- `WebSocketBridge.swift` — WebSocket server with request/response correlation (actor). Most of this actor is one state machine running from listener to connection to handshake to authenticated send, and it stays in one file for that reason: the steps share mutable bookkeeping and are far easier to follow together. What sits beside it is the part that holds no state: `BridgeHandshake.swift` (what the extension sends on connecting, and how a frame is judged a valid handshake), `BridgeStatus.swift` (the `Codable` shapes `status` and `doctor` report), and `BridgeError.swift` (every failure and the message it gives the MCP client)
 - `BridgeMessage.swift` — Wire protocol types and `AnyCodable` serialization
 - `Diagnostics.swift` — CLI flag parsing and the `doctor` checks
 - `TabHandle.swift` / `FileAttachment.swift` — Profile-qualified tab handles, and loading local files for upload
