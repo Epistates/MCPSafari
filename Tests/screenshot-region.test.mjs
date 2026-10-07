@@ -1,13 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
-import { contentScriptSource } from "./helpers/extension-sources.mjs";
+import { backgroundScriptSource, contentScriptSource } from "./helpers/extension-sources.mjs";
 
-const background = readFileSync(
-    new URL("../MCPSafari/MCPSafari Extension/Resources/background.js", import.meta.url),
-    "utf8"
-);
+const background = backgroundScriptSource();
 const content = contentScriptSource();
 
 // Background harness: records what reaches the content script and in what

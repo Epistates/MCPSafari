@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
-import { contentScriptSource } from "./helpers/extension-sources.mjs";
+import { backgroundScriptSource, contentScriptSource } from "./helpers/extension-sources.mjs";
 
 const contentSource = contentScriptSource();
-const backgroundSource = readFileSync(
-    new URL("../MCPSafari/MCPSafari Extension/Resources/background.js", import.meta.url),
-    "utf8"
-);
+const backgroundSource = backgroundScriptSource();
 
 function contentHarness(document = {
     activeElement: null,

@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(
-    new URL("../MCPSafari/MCPSafari Extension/Resources/background.js", import.meta.url),
-    "utf8"
-);
+import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
+
+const source = backgroundScriptSource();
 
 // The server holds a pending entry for every request it sends and waits thirty
 // seconds for an answer, so a reply it cannot read costs exactly as much as a

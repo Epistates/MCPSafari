@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const backgroundSource = readFileSync(
-    new URL("../MCPSafari/MCPSafari Extension/Resources/background.js", import.meta.url),
-    "utf8"
-);
+import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
+
+const backgroundSource = backgroundScriptSource();
 
 // Built inside the vm so the thrown EvalError belongs to that realm, the way a
 // real page's refusal does; a cross-realm one would defeat `instanceof`.

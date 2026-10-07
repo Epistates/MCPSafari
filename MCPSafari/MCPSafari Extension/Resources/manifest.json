@@ -15,8 +15,17 @@
     },
 
     "background": {
-        "scripts": ["background.js"],
-        "type": "module"
+        "scripts": [
+            "background-config.js",
+            "background-state.js",
+            "background-bridge.js",
+            "background-router.js",
+            "background-tabs.js",
+            "background-navigation.js",
+            "background-page.js",
+            "background-frames.js",
+            "background.js"
+        ]
     },
 
     "content_scripts": [{
