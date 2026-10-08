@@ -65,8 +65,16 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         context.completeRequest(returningItems: [ response ], completionHandler: nil)
     }
 
-    /// Reported when Safari supplies no `SFExtensionProfileKey`, which is how the
-    /// default profile presents. Must match `WebSocketBridge.defaultProfileID`.
+    /// Reported when Safari supplies no `SFExtensionProfileKey`. Must match
+    /// `WebSocketBridge.defaultProfileID`.
+    ///
+    /// This is a fallback, not the usual path. The default profile was assumed to
+    /// present by sending no key at all, and a real run on Safari 27.0.1
+    /// (2026-10-08) disproved that: it sent the profile's UUID like any other,
+    /// and the profile came through as `p0`, selected and authenticated. So the
+    /// literal `"default"` is only reached on a Safari that sends nothing, which
+    /// no observed version does. Kept because a missing key still has to resolve
+    /// to one stable id rather than an empty one.
     static let defaultProfileID = "default"
 
     private struct TokenLoadResult {
