@@ -8,10 +8,34 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createContext, runInContext } from "node:vm";
 
 const binary = process.env.MCPSAFARI_TEST_BINARY
     ?? fileURLToPath(new URL("../../MCPServer/.build/debug/MCPSafari", import.meta.url));
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1XkAAAAASUVORK5CYII=";
+
+/// Every action the server asked the extension to perform during this run.
+const sentActions = new Set();
+
+/// The actions the real extension router can serve, read from its own dispatch
+/// tables.
+///
+/// `background-router.js` evaluates on its own because each table entry defers
+/// its handler behind an arrow, so nothing is dereferenced at load. That is
+/// what makes it readable from here without standing up the whole background.
+async function extensionRoutableActions() {
+    const source = await readFile(
+        fileURLToPath(new URL("../../MCPSafari/MCPSafari Extension/Resources/background-router.js", import.meta.url)),
+        "utf8"
+    );
+    const context = createContext({});
+    runInContext(source, context);
+    return new Set([
+        ...runInContext("[...BACKGROUND_HANDLERS.keys()]", context),
+        ...runInContext("[...CONTENT_ACTIONS]", context),
+        ...runInContext("[...CONTENT_PROXIES.keys()]", context),
+    ]);
+}
 
 function bounded(promise, label, ms = 10000) {
     let timer;
@@ -135,6 +159,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         await bounded(authenticated, "extension authentication");
     };
     await connect("default", ({ action, params }) => {
+        sentActions.add(action);
         if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user" };
         const data = responseData(action, params);
         return { success: true, data: typeof data === "string" ? data : JSON.stringify(data) };
@@ -226,4 +251,17 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(partial.structuredContent.tabs.length, 1);
     assert.equal(partial.structuredContent.profileFailures.length, 1);
     assert.match(partial.structuredContent.profileFailures[0], /Profile unavailable/);
+
+    // The one boundary that spans both languages. This fixture answers any
+    // action it is sent, including `default: Completed ${action}`, so every
+    // tool above passes whether or not the real extension knows the action the
+    // server used. A renamed or mistyped action would reach a user as
+    // "Unknown action" having passed CI.
+    //
+    // The action names come from the server actually sending them rather than
+    // from reading the Swift source, so there is no pattern here to drift.
+    const routable = await extensionRoutableActions();
+    const unroutable = [...sentActions].filter((action) => !routable.has(action)).sort();
+    assert.deepEqual(unroutable, [], `the extension has no handler for: ${unroutable.join(", ")}`);
+    assert.ok(sentActions.size >= 15, `expected the tools above to exercise the bridge, saw ${sentActions.size} actions`);
 });
