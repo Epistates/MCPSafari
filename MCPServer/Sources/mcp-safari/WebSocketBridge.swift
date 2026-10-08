@@ -66,8 +66,12 @@ actor WebSocketBridge {
         lastHandshakeOrigin = origin
     }
 
-    /// Stands in for Safari's default profile, which sends no `SFExtensionProfileKey`.
-    /// Must match `SafariWebExtensionHandler.defaultProfileID`.
+    /// Stands in for a profile that reached the native handler with no
+    /// `SFExtensionProfileKey`. Must match `SafariWebExtensionHandler.defaultProfileID`.
+    ///
+    /// Not the usual path for the default profile, despite the name. Safari 27.0.1
+    /// sends the default profile's UUID like any other profile's, observed on a real
+    /// run on 2026-10-08, so this id is a fallback rather than the common case.
     static let defaultProfileID = "default"
 
     /// Cap on connections held mid-handshake. Generous for real profile counts, and
