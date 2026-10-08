@@ -67,7 +67,24 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
 
         switch action {
         case "open-preferences":
-            SFSafariApplication.showPreferencesForExtension(withIdentifier: extensionBundleIdentifier) { _ in }
+            // Safari refuses this when it cannot resolve the extension, which
+            // happens while a development build is registered in place of the
+            // installed one. Discarding the error made the button look dead,
+            // and a dead button is the one outcome that tells nobody anything.
+            // The state read above already reports its own failure; this now
+            // matches it rather than failing silently.
+            SFSafariApplication.showPreferencesForExtension(withIdentifier: extensionBundleIdentifier) { [weak self] error in
+                guard let error else { return }
+                NSLog("Could not open Safari extension preferences: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    guard let webView = self?.webView,
+                          // Escaped through JSON rather than interpolated: the
+                          // message comes from Safari and lands in a script.
+                          let data = try? JSONSerialization.data(withJSONObject: [error.localizedDescription]),
+                          let json = String(data: data, encoding: .utf8) else { return }
+                    webView.evaluateJavaScript("showPreferencesError(\(json)[0])")
+                }
+            }
         case "enable-native-input":
             NSWorkspace.shared.open(accessibilitySettingsURL)
         default:
