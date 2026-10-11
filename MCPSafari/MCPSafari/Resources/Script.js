@@ -10,6 +10,14 @@ function openPreferences() {
     webkit.messageHandlers.controller.postMessage("open-preferences");
 }
 
+// Safari can refuse to open its own settings pane, in which case nothing
+// happens on screen and the button reads as broken. Say so instead.
+function showPreferencesError(message) {
+    const note = document.querySelector(".preferences-note");
+    note.textContent = `Safari would not open its settings: ${message} Open Safari > Settings > Extensions yourself.`;
+    note.hidden = false;
+}
+
 function enableNativeInput() {
     webkit.messageHandlers.controller.postMessage("enable-native-input");
 }
