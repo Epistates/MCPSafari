@@ -121,6 +121,8 @@ Safari runs a separate, complete instance of the extension in every profile, and
 
 Naming a profile that is not connected fails with `profile_not_connected` rather than falling back to another one, because answering from a different browser window is worse than refusing.
 
+`select_tab` on a tab whose site Safari has not granted still succeeds and pins the tab's profile. The tab comes back with `access: "not_granted"`, and the result says in prose that reading or acting on the page will fail with `permission_required` until the user grants the site.
+
 ### Element targeting
 
 Targeting options vary by tool. `click` accepts all four:

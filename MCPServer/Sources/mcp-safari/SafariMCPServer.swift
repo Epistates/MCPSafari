@@ -186,8 +186,17 @@ actor SafariMCPServer {
             return textResult(response, as: "tab")
         }
         tab["id"] = AnyCodable(TabHandle(profileIndex: profileIndex, tabID: tabID).description)
+        var content = [Self.textContent(Self.jsonText(tab) ?? raw)]
+        // Selecting a tab on a site Safari has not granted succeeds, with the
+        // access state on the tab. The JSON carries it for a program; this
+        // sentence is for the model reading the result, which would otherwise
+        // find out only when its next read fails with `permission_required`.
+        if tab["access"]?.stringValue == "not_granted" {
+            let hint = tab["hint"]?.stringValue ?? "Ask the user to grant MCPSafari access to this site from the MCPSafari button in Safari's toolbar, or in Safari Settings > Extensions."
+            content.append(Self.textContent("The tab is selected, but access to its site is not granted, so reading or acting on the page will fail with permission_required until it is. \(hint)"))
+        }
         return CallTool.Result(
-            content: [Self.textContent(Self.jsonText(tab) ?? raw)],
+            content: content,
             structuredContent: .object(["tab": (try? Value(tab)) ?? .null])
         )
     }

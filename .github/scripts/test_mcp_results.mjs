@@ -301,6 +301,22 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(partial.structuredContent.profileFailures.length, 1);
     assert.match(partial.structuredContent.profileFailures[0], /Profile unavailable/);
 
+    // Selecting a tab on a site Safari has not granted succeeds and says so. It
+    // still pins the tab's profile, and the result tells the model in prose that
+    // the next read will be refused rather than leaving it to find out.
+    await connect("third", ({ action }) => action === "select_tab"
+        ? { success: true, data: JSON.stringify({ id: 9, url: "https://example.org/", title: "Example", access: "not_granted", hint: "Grant example.org from the MCPSafari toolbar button." }) }
+        : { success: false, error: "Not used" });
+    const ungranted = await tool("select_tab", { tabId: "p2t9" });
+    assert.equal(ungranted.structuredContent.tab.id, "p2t9");
+    assert.equal(ungranted.structuredContent.tab.access, "not_granted");
+    assert.match(ungranted.content[0].text, /not_granted/);
+    const ungrantedText = ungranted.content.map(({ text }) => text).join("\n");
+    assert.match(ungrantedText, /access to its site is not granted/);
+    assert.match(ungrantedText, /Grant example\.org from the MCPSafari toolbar button\./);
+    const pinned = (await tool("status")).structuredContent.status.profiles.find((profile) => profile.selected);
+    assert.equal(pinned.handle, "p2");
+
 
     // The one boundary that spans both languages. This fixture answers any
     // action it is sent, including `default: Completed ${action}`, so every
