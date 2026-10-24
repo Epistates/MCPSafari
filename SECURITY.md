@@ -102,7 +102,16 @@ Tokens are written only under `~/Library/Application Support/MCPSafari/`. Earlie
 
 ### Snapshot redaction
 
-`snapshot` reports that a sensitive field has a value without reporting the value itself. Password inputs, and inputs whose `autocomplete` marks them as a password, one-time code, or payment card field, come back as `"value": "[redacted]"`. Other field values are reported verbatim. This redaction does not cover every place a page may display a secret, or other outputs such as screenshots, HTML, and JavaScript results.
+`snapshot` reports that a sensitive field has a value without reporting the value itself. An `<input>` or `<textarea>` comes back as `"value": "[redacted]"` when any of these holds:
+
+- Its type is `password`, in any letter case.
+- Its `autocomplete` carries `current-password`, `new-password`, `one-time-code`, `cc-number`, `cc-csc`, `cc-exp`, `cc-exp-month`, or `cc-exp-year`, alone or among other tokens such as `section-x cc-csc`.
+- It was a password field at any point while the page has been open. A show-password toggle flips the field to `type="text"`, so the extension watches `type` changes from page load and remembers the field.
+- Its `name`, `id`, `aria-label`, `inputmode`, or `autocomplete` names a secret: a word such as `pass`, `pwd`, `pin`, `otp`, `cvv`, `cvc`, `ssn`, `secret`, `token`, or `2fa`, or a longer run containing `password`, `passcode`, `secret`, `token`, or `one-time`. Whole words are matched for the short ones, so `shipping` and `passenger` stay readable. Checkboxes, radio buttons, and buttons are exempt from this name test because their value is a fixed label rather than something typed.
+
+A sensitive `<textarea>` also loses its default text from the snapshot, which would otherwise repeat what the value redaction withholds.
+
+The name test is a heuristic, so a secret under a name nobody has thought of is reported verbatim, and a field that was toggled out of password type inside a shadow root before the first snapshot reached that root is caught only by its name. Other field values are reported verbatim. This redaction does not cover every place a page may display a secret, or other outputs such as screenshots, HTML, and JavaScript results.
 
 ### Tab URL redaction
 
