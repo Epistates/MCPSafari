@@ -261,7 +261,7 @@ extension SafariMCPServer {
                         "key": .object(["type": .string("string")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Use a real macOS key event. " + Self.nativeRequirements),
+                            "description": .string("Use a real macOS key event; shortcuts that quit, close, hide, or leave Safari (Command+Q, Command+W, Command+Tab) are refused. " + Self.nativeRequirements),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),

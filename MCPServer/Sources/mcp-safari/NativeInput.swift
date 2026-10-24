@@ -441,18 +441,66 @@ extension SafariMCPServer {
 
         let normalized = key.lowercased()
         if let code = namedKeyCodes[normalized] {
+            try refuseBlockedCombo(identity: namedKeyIdentity(code: code), flags: flags, label: keyString)
             return NativeKeyCombo(keyCode: code, flags: flags, label: keyString)
         }
 
         guard normalized.count == 1 else {
             throw ToolInputError("Native press_key does not support \(key). Use Enter, Tab, Escape, Space, Backspace, Delete, arrows, Home, End, PageUp, PageDown, F1-F12, or a single character.")
         }
+        // Judged on the character the caller asked for, not on the keycode it
+        // resolves to: Meta+q on AZERTY is keycode 0, and still Command-Q.
+        try refuseBlockedCombo(identity: normalized, flags: flags, label: keyString)
         guard let resolved = resolveCharacter(normalized) else {
             let layout = currentKeyboardLayoutName().map { " on \($0)" } ?? ""
             throw ToolInputError("Native press_key cannot type \(key)\(layout). Switch the keyboard layout, or use a named key such as Enter, Tab, or the arrows.")
         }
         if resolved.needsShift { flags.insert(.maskShift) }
         return NativeKeyCombo(keyCode: resolved.keyCode, flags: flags, label: keyString)
+    }
+
+    /// A shortcut that native `press_key` will not send. The modifiers are the
+    /// ones it requires, so adding Shift or Option to a blocked combination does
+    /// not get past it: Command+Shift+Q and Command+Option+Shift+Q are still Q
+    /// with Command held.
+    struct BlockedNativeCombo: Equatable, Sendable {
+        let modifiers: CGEventFlags
+        let key: String
+        let name: String
+    }
+
+    /// Everything here ends the session or takes Safari away from the caller:
+    /// quit, close, hide, minimize, switch application, log out, lock, force
+    /// quit, or empty the Trash. A real key event cannot be told apart from the
+    /// user's own, so unlike a synthetic one there is no page to contain it. Kept
+    /// short on purpose; documented in docs/tools.md.
+    nonisolated static let blockedNativeCombos: [BlockedNativeCombo] = [
+        .init(modifiers: .maskCommand, key: "q", name: "Command+Q"),
+        .init(modifiers: .maskCommand, key: "w", name: "Command+W"),
+        .init(modifiers: .maskCommand, key: "h", name: "Command+H"),
+        .init(modifiers: .maskCommand, key: "m", name: "Command+M"),
+        .init(modifiers: .maskCommand, key: "tab", name: "Command+Tab"),
+        .init(modifiers: .maskCommand, key: "space", name: "Command+Space"),
+        .init(modifiers: .maskControl, key: "space", name: "Control+Space"),
+        .init(modifiers: [.maskCommand, .maskAlternate], key: "escape", name: "Command+Option+Escape"),
+        .init(modifiers: [.maskCommand, .maskShift], key: "delete", name: "Command+Shift+Delete"),
+    ]
+
+    private nonisolated static func namedKeyIdentity(code: CGKeyCode) -> String? {
+        switch code {
+        case 48: "tab"
+        case 49: "space"
+        case 53: "escape"
+        case 51, 117: "delete" // Backspace and forward delete are both "Delete" to Finder.
+        default: nil
+        }
+    }
+
+    private nonisolated static func refuseBlockedCombo(identity: String?, flags: CGEventFlags, label: String) throws {
+        guard let identity,
+              let blocked = blockedNativeCombos.first(where: { $0.key == identity && flags.isSuperset(of: $0.modifiers) })
+        else { return }
+        throw ToolInputError("Native press_key does not send \(label): it includes \(blocked.name), which quits, closes, hides, or leaves Safari, or locks, logs out, or empties the Trash, and a real key event cannot be contained to the page. Use close_tab to close a tab, or omit native to send the key to the page only.")
     }
 
     nonisolated static func pressNativeKey(_ combo: NativeKeyCombo, deadline: Double? = nil) throws -> String {
