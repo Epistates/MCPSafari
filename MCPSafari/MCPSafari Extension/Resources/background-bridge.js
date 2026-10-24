@@ -25,6 +25,9 @@ function connectToPort(port) {
     conn.ws = socket;
 
     let pendingAuth = true;
+    // Whether the server ever accepted this socket. A close before that means the
+    // token this dial used may be out of date, which `scheduleReconnect` acts on.
+    let authenticated = false;
 
     socket.onopen = () => {
         socket.send(JSON.stringify({
@@ -47,6 +50,7 @@ function connectToPort(port) {
                         socket.close();
                         return;
                     }
+                    authenticated = true;
                     conn.lastConnected = Date.now();
                     conn.state = "connected";
                     conn.attempts = 0;
@@ -91,13 +95,18 @@ function connectToPort(port) {
         conn.state = "disconnected";
         conn.ws = null;
         if (conn.disconnectedAt === 0) conn.disconnectedAt = Date.now();
-        scheduleReconnect(port);
+        scheduleReconnect(port, { reloadTokens: !authenticated });
     };
 
     socket.onerror = () => { /* logged by onclose */ };
 }
 
-function scheduleReconnect(port) {
+// `reloadTokens` is for a dial that never got authenticated. A server that
+// restarted writes a new token, and the one cached here is for the old run, so
+// redialling with it only locks the extension out until the next keepalive
+// (#156). It is one native read per attempt, and attempts are already spaced by
+// the backoff below, so a server that keeps refusing cannot make this a tight loop.
+function scheduleReconnect(port, { reloadTokens = false } = {}) {
     const conn = connections.get(port);
     if (!conn) return;
     if (!conn.manual && conn.lastConnected === 0 && conn.attempts >= AUTO_GIVE_UP_ATTEMPTS) {
@@ -109,7 +118,10 @@ function scheduleReconnect(port) {
         RECONNECT_MAX_MS
     );
     conn.attempts++;
-    setTimeout(() => connectToPort(port), delayMs);
+    setTimeout(async () => {
+        if (reloadTokens) await loadAuthTokens();
+        connectToPort(port);
+    }, delayMs);
 }
 
 function connectAll() {

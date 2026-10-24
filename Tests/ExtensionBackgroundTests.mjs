@@ -34,6 +34,9 @@ function backgroundHarness(initialTokens, { profile } = {}) {
         }
 
         send(frame) { this.sent.push(frame); }
+        // A real socket reports its close later, through onclose, which the
+        // harness fires itself when a test wants that moment.
+        close() { this.readyState = 3; }
     }
 
     const browser = {
@@ -83,11 +86,17 @@ function backgroundHarness(initialTokens, { profile } = {}) {
             socket.onopen();
             return JSON.parse(socket.sent.at(-1));
         },
-        failLatestSocket() {
+        /// The reconnect timer's callback may itself be asynchronous, so this
+        /// waits for it: the next dial happens after any token reload.
+        async failLatestSocket() {
             const socket = sockets.at(-1);
             socket.readyState = 3;
             socket.onclose();
-            timers.shift()?.();
+            await timers.shift()?.();
+        },
+        /// Delivers one frame from the server to the latest socket.
+        serverSends(frame) {
+            return sockets.at(-1).onmessage({ data: JSON.stringify(frame) });
         },
         runtimeListeners,
         sockets,
@@ -103,7 +112,7 @@ test("unchanged stale tokens stop reconnecting until their value changes", async
     await settle();
 
     assert.equal(harness.sockets.length, 1);
-    for (let attempt = 0; attempt < 4; attempt++) harness.failLatestSocket();
+    for (let attempt = 0; attempt < 4; attempt++) await harness.failLatestSocket();
 
     assert.equal(harness.evaluate("connections.has(8091)"), false);
     assert.equal(harness.evaluate("staleTokensByPort.get(8091)"), "stale-token");
@@ -144,6 +153,49 @@ test("the extension dials the IPv4 loopback address, never the name localhost", 
     await settle();
 
     assert.equal(harness.sockets.at(-1).url, "ws://127.0.0.1:8091");
+});
+
+test("a token_mismatch reply makes the redial read the token again", async () => {
+    // A restarted server writes a new token. The extension kept redialling with the
+    // one it had cached and stayed locked out until the keepalive (#156).
+    const harness = backgroundHarness({ 8091: "old-token" });
+    await settle();
+    assert.equal(harness.openLatestSocket().auth, "old-token");
+
+    await harness.serverSends({ auth: "error", error: "token_mismatch" });
+    harness.tokenMap.set("8091", "new-token");
+    const reads = harness.nativeMessageCount();
+    await harness.failLatestSocket();
+
+    assert.equal(harness.nativeMessageCount(), reads + 1, "tokens are read once for the attempt");
+    assert.equal(harness.sockets.length, 2);
+    assert.equal(harness.openLatestSocket().auth, "new-token");
+});
+
+test("a socket that closes before authenticating also reads the token again", async () => {
+    // The server may simply be gone or restarting, with nothing said at all.
+    const harness = backgroundHarness({ 8091: "old-token" });
+    await settle();
+    harness.openLatestSocket();
+
+    harness.tokenMap.set("8091", "new-token");
+    await harness.failLatestSocket();
+
+    assert.equal(harness.openLatestSocket().auth, "new-token");
+});
+
+test("a connection that was authenticated redials without a token read", async () => {
+    // Its token was good a moment ago, and the keepalive reloads tokens anyway.
+    const harness = backgroundHarness({ 8091: "current-token" });
+    await settle();
+    harness.openLatestSocket();
+    await harness.serverSends({ auth: "ok", protocolVersion: harness.evaluate("BRIDGE_PROTOCOL_VERSION") });
+
+    const reads = harness.nativeMessageCount();
+    await harness.failLatestSocket();
+
+    assert.equal(harness.nativeMessageCount(), reads);
+    assert.equal(harness.sockets.length, 2);
 });
 
 test("popup status polling does not restart disconnected ports", async () => {

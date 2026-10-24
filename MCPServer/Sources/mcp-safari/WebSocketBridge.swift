@@ -34,6 +34,11 @@ actor WebSocketBridge {
     /// Kept as a list rather than a single slot for the same reason as `connections`:
     /// a second profile dialing in must not cancel the first one mid-handshake.
     private var authenticatingConnections: [BridgeConnection] = []
+    /// Sockets that arrived after the listener was ready but before its token was on
+    /// disk. They are not started, so the peer's upgrade waits in the kernel, until
+    /// `start()` either goes live and admits them or fails and drops them. Refusing
+    /// them instead closed the extension's first dial silently (#156).
+    private var connectionsAwaitingListener: [NWConnection] = []
     private struct PendingRequest {
         let connectionID: UInt64
         let continuation: CheckedContinuation<BridgeResponse, any Error>
@@ -82,6 +87,10 @@ actor WebSocketBridge {
     /// How long a connection may sit without completing its handshake. Injected
     /// so a test does not have to wait out the real one.
     private let handshakeDeadline: Duration
+    /// Runs once the listener is ready and before its token is written. The gap is
+    /// real but a few milliseconds wide, so a test that wants to dial inside it has
+    /// to be able to hold it open.
+    private let beforeTokenPublication: (@Sendable () async -> Void)?
     static let maxMessageBytes = 32 * 1024 * 1024
     static let maxPendingRequests = 128
     /// Primary token root. The sandboxed extension reads tokens through a
@@ -232,9 +241,11 @@ actor WebSocketBridge {
         port: UInt16 = 8089,
         logger: Logger,
         tokenRoots: [URL] = WebSocketBridge.tokenRootURLs,
-        handshakeDeadline: Duration = .seconds(10)
+        handshakeDeadline: Duration = .seconds(10),
+        beforeTokenPublication: (@Sendable () async -> Void)? = nil
     ) throws {
         precondition(!tokenRoots.isEmpty)
+        self.beforeTokenPublication = beforeTokenPublication
         self.tokenRoots = tokenRoots
         self.requestedPort = port
         self.port = port
@@ -351,6 +362,9 @@ actor WebSocketBridge {
                     if requestedPort != 0 && boundPort != requestedPort {
                         logger.info("Port \(requestedPort) in use — listening on \(boundPort) instead")
                     }
+                    await beforeTokenPublication?()
+                    // `stop()` may have run while this was suspended.
+                    guard listener === newListener else { return }
                     do {
                         try writeAuthTokenFile(for: boundPort)
                     } catch {
@@ -366,6 +380,9 @@ actor WebSocketBridge {
                     }
                     listenerStatus = .listening
                     logger.info("WebSocket server listening on port \(boundPort)")
+                    let waiting = connectionsAwaitingListener
+                    connectionsAwaitingListener.removeAll()
+                    for socket in waiting { handleNewConnection(socket) }
                     return
                 } else {
                     discard(listener: newListener)
@@ -376,6 +393,7 @@ actor WebSocketBridge {
             }
         }
 
+        dropConnectionsAwaitingListener()
         listenerStatus = .failed
         lastError = Failure(
             code: "bridge_bind_failed",
@@ -410,6 +428,7 @@ actor WebSocketBridge {
             }
         }
         if let listener { discard(listener: listener) }
+        dropConnectionsAwaitingListener()
         for pending in authenticatingConnections {
             pending.socket.stateUpdateHandler = nil
             pending.socket.cancel()
@@ -611,9 +630,19 @@ actor WebSocketBridge {
         }
     }
 
+    private func dropConnectionsAwaitingListener() {
+        for socket in connectionsAwaitingListener { socket.cancel() }
+        connectionsAwaitingListener.removeAll()
+    }
+
     private func handleNewConnection(_ socket: NWConnection) {
         guard listenerStatus == .listening else {
-            socket.cancel()
+            if listenerStatus == .binding,
+               connectionsAwaitingListener.count < Self.maxAuthenticatingConnections {
+                connectionsAwaitingListener.append(socket)
+            } else {
+                socket.cancel()
+            }
             return
         }
         // Accept the socket, but don't make it active until the token handshake
@@ -756,8 +785,15 @@ actor WebSocketBridge {
                 authenticate(conn, metadata: metadata)
             case .rejectToken:
                 logger.warning("Auth token mismatch — closing connection")
-                conn.socket.cancel()
+                // Say why before closing. A silent close is indistinguishable from
+                // a crash, so an extension holding the token of a previous server
+                // run could not tell it needed to read the new one, and stayed
+                // locked out until its next keepalive (#156).
                 removeAuthenticating(conn)
+                sendAuthResponse([
+                    "auth": "error",
+                    "error": "token_mismatch",
+                ], to: conn, closeAfterSending: true)
             case .rejectProtocol(_, let received):
                 logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
                 // Free the slot now. `closeAfterSending` only cancels from the

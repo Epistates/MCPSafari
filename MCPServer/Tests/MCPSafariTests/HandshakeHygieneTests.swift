@@ -61,10 +61,40 @@ struct HandshakeHygieneTests {
         on task: URLSessionWebSocketTask
     ) async throws -> [String: Any] {
         try await task.send(.string(handshakePayload(token: token, profileId: profileId)))
+        return try await receiveObject(on: task)
+    }
+
+    private func receiveObject(on task: URLSessionWebSocketTask) async throws -> [String: Any] {
         guard case let .string(reply) = try await task.receive(),
               let parsed = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any]
         else { throw HandshakeTestError.unexpectedReply }
         return parsed
+    }
+
+    /// Whether the server has hung up on this socket. A closed socket makes
+    /// `receive` throw, so a throw is the observable event, and nothing is slept on.
+    private func serverClosed(_ task: URLSessionWebSocketTask) async -> Bool {
+        do { _ = try await task.receive(); return false } catch { return true }
+    }
+
+    @Test func aWrongTokenIsToldWhyAndNeverRegistersAProfile() async throws {
+        try await withStartedBridge(port: 0) { bridge, port in
+            let task = makeTask(port: port)
+            defer { task.cancel() }
+            task.resume()
+
+            let reply = try await authenticate(token: "not-the-token", profileId: "default", on: task)
+            // A silent close looks like a crash, so an extension holding the token
+            // of a previous server run had no way to know it should read the new
+            // one (#156).
+            #expect(reply["auth"] as? String == "error")
+            #expect(reply["error"] as? String == "token_mismatch")
+            #expect(await serverClosed(task))
+
+            let status = await bridge.status()
+            #expect(status.profiles.isEmpty)
+            #expect(status.bridge == .disconnected)
+        }
     }
 
     @Test func aSecondHandshakeDoesNotRegisterTheSameSocketTwice() async throws {
