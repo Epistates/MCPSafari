@@ -2,6 +2,7 @@
 import argparse
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -10,6 +11,9 @@ from typing import Any
 
 
 OSV_QUERY_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+OSV_ATTEMPTS = 2
+OSV_RETRY_BACKOFF_SECONDS = 5
+OSV_MAX_PAGES = 20
 
 
 @dataclass(frozen=True)
@@ -103,22 +107,61 @@ def build_queries(pins: list[Pin]) -> list[Query]:
     return queries
 
 
-def query_osv(queries: list[Query]) -> list[dict[str, Any]]:
+def is_transient(error: OSError) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code == 429 or error.code >= 500
+    return True
+
+
+def post_querybatch(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     request = urllib.request.Request(
         OSV_QUERY_BATCH_URL,
-        data=json.dumps({"queries": [query.payload for query in queries]}).encode(),
+        data=json.dumps({"queries": payloads}).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        data = json.load(response)
+    # One network blip must not fail the scheduled audit, but a second failure
+    # in a row is a real outage and should say so.
+    for attempt in range(OSV_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = json.load(response)
+            break
+        except OSError as error:
+            if attempt == OSV_ATTEMPTS - 1 or not is_transient(error):
+                raise
+            time.sleep(OSV_RETRY_BACKOFF_SECONDS)
 
     results = data.get("results", [])
-    if len(results) != len(queries):
+    if len(results) != len(payloads):
         raise RuntimeError(
-            f"OSV returned {len(results)} results for {len(queries)} queries"
+            f"OSV returned {len(results)} results for {len(payloads)} queries"
         )
     return results
+
+
+def query_osv(queries: list[Query]) -> list[dict[str, Any]]:
+    # A query with more matches than one response holds comes back with a
+    # next_page_token and the first page only. Reading just that page would
+    # report a package as clean when its remaining advisories sit on page two.
+    merged: list[dict[str, Any]] = [{"vulns": []} for _ in queries]
+    pending = [(index, query.payload) for index, query in enumerate(queries)]
+
+    for _ in range(OSV_MAX_PAGES):
+        if not pending:
+            return merged
+        results = post_querybatch([payload for _, payload in pending])
+        following: list[tuple[int, dict[str, Any]]] = []
+        for (index, payload), result in zip(pending, results, strict=True):
+            merged[index]["vulns"].extend(result.get("vulns", []))
+            token = result.get("next_page_token")
+            if token:
+                following.append((index, {**payload, "page_token": token}))
+        pending = following
+
+    if pending:
+        raise RuntimeError(f"OSV still paginating after {OSV_MAX_PAGES} pages")
+    return merged
 
 
 def collect_vulnerabilities(
