@@ -96,6 +96,7 @@ Tokens are written only under `~/Library/Application Support/MCPSafari/`. Earlie
 - Wait durations capped at 300 seconds
 - File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call
 - `upload_file` and `drop_file` refuse any file inside the bridge token directories (`~/Library/Application Support/MCPSafari/` and `~/.config/mcp-safari/`). The check is made on the open descriptor's resolved path, so symlinks, including a symlinked `~/.config`, and different spellings of the same path do not get around it. `navigate` and `tabs_create` apply the same rule to `file:` URLs after resolving symlinks, so Safari cannot be pointed at the token and `read_page` cannot return it
+- `screenshot` `filePath` must end in `.png`; an existing target must be a regular file that already begins with the PNG signature (symlinks and other files are refused, so it cannot overwrite `~/.zshrc` or a key), the token directories are refused, new files are created `0600`, and the write is a rename of a finished temporary file
 - `find` returns at most 50 matches per call
 - `maxChars`, `maxNodes` and `maxResults` clamped to documented maxima, so a caller cannot ask for unbounded output
 

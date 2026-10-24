@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
 import MCP
@@ -18,21 +19,116 @@ extension SafariMCPServer {
     /// Writes a capture to the caller's path. A batch of full-resolution frames
     /// does not fit through the client inline, and only the server can reach
     /// the filesystem, so the write happens here rather than in the extension.
-    static func writeCapture(_ png: Data, to path: String) throws -> URL {
-        guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw FileAttachmentError("filePath must not be empty")
-        }
-        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            throw FileAttachmentError("filePath is a directory, not a file: \(url.path)")
-        }
+    ///
+    /// The destination is held to what a screenshot save is for. It must be named
+    /// `.png`, it may replace only a regular file that already begins with the PNG
+    /// signature, and it may not be inside the bridge token directories. Without
+    /// that, `filePath` was a way to overwrite any file the account could write:
+    /// `~/.zshrc`, a SSH key, a LaunchAgent. The write is a rename of a finished
+    /// file, so a failure part way leaves the old frame in place, and a new file
+    /// is created readable by its owner only, since the page may be showing
+    /// anything.
+    static func writeCapture(
+        _ png: Data,
+        to path: String,
+        protectedRoots: [String] = ProtectedPaths.defaultRoots
+    ) throws -> URL {
+        let url = try captureDestination(path, protectedRoots: protectedRoots)
+        var existing = stat()
+        let mode = lstat(url.path, &existing) == 0 ? existing.st_mode & 0o7777 : 0o600
         do {
-            try png.write(to: url, options: .atomic)
+            try writeAtomically(png, to: url, mode: mode)
         } catch {
             throw FileAttachmentError("Cannot write screenshot to \(url.path) (\(error.localizedDescription))")
         }
         return url
+    }
+
+    /// Where a capture may be saved, or why not. Separate from the write so the
+    /// call can be refused before the extension scrolls anything into view.
+    static func captureDestination(
+        _ path: String,
+        protectedRoots: [String] = ProtectedPaths.defaultRoots
+    ) throws -> URL {
+        guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FileAttachmentError("filePath must not be empty")
+        }
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+        guard url.pathExtension.lowercased() == "png" else {
+            throw FileAttachmentError("filePath must end in .png, because the capture is a PNG: \(url.path)")
+        }
+        guard !ProtectedPaths.isProtected(url.path, roots: protectedRoots) else {
+            throw FileAttachmentError("Refusing to write \(url.path): it is in a directory where MCPSafari keeps its bridge token")
+        }
+
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return url }
+        switch info.st_mode & S_IFMT {
+        case S_IFDIR:
+            throw FileAttachmentError("filePath is a directory, not a file: \(url.path)")
+        case S_IFREG:
+            guard fileBeginsWithPNGSignature(url) else {
+                throw FileAttachmentError("Refusing to overwrite \(url.path): it exists and is not a PNG image")
+            }
+        default:
+            throw FileAttachmentError("Refusing to overwrite \(url.path): it exists and is not a regular file")
+        }
+        return url
+    }
+
+    private static let pngSignature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+
+    private static func fileBeginsWithPNGSignature(_ url: URL) -> Bool {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return false }
+        var head = [UInt8](repeating: 0, count: pngSignature.count)
+        var filled = 0
+        while filled < head.count {
+            let count = head.withUnsafeMutableBytes {
+                Darwin.read(descriptor, $0.baseAddress! + filled, $0.count - filled)
+            }
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { return false }
+            filled += count
+        }
+        return head == pngSignature
+    }
+
+    /// Writes beside the destination and renames over it, so the destination is
+    /// either the old file or the whole new one. The temporary file is created
+    /// exclusively and without following a link, then given its final mode.
+    private static func writeAtomically(_ data: Data, to url: URL, mode: mode_t) throws {
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(".mcpsafari-\(UUID().uuidString).tmp")
+        let descriptor = Darwin.open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw posixError() }
+        var renamed = false
+        defer {
+            Darwin.close(descriptor)
+            if !renamed { unlink(temporary.path) }
+        }
+
+        try data.withUnsafeBytes { buffer in
+            var written = 0
+            while written < buffer.count {
+                let count = Darwin.write(descriptor, buffer.baseAddress! + written, buffer.count - written)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw posixError() }
+                written += count
+            }
+        }
+        guard fchmod(descriptor, mode) == 0, fsync(descriptor) == 0 else { throw posixError() }
+        guard rename(temporary.path, url.path) == 0 else { throw posixError() }
+        renamed = true
+    }
+
+    private static func posixError() -> NSError {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [
+            NSLocalizedDescriptionKey: String(validatingCString: strerror(errno)) ?? "error \(errno)",
+        ])
     }
 
     struct RenderedCapture {

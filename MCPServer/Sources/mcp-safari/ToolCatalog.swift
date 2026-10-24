@@ -354,7 +354,7 @@ extension SafariMCPServer {
                         "uid": Self.uid, "selector": Self.sel,
                         "padding": .object(["type": .string("number"), "description": .string("CSS px kept around the element (default: 16)")]),
                         "scale": .object(["type": .string("number"), "description": .string("Shrink the PNG by this factor, 0 to 1 (default: 1)")]),
-                        "filePath": .object(["type": .string("string"), "description": .string("Save the PNG to this local path (~ expanded) and return the path instead of the image")]),
+                        "filePath": .object(["type": .string("string"), "description": .string("Save the PNG to this local path (~ expanded, must end in .png, may only replace an existing PNG) and return the path instead of the image")]),
                         "tabId": Self.tab,
                     ]),
                 ]),

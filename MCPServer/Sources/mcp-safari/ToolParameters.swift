@@ -56,6 +56,16 @@ extension SafariMCPServer {
         case "press_key":
             if try optionalBool("native", in: args) == true { _ = try nativeKeyCombo(requiredKey(args)) }
         case "upload_file", "drop_file": _ = try fileAttachmentInputs(args)
+        case "screenshot":
+            _ = try capturePadding(args)
+            _ = try captureScale(args)
+            if let path = try optionalString("filePath", in: args) {
+                do {
+                    _ = try captureDestination(path)
+                } catch let error as FileAttachmentError {
+                    throw ToolInputError(error.description)
+                }
+            }
         case "tabs_create": _ = try tabsCreateParams(args)
         case "select_tab": _ = try selectTabParams(args)
         case "navigate": _ = try navigateParams(args)

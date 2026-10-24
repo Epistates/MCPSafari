@@ -594,15 +594,10 @@ actor SafariMCPServer {
         var params: [String: AnyCodable] = [:]
         if let uid = args["uid"]?.stringValue { params["uid"] = AnyCodable(uid) }
         if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
-        // Validate before the bridge call: a targeted capture scrolls the page.
-        let padding: Double
-        let scale: Double
-        do {
-            padding = try Self.capturePadding(args)
-            scale = try Self.captureScale(args)
-        } catch {
-            return Self.failureResult(toolFailure(for: error))
-        }
+        // Validated before the bridge call (see `preflight`): a targeted capture
+        // scrolls the page, and a refused destination should not have cost that.
+        let padding = try Self.capturePadding(args)
+        let scale = try Self.captureScale(args)
         // The extension may activate the tab before capturing it, so the capture
         // queues with the other focus-sensitive tools rather than racing them.
         // The extension may activate the tab before capturing it, so the capture
@@ -645,10 +640,9 @@ actor SafariMCPServer {
         captureDetails["scale"] = AnyCodable(scale)
         if let note { captureDetails["note"] = AnyCodable(note) }
 
-        if let filePath = args["filePath"] {
+        if let path = try Self.optionalString("filePath", in: args) {
             let url: URL
             do {
-                guard let path = filePath.stringValue else { throw FileAttachmentError("filePath must be a string") }
                 url = try Self.writeCapture(png, to: path)
             } catch {
                 return Self.failureResult(ToolFailure(

@@ -70,7 +70,9 @@ Tools that depend on what has focus run one at a time, in the order they arrive:
 
 | Tool | Description |
 |-|-|
-| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `uid`/`selector` crop to one element plus `padding` CSS px, `scale` shrinks the PNG, and `filePath` saves it to disk and returns the path instead of inline image data |
+| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `uid`/`selector` crop to one element plus `padding` CSS px, `scale` shrinks the PNG, and `filePath` saves it to disk and returns the path instead of inline image data; the path must end in `.png` and may replace only a file that is already a PNG |
+
+A screenshot saved with `filePath` is written to a temporary file beside the destination and renamed into place, so a failure leaves the previous file untouched. A new file is created readable by its owner only (`0600`), and an existing PNG keeps its mode. A destination that exists and is not a regular file that begins with the PNG signature, such as `~/.zshrc` renamed to end in `.png` or a symlink, is refused rather than replaced, as is anything inside MCPSafari's token directories.
 
 ### JavaScript
 

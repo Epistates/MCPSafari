@@ -328,6 +328,14 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("drop_file", { selector: "body", filePaths: [tokenPath] }, /bridge token/);
     await refuse("navigate", { url: `file://${tokenPath}` }, /bridge token/);
     await refuse("tabs_create", { url: `file://${tokenPath}` }, /bridge token/);
+    // A screenshot save may only create a .png or replace a PNG: it used to
+    // overwrite any file the account could write.
+    const notes = join(directory, "notes.png");
+    await writeFile(notes, "not an image");
+    await refuse("screenshot", { filePath: join(directory, "profile.sh") }, /must end in \.png/);
+    await refuse("screenshot", { filePath: notes }, /not a PNG image/);
+    assert.equal(await readFile(notes, "utf8"), "not an image");
+    await refuse("screenshot", { filePath: `${tokenPath}.png` }, /bridge token/);
     // A batch is validated as a whole before its first step runs: a bad URL in
     // step 3 must not leave steps 1 and 2 already performed.
     await refuse("run_steps", {
