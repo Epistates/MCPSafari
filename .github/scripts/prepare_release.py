@@ -35,6 +35,14 @@ def release_notes(tag: str, root: Path = ROOT) -> str:
     versions += cli_versions + app_versions
     if any(value != version for value in versions):
         raise ValueError(f"Tag {tag} does not match all product versions: {sorted(set(versions))}")
+    # The build number is not tied to the tag, but a bump that lands in one
+    # target's settings and not the others would ship the app and its embedded
+    # extension (or the test bundle) with different CFBundleVersions.
+    builds = re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)
+    if not builds:
+        raise ValueError("Could not locate the app build number")
+    if len(set(builds)) != 1:
+        raise ValueError(f"CURRENT_PROJECT_VERSION differs between targets: {sorted(set(builds))}")
     changelog = (root / "CHANGELOG.md").read_text()
     entries = list(re.finditer(r"^## \[([^]]+)\][^\n]*$", changelog, re.MULTILINE))
     matching = [i for i, entry in enumerate(entries) if entry[1] == version]
