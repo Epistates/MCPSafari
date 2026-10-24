@@ -7,17 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		9DC62F202F717081006535B1 /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DC62F212F717081006535B1 /* TokenStore.swift */; };
 		9DC62EF82F717081006535B1 /* MCPSafari Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 9DC62EF72F717081006535B1 /* MCPSafari Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		9DC62EE22F717081006535B1 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 9DC62EBF2F717081006535B1 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 9DC62EC62F717081006535B1;
-			remoteInfo = "MCPSafari";
-		};
 		9DC62EEC2F717081006535B1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 9DC62EBF2F717081006535B1 /* Project object */;
@@ -49,6 +43,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		9DC62F212F717081006535B1 /* TokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TokenStore.swift; path = "MCPSafari Extension/TokenStore.swift"; sourceTree = "<group>"; };
 		9DC62EC72F717081006535B1 /* MCPSafari.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MCPSafari.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9DC62EE12F717081006535B1 /* MCPSafariTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "MCPSafariTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9DC62EEB2F717081006535B1 /* MCPSafariUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "MCPSafariUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -134,6 +129,7 @@
 				9DC62EE42F717081006535B1 /* MCPSafariTests */,
 				9DC62EEE2F717081006535B1 /* MCPSafariUITests */,
 				9DC62EFB2F717081006535B1 /* MCPSafari Extension */,
+				9DC62F212F717081006535B1 /* TokenStore.swift */,
 				9DC62EC82F717081006535B1 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -187,7 +183,6 @@
 			buildRules = (
 			);
 			dependencies = (
-				9DC62EE32F717081006535B1 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				9DC62EE42F717081006535B1 /* MCPSafariTests */,
@@ -259,7 +254,6 @@
 					};
 					9DC62EE02F717081006535B1 = {
 						CreatedOnToolsVersion = 26.3;
-						TestTargetID = 9DC62EC62F717081006535B1;
 					};
 					9DC62EEA2F717081006535B1 = {
 						CreatedOnToolsVersion = 26.3;
@@ -335,6 +329,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9DC62F202F717081006535B1 /* TokenStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -355,11 +350,6 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		9DC62EE32F717081006535B1 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 9DC62EC62F717081006535B1 /* MCPSafari */;
-			targetProxy = 9DC62EE22F717081006535B1 /* PBXContainerItemProxy */;
-		};
 		9DC62EED2F717081006535B1 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 9DC62EC62F717081006535B1 /* MCPSafari */;
@@ -650,7 +640,6 @@
 		9DC62F1B2F717081006535B1 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
@@ -664,14 +653,12 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MCPSafari.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MCPSafari";
 			};
 			name = Debug;
 		};
 		9DC62F1C2F717081006535B1 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
@@ -685,7 +672,6 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MCPSafari.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MCPSafari";
 			};
 			name = Release;
 		};
