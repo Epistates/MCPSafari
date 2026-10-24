@@ -94,7 +94,9 @@ struct ToolParametersTests {
         // Wrong even when no wait was asked for: it would be dropped silently.
         #expect(refusal(tool, ["waitTimeout": "5"]) == "waitTimeout must be a number")
         #expect(refusal(tool, ["includeSnapshot": "true"]) == "includeSnapshot must be a boolean")
-        #expect(refusal(tool, ["waitForSelector": "#done", "waitForText": "Done", "waitTimeout": 5]) == nil)
+        var valid: [String: Value] = ["waitForSelector": "#done", "waitForText": "Done", "waitTimeout": 5]
+        if tool == "upload_file" || tool == "drop_file" { valid["filePath"] = "/tmp/a.png" }
+        #expect(refusal(tool, valid) == nil)
     }
 
     @Test func traceOptionsAreCheckedBeforeStartTraceCanBeSent() {

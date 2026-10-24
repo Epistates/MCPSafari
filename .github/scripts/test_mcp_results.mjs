@@ -320,6 +320,21 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("click", { selector: "#submit", waitForText: "Done", waitTimeout: "5" }, /waitTimeout must be a number/);
     await refuse("navigate", { url: "https://example.com/", trace: true, traceDuration: "long" }, /traceDuration must be a number/);
     await refuse("type_text", { selector: "input", text: "x", trace: true, eventTypes: [""] }, /eventTypes must be an array/);
+    // A batch is validated as a whole before its first step runs: a bad URL in
+    // step 3 must not leave steps 1 and 2 already performed.
+    await refuse("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body" } },
+            { tool: "wait", arguments: { seconds: 0 } },
+            { tool: "navigate", arguments: { url: "jav\tascript:alert(1)" } },
+        ],
+    }, /steps\[2\] \(navigate\): Invalid URL or disallowed scheme/);
+    await refuse("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body" } },
+            { tool: "navigate", arguments: { action: "sideways" } },
+        ],
+    }, /steps\[1\] \(navigate\): Invalid navigation action/);
 
     failAction = "click";
     const failed = await tool("click", { selector: "body" }, false);

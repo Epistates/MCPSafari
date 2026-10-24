@@ -373,28 +373,11 @@ actor SafariMCPServer {
 
     /// Reads the caller's local files, then runs the interaction with them attached.
     private func handleFileAction(_ action: String, _ args: [String: Value]) async throws -> CallTool.Result {
-        var paths: [String] = []
-        if let filePath = args["filePath"] {
-            guard let path = filePath.stringValue else { throw ToolInputError("filePath must be a string") }
-            paths.append(path)
-        }
-        if let filePaths = args["filePaths"] {
-            guard let values = filePaths.arrayValue else { throw ToolInputError("filePaths must be an array of strings") }
-            for value in values {
-                guard let path = value.stringValue else { throw ToolInputError("filePaths must be an array of strings") }
-                paths.append(path)
-            }
-        }
-
-        var mimeTypeOverride: String?
-        if let mimeType = args["mimeType"] {
-            guard let value = mimeType.stringValue else { throw ToolInputError("mimeType must be a string") }
-            mimeTypeOverride = value
-        }
+        let inputs = try Self.fileAttachmentInputs(args)
 
         let attachments: [FileAttachment]
         do {
-            attachments = try FileAttachmentLoader.load(paths: paths, mimeTypeOverride: mimeTypeOverride)
+            attachments = try FileAttachmentLoader.load(paths: inputs.paths, mimeTypeOverride: inputs.mimeType)
         } catch let error as FileAttachmentError {
             throw ToolInputError(error.description)
         }
@@ -529,10 +512,7 @@ actor SafariMCPServer {
         guard try nativeRequested(args) else {
             return try await handleInteraction("press_key", args)
         }
-        guard let key = args["key"]?.stringValue, !key.isEmpty else {
-            throw ToolInputError("key is required")
-        }
-        let combo = try Self.nativeKeyCombo(key)
+        let combo = try Self.nativeKeyCombo(Self.requiredKey(args))
         return try await runNativeAction("native_press_key", args) { _ in
             try Self.pressNativeKey(combo, deadline: Self.numberValue(args["_batchDeadline"]))
         }

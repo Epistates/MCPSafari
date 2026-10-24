@@ -25,13 +25,19 @@ enum FileAttachmentLoader {
     static let maxFileCount = 10
     static let maxTotalBytes = 10 * 1024 * 1024
 
-    static func load(paths: [String], mimeTypeOverride: String? = nil) throws -> [FileAttachment] {
+    /// The checks on the list itself, before any file is touched. Shared with the
+    /// pre-dispatch validation, which runs them without reading anything.
+    static func validateCount(of paths: [String]) throws {
         guard !paths.isEmpty else {
             throw FileAttachmentError("Provide filePath or filePaths")
         }
         guard paths.count <= maxFileCount else {
             throw FileAttachmentError("Too many files: \(paths.count). Maximum is \(maxFileCount) per call.")
         }
+    }
+
+    static func load(paths: [String], mimeTypeOverride: String? = nil) throws -> [FileAttachment] {
+        try validateCount(of: paths)
 
         var attachments: [FileAttachment] = []
         var totalBytes = 0

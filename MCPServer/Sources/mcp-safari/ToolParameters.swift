@@ -34,10 +34,20 @@ extension SafariMCPServer {
             _ = try traceOptions(args)
             _ = try optionalBool("includeSnapshot", in: args)
         }
+        if nativeCapableTools.contains(tool) {
+            _ = try optionalBool("native", in: args)
+        }
         switch tool {
         case "run_steps":
             _ = try traceOptions(args)
             _ = try optionalBool("includeSnapshot", in: args)
+        case "type_text":
+            // The permission is not checked here: whether this process holds
+            // Accessibility is a fact about the machine, not about the arguments.
+            if try optionalBool("native", in: args) == true { _ = try nativeInputPlan(args, permission: {}) }
+        case "press_key":
+            if try optionalBool("native", in: args) == true { _ = try nativeKeyCombo(requiredKey(args)) }
+        case "upload_file", "drop_file": _ = try fileAttachmentInputs(args)
         case "tabs_create": _ = try tabsCreateParams(args)
         case "select_tab": _ = try selectTabParams(args)
         case "navigate": _ = try navigateParams(args)
@@ -51,6 +61,50 @@ extension SafariMCPServer {
         case "wait": _ = try waitRequest(args)
         default: break
         }
+    }
+
+    /// The tools that take `native: true`.
+    nonisolated static let nativeCapableTools: Set<String> = ["type_text", "press_key", "hover", "drag"]
+
+    // MARK: Files
+
+    struct FileAttachmentInputs: Equatable {
+        let paths: [String]
+        let mimeType: String?
+    }
+
+    /// The paths and MIME type named by `upload_file` or `drop_file`, checked for
+    /// shape and count. Nothing is read here; `FileAttachmentLoader` does that.
+    nonisolated static func fileAttachmentInputs(_ args: [String: Value]) throws -> FileAttachmentInputs {
+        var paths: [String] = []
+        if let filePath = args["filePath"] {
+            guard let path = filePath.stringValue else { throw ToolInputError("filePath must be a string") }
+            paths.append(path)
+        }
+        if let filePaths = args["filePaths"] {
+            guard let values = filePaths.arrayValue else { throw ToolInputError("filePaths must be an array of strings") }
+            for value in values {
+                guard let path = value.stringValue else { throw ToolInputError("filePaths must be an array of strings") }
+                paths.append(path)
+            }
+        }
+        do {
+            try FileAttachmentLoader.validateCount(of: paths)
+        } catch let error as FileAttachmentError {
+            throw ToolInputError(error.description)
+        }
+        let mimeType = try optionalString("mimeType", in: args)
+        return FileAttachmentInputs(paths: paths, mimeType: mimeType)
+    }
+
+    // MARK: Native input
+
+    /// The key for a native `press_key`, which the schema requires.
+    nonisolated static func requiredKey(_ args: [String: Value]) throws -> String {
+        guard let key = try optionalString("key", in: args), !key.isEmpty else {
+            throw ToolInputError("key is required")
+        }
+        return key
     }
 
     // MARK: Tabs and navigation

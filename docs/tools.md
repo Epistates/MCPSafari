@@ -276,6 +276,8 @@ Use `run_steps` for a fixed sequence of existing interactions and waits with a s
 }
 ```
 
+Every step's arguments are validated before the first step runs, with the same checks the step's own tool makes: URL scheme, navigation action, wait length and wait options, native key combination and text length, and file arguments. A bad argument in step 3 refuses the whole batch, naming the step and tool, with nothing sent. What cannot be known up front still surfaces at run time, such as a missing element or an unreadable file.
+
 The batch stops at the first structured failure and reports `completedSteps`, `failedStep`, and ordered step results. Completed browser actions are not rolled back. Batch-level trace and snapshot options produce one trace and one final snapshot rather than one artifact per step.
 
 ### Dialog automation
