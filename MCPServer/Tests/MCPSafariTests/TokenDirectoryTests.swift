@@ -79,13 +79,6 @@ struct TokenDirectoryTests {
         #expect(!WebSocketBridge.tokenDirectoryURL.path.contains(".config"))
     }
 
-    /// Both roots stay populated so an extension build predating the move keeps
-    /// authenticating against a newer server.
-    @Test func theLegacyRootIsStillTheConfigDirectory() {
-        #expect(WebSocketBridge.legacyTokenFilePath.hasSuffix(".config/mcp-safari/token"))
-        #expect(WebSocketBridge.configDirectoryURL.path.hasSuffix(".config/mcp-safari"))
-    }
-
     @Test func tokenPublicationFailureStopsListenerAndIsDiagnosable() async throws {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

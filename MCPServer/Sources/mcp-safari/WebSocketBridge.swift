@@ -120,11 +120,6 @@ actor WebSocketBridge {
     static let tokenDirectoryURL: URL = applicationSupportDirectoryURL
         .appendingPathComponent("tokens", isDirectory: true)
 
-    /// Legacy single-token path kept for older extension builds.
-    static let legacyTokenFilePath: String = configDirectoryURL
-        .appendingPathComponent("token", isDirectory: false)
-        .path
-
     var isConnected: Bool { !connections.isEmpty }
 
     /// The profile that tool calls target when the caller names none.
