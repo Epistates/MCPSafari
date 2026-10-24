@@ -155,7 +155,7 @@ test("background reinjects when Safari returns no content response", async () =>
 });
 
 test("native input preparation focuses only editable text targets", async () => {
-    const document = { activeElement: null };
+    const document = { activeElement: null, hasFocus: () => true };
     const editor = {
         contains: (element) => element === editor,
         disabled: false,
@@ -181,6 +181,54 @@ test("native input preparation focuses only editable text targets", async () => 
     const unsupported = await call("prepare_native_input", { selector: "button" });
     assert.equal(unsupported.errorCode, "unsupported_native_target");
     assert.equal(unsupported.recoveryAction, "use_synthetic_input");
+});
+
+// With Safari's address bar or find bar focused, the page's `activeElement`
+// still names the element it last focused, so that check passes while the
+// keyboard is somewhere else entirely and the server types into the bar.
+test("native typing refuses when the page does not hold focus", async () => {
+    const document = { activeElement: null, hasFocus: () => false };
+    const editor = {
+        contains: (element) => element === editor,
+        disabled: false,
+        focus: () => { document.activeElement = editor; },
+        isContentEditable: true,
+        readOnly: false,
+        scrollIntoView() {},
+        tagName: "INPUT",
+    };
+    document.querySelector = () => editor;
+    const call = contentHarness(document);
+
+    const refused = await call("prepare_native_input", { selector: "#editor", clearFirst: true });
+
+    assert.equal(refused.data, null);
+    assert.equal(refused.errorCode, "native_input_focus_failed");
+    assert.equal(refused.retryable, true);
+    assert.equal(refused.recoveryAction, "retry");
+    assert.match(refused.error, /address bar/);
+
+    // The same page, once it holds focus, is accepted.
+    document.hasFocus = () => true;
+    const accepted = await call("prepare_native_input", { selector: "#editor" });
+    assert.equal(accepted.error, null);
+});
+
+test("a native key refuses when focus cannot be pulled into the page", async () => {
+    const body = { setAttribute() {}, focus() {} };
+    const document = { activeElement: null, body, hasFocus: () => false };
+    const call = contentHarness(document);
+
+    const refused = await call("prepare_native_key", {});
+
+    assert.equal(refused.errorCode, "native_input_focus_failed");
+
+    // Pulling focus in, which is what the call exists to do, still counts.
+    body.focus = () => { document.hasFocus = () => true; };
+    document.hasFocus = () => false;
+    const pulled = await call("prepare_native_key", {});
+    assert.equal(pulled.error, null);
+    assert.equal(pulled.data, "Page ready for native key");
 });
 
 test("native input preparation foregrounds the target Safari tab", async () => {

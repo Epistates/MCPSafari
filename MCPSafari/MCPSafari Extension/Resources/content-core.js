@@ -45,6 +45,23 @@
         return error;
     }
 
+    // A native event goes to whatever Safari has focused, not to the element
+    // that was asked for. `activeElement` alone cannot say: it still names the
+    // page's element while the address bar or find bar holds the keyboard, and
+    // typing then lands in the bar (with `clearFirst`, clearing it). Only the
+    // document knows whether it holds focus at all.
+    function assertPageFocused(what) {
+        if (document.hasFocus()) return;
+        throw toolError(
+            "native_input_focus_failed",
+            `The page does not have focus, so ${what} would go to whatever does: `
+            + "Safari's address bar or find bar, or another window. Click the page "
+            + "or bring Safari to the front, then retry.",
+            true,
+            "retry"
+        );
+    }
+
     function pointerEvent(type, opts) {
         const Ctor = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
         return new Ctor(type, opts);
@@ -244,6 +261,6 @@
 
     window.__mcpSafari = Object.assign(
         { loaded: new Set(["core"]) },
-        { escapeCssString, firesKeypress, getElementByUid, getUid, keyCode, nextRequestId, pointerEvent, requestMainWorld, setFrameId, toolError }
+        { assertPageFocused, escapeCssString, firesKeypress, getElementByUid, getUid, keyCode, nextRequestId, pointerEvent, requestMainWorld, setFrameId, toolError }
     );
 })();

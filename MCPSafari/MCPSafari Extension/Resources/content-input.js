@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("input")) return;
     mcp.loaded.add("input");
-    const { assertReachable, deepQueryFirst, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { assertPageFocused, assertReachable, deepQueryFirst, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Click ───────────────────────────────────────────────────────
 
@@ -189,6 +189,9 @@
                 "retry"
             );
         }
+        // After the check above, which only says which element the page thinks
+        // is active: with the address bar focused that stays true.
+        assertPageFocused(`native typing into <${tag}>`);
         return `Focused <${tag}> for native typing`;
     }
 
