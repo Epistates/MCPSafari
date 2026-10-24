@@ -192,8 +192,12 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     const inFlight = new Map();
     const peakInFlight = new Map();
     let answerDelayMs = 0;
+    // Every request the extension received, in order, so a test can show that a
+    // refused call never reached it.
+    const received = [];
     await connect("default", async ({ action, params }) => {
         sentActions.add(action);
+        received.push(action);
         inFlight.set(action, (inFlight.get(action) ?? 0) + 1);
         peakInFlight.set(action, Math.max(peakInFlight.get(action) ?? 0, inFlight.get(action)));
         if (answerDelayMs) await new Promise((resolve) => setTimeout(resolve, answerDelayMs));
@@ -290,6 +294,24 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await Promise.all([0, 1, 2, 3].map(() => tool("snapshot")));
     assert.ok(peakInFlight.get("snapshot") > 1, "the fixture never overlapped two plain reads");
     answerDelayMs = 0;
+
+    // A wrong-typed argument is refused before the extension hears of the call.
+    // Reading it as absent would have run the call with a default the caller
+    // never asked for: bringToFront "false" activates the tab, and a status
+    // filter given as "500" returns every request.
+    const refuse = async (name, args, expected) => {
+        const before = received.length;
+        const refused = await tool(name, args, false);
+        assert.equal(refused.structuredContent.code, "invalid_input", `${name}: ${JSON.stringify(refused)}`);
+        assert.equal(refused.structuredContent.recoveryAction, "fix_input", name);
+        assert.match(refused.structuredContent.message, expected, name);
+        assert.equal(received.length, before, `${name} reached the extension`);
+    };
+    await refuse("select_tab", { tabId: "p0t7", bringToFront: "false" }, /bringToFront must be a boolean/);
+    await refuse("read_network", { status: "500" }, /status must be an integer/);
+    await refuse("read_console", { pattern: 5, clear: true }, /pattern must be a string/);
+    await refuse("resize_window", { width: 800 }, /height is required/);
+    await refuse("navigate", { url: "javascript:alert(1)" }, /disallowed scheme/);
 
     failAction = "click";
     const failed = await tool("click", { selector: "body" }, false);

@@ -106,6 +106,7 @@ actor SafariMCPServer {
         let args = params.arguments ?? [:]
 
         do {
+            try Self.preflight(tool: params.name, arguments: args)
             switch params.name {
             case "status":          return try await handleStatus()
             case "tabs_context":    return try await handleTabsContext()
@@ -307,23 +308,10 @@ actor SafariMCPServer {
     }
 
     private func handleTabsCreate(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let url = args["url"]?.stringValue {
-            guard let parsed = URL(string: url),
-                  let scheme = parsed.scheme?.lowercased(),
-                  Self.allowedURLSchemes.contains(scheme)
-            else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")],
-                    isError: true
-                )
-            }
-            params["url"] = AnyCodable(url)
-        }
         let profileIndex = try await resolveProfileIndex(args)
         let response = try await bridge.send(
             action: "tabs_create",
-            params: params,
+            params: try Self.tabsCreateParams(args),
             timeout: Self.bridgeTimeout(args),
             profileIndex: profileIndex
         )
@@ -350,11 +338,10 @@ actor SafariMCPServer {
         guard let handle = try TabHandle.resolve(args["tabId"]) else {
             throw ToolInputError("select_tab requires tabId, a handle from tabs_context such as p0t5")
         }
-        var params: [String: AnyCodable] = [:]
-        if let bringToFront = args["bringToFront"]?.boolValue { params["bringToFront"] = AnyCodable(bringToFront) }
+        let params = try Self.selectTabParams(args)
         // Bringing a tab to the front moves focus, so it queues with the other
         // focus-sensitive tools. Selecting without it touches nothing they use.
-        let response = args["bringToFront"]?.boolValue == false
+        let response = params["bringToFront"]?.boolValue == false
             ? try await send("select_tab", args, params: params)
             : try await focusLock.withLock { try await send("select_tab", args, params: params) }
         guard response.success else { return textResult(response, as: "tab") }
@@ -364,99 +351,23 @@ actor SafariMCPServer {
         return tabResult(response, profileIndex: handle.profileIndex)
     }
 
-    private static let allowedURLSchemes: Set<String> = ["http", "https", "about", "file"]
-    private static let allowedNavActions: Set<String> = ["goto", "back", "forward", "reload"]
-    private static let allowedPageFormats: Set<String> = ["text", "html", "snapshot"]
-    private static let allowedConsoleLevels: Set<String> = ["all", "log", "warn", "error", "info", "debug"]
-    private static let allowedNetworkTypes: Set<String> = ["all", "xhr", "fetch", "resource"]
-
     private func handleNavigate(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let url = args["url"]?.stringValue {
-            guard let parsed = URL(string: url),
-                  let scheme = parsed.scheme?.lowercased(),
-                  Self.allowedURLSchemes.contains(scheme)
-            else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")],
-                    isError: true
-                )
-            }
-            params["url"] = AnyCodable(url)
-        }
-        if let action = args["action"]?.stringValue {
-            guard Self.allowedNavActions.contains(action) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid navigation action: \(action). Use goto, back, forward, or reload.")],
-                    isError: true
-                )
-            }
-            params["action"] = AnyCodable(action)
-        }
-        let response = try await send("navigate", args, params: params)
+        let response = try await send("navigate", args, params: try Self.navigateParams(args))
         return try await resultAfterAction(response, args)
     }
 
     private func handleReadPage(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let format = args["format"]?.stringValue {
-            guard Self.allowedPageFormats.contains(format) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid page format: \(format). Use text, html, or snapshot.")],
-                    isError: true
-                )
-            }
-            params["format"] = AnyCodable(format)
-        }
-        if let maxChars = args["maxChars"]?.intValue {
-            guard maxChars > 0 else {
-                return Self.failureResult(ToolFailure(
-                    code: "invalid_input",
-                    message: "Invalid maxChars: \(maxChars). Use a positive integer.",
-                    retryable: false,
-                    recoveryAction: "fix_input"
-                ))
-            }
-            params["maxChars"] = AnyCodable(maxChars)
-        }
-        if let maxNodes = args["maxNodes"]?.intValue {
-            guard maxNodes > 0 else {
-                return Self.failureResult(ToolFailure(
-                    code: "invalid_input",
-                    message: "Invalid maxNodes: \(maxNodes). Use a positive integer.",
-                    retryable: false,
-                    recoveryAction: "fix_input"
-                ))
-            }
-            params["maxNodes"] = AnyCodable(maxNodes)
-        }
-        let response = try await send("read_page", args, params: params)
+        let response = try await send("read_page", args, params: try Self.readPageParams(args))
         return textResult(response, as: "page", decoding: args["format"]?.stringValue == "snapshot" ? .containers : .text)
     }
 
     private func handleSnapshot(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let maxNodes = args["maxNodes"]?.intValue {
-            guard maxNodes > 0 else {
-                return Self.failureResult(ToolFailure(
-                    code: "invalid_input",
-                    message: "Invalid maxNodes: \(maxNodes). Use a positive integer.",
-                    retryable: false,
-                    recoveryAction: "fix_input"
-                ))
-            }
-            params["maxNodes"] = AnyCodable(maxNodes)
-        }
-        let response = try await send("snapshot", args, params: params)
+        let response = try await send("snapshot", args, params: try Self.snapshotParams(args))
         return textResult(response, as: "snapshot")
     }
 
     private func handleFind(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
-        if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
-        if let role = args["role"]?.stringValue { params["role"] = AnyCodable(role) }
-        let response = try await send("find", args, params: params)
+        let response = try await send("find", args, params: try Self.findParams(args))
         return textResult(response, as: "matches")
     }
 
@@ -787,102 +698,25 @@ actor SafariMCPServer {
     }
 
     private func handleJavaScript(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let code = args["code"]?.stringValue { params["code"] = AnyCodable(code) }
-        let response = try await send("javascript_tool", args, params: params)
+        let response = try await send("javascript_tool", args, params: try Self.javaScriptParams(args))
         return textResult(response, as: "result", decoding: .json)
     }
 
     private func handleReadConsole(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let level = args["level"]?.stringValue {
-            guard Self.allowedConsoleLevels.contains(level) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid console level: \(level). Use all, log, warn, error, info, or debug.")],
-                    isError: true
-                )
-            }
-            params["level"] = AnyCodable(level)
-        }
-        if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
-        if let pattern = args["pattern"]?.stringValue {
-            guard pattern.count <= 200 else {
-                return CallTool.Result(
-                    content: [Self.textContent("Pattern too long (max 200 characters)")],
-                    isError: true
-                )
-            }
-            // Validate it's a valid regex
-            guard (try? NSRegularExpression(pattern: pattern)) != nil else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid regex pattern: \(pattern)")],
-                    isError: true
-                )
-            }
-            params["pattern"] = AnyCodable(pattern)
-        }
-        let response = try await send("read_console", args, params: params)
+        let response = try await send("read_console", args, params: try Self.readConsoleParams(args))
         return textResult(response, as: "messages")
     }
 
     private func handleReadNetwork(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let type = args["type"]?.stringValue {
-            guard Self.allowedNetworkTypes.contains(type) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid network type: \(type). Use all, xhr, fetch, or resource.")],
-                    isError: true
-                )
-            }
-            params["type"] = AnyCodable(type)
-        }
-        if let urlPattern = args["urlPattern"]?.stringValue {
-            guard urlPattern.count <= 200 else {
-                return CallTool.Result(
-                    content: [Self.textContent("URL pattern too long (max 200 characters)")],
-                    isError: true
-                )
-            }
-            guard (try? NSRegularExpression(pattern: urlPattern)) != nil else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid regex pattern: \(urlPattern)")],
-                    isError: true
-                )
-            }
-            params["urlPattern"] = AnyCodable(urlPattern)
-        }
-        if let status = args["status"]?.intValue {
-            guard (0...599).contains(status) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid status: \(status). Use an HTTP status code (0-599; 0 means network error).")],
-                    isError: true
-                )
-            }
-            params["status"] = AnyCodable(status)
-        }
-        if let maxResults = args["maxResults"]?.intValue {
-            guard maxResults > 0 else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid maxResults: \(maxResults). Use a positive integer.")],
-                    isError: true
-                )
-            }
-            params["maxResults"] = AnyCodable(maxResults)
-        }
-        if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
-        let response = try await send("read_network", args, params: params)
+        let response = try await send("read_network", args, params: try Self.readNetworkParams(args))
         return textResult(response, as: "requests")
     }
 
     private func handleResizeWindow(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let width = args["width"]?.intValue { params["width"] = AnyCodable(width) }
-        if let height = args["height"]?.intValue { params["height"] = AnyCodable(height) }
-        let response = try await send("resize_window", args, params: params)
+        let response = try await send("resize_window", args, params: try Self.resizeWindowParams(args))
         return textResult(response, as: "window")
     }
 
-    private static let maxWaitSeconds: Double = 300 // 5-minute cap
     private static let maxTraceSeconds: Double = 30
 
     private func handleRunSteps(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -1005,8 +839,9 @@ actor SafariMCPServer {
     }
 
     private func handleWait(_ args: [String: Value]) async throws -> CallTool.Result {
-        if let seconds = Self.numberValue(args["seconds"]), args["selector"] == nil, args["text"] == nil {
-            let requested = max(0, min(seconds, Self.maxWaitSeconds))
+        let request = try Self.waitRequest(args)
+        switch request {
+        case .duration(let requested):
             let duration = min(requested, Self.batchRemaining(args))
             try await Task.sleep(for: .seconds(duration))
             guard duration == requested else {
@@ -1021,20 +856,21 @@ actor SafariMCPServer {
                 content: [Self.textContent("Waited \(duration) seconds")],
                 structuredContent: .object(["wait": .object(["seconds": .double(duration)])])
             )
-        }
 
-        var params: [String: AnyCodable] = [:]
-        if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
-        if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
-        let userTimeout = min(Self.cappedWaitTimeout(args["timeout"]), Self.batchRemaining(args))
-        params["timeout"] = AnyCodable(userTimeout)
-        // Extend bridge timeout to exceed the wait timeout so it doesn't race
-        let response = try await send(
-            "wait", args,
-            params: params,
-            timeout: Self.bridgeTimeout(args, default: userTimeout + 5)
-        )
-        return textResult(response, as: "wait")
+        case .condition(let selector, let text, let timeout):
+            var params: [String: AnyCodable] = [:]
+            if let selector { params["selector"] = AnyCodable(selector) }
+            if let text { params["text"] = AnyCodable(text) }
+            let userTimeout = min(timeout, Self.batchRemaining(args))
+            params["timeout"] = AnyCodable(userTimeout)
+            // Extend bridge timeout to exceed the wait timeout so it doesn't race
+            let response = try await send(
+                "wait", args,
+                params: params,
+                timeout: Self.bridgeTimeout(args, default: userTimeout + 5)
+            )
+            return textResult(response, as: "wait")
+        }
     }
 
     // MARK: - Helpers
@@ -1146,7 +982,7 @@ actor SafariMCPServer {
             guard !text.isEmpty else { throw ToolInputError("waitForText must not be empty") }
             params["text"] = AnyCodable(text)
         }
-        let timeout = min(Self.cappedWaitTimeout(args["waitTimeout"]), Self.batchRemaining(args))
+        let timeout = min(Self.cappedWaitTimeout(try Self.optionalNumber("waitTimeout", in: args)), Self.batchRemaining(args))
         params["timeout"] = AnyCodable(timeout)
         return try await send(
             "wait", args,
@@ -1157,10 +993,6 @@ actor SafariMCPServer {
 
     private func snapshotResponse(_ args: [String: Value]) async throws -> BridgeResponse {
         try await send("snapshot", args)
-    }
-
-    private static func cappedWaitTimeout(_ value: Value?) -> Double {
-        max(0.1, min(Self.numberValue(value) ?? 10, Self.maxWaitSeconds))
     }
 
     private static func cappedTraceDuration(_ value: Value?) throws -> Double {

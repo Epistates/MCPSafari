@@ -91,6 +91,7 @@ Tokens are written only under `~/Library/Application Support/MCPSafari/`. Earlie
 
 - URL schemes restricted to `http`, `https`, `about`, and `file`
 - Navigation actions validated against an allowlist
+- Optional arguments of the wrong type rejected with `invalid_input`, never read as absent, so a mistyped filter cannot return unfiltered data and a mistyped flag cannot fall back to its default
 - Regex patterns capped at 200 characters and validated before forwarding
 - Wait durations capped at 300 seconds
 - File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call

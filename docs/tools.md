@@ -95,7 +95,7 @@ Console and network capture run in the page's JavaScript context. Pages can obse
 
 | Tool | Description |
 |-|-|
-| `resize_window` | Resize the browser window to specific dimensions |
+| `resize_window` | Resize the browser window; `width` and `height` are both required, positive integers of at most 10,000 |
 
 ### Utility
 
@@ -201,6 +201,8 @@ Every tool failure carries a stable `code`, a human-readable `message`, a `retry
 | `inspect_error` | Nothing automatic to do; read the message. |
 | `inspect_batch_result` | A `run_steps` batch stopped partway; read the per-step results. |
 | `grant_accessibility_to_mcp_client` | Native input needs Accessibility for the app running `mcp-safari`. |
+
+An optional argument given with the wrong type, such as `bringToFront: "false"`, `status: "500"`, or `pattern: 5`, is refused with `fix_input` before anything is sent. It is never read as absent, so a call does not run with a default the caller did not ask for. Whole-valued numbers such as `800.0` are accepted where an integer is wanted.
 
 A `bridge_timeout` means no reply arrived before the deadline; the browser operation may already have completed. It is not automatically retryable. Inspect the target state before repeating a click, submission, upload, or JavaScript call. Canceling a request stops the server waiting, but cannot retract work already sent to Safari.
 

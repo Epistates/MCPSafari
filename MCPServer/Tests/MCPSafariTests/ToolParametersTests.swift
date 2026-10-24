@@ -1,0 +1,90 @@
+import MCP
+import Testing
+@testable import MCPSafari
+
+/// Each of these is a call the server used to act on with an argument silently
+/// dropped. The point of every case is that it is refused before anything is sent.
+struct ToolParametersTests {
+    private func refusal(_ tool: String, _ args: [String: Value]) -> String? {
+        do {
+            try SafariMCPServer.preflight(tool: tool, arguments: args)
+            return nil
+        } catch let error as SafariMCPServer.ToolInputError {
+            return error.description
+        } catch {
+            return "unexpected \(error)"
+        }
+    }
+
+    @Test func selectTabDoesNotActivateOnAStringBringToFront() {
+        // "false" used to read as absent, and an absent bringToFront activates.
+        #expect(refusal("select_tab", ["tabId": "p0t1", "bringToFront": "false"]) == "bringToFront must be a boolean")
+        #expect(refusal("select_tab", ["tabId": "p0t1", "bringToFront": false]) == nil)
+    }
+
+    @Test func readConsoleDoesNotClearOnAWrongTypedPattern() {
+        #expect(refusal("read_console", ["pattern": 5, "clear": true]) == "pattern must be a string")
+        #expect(refusal("read_console", ["clear": "yes"]) == "clear must be a boolean")
+        #expect(refusal("read_console", ["level": 3]) == "level must be a string")
+        #expect(refusal("read_console", ["level": "loud"])?.hasPrefix("Invalid console level: loud") == true)
+    }
+
+    // The docs promise a rejected filter never silently returns unfiltered data.
+    @Test func readNetworkNeverReturnsUnfilteredDataForABadFilter() {
+        #expect(refusal("read_network", ["status": "500"]) == "status must be an integer")
+        #expect(refusal("read_network", ["status": 500.5]) == "status must be an integer")
+        #expect(refusal("read_network", ["status": 600])?.hasPrefix("Invalid status: 600") == true)
+        #expect(refusal("read_network", ["status": 500.0]) == nil)
+        #expect(refusal("read_network", ["urlPattern": 7]) == "urlPattern must be a string")
+        #expect(refusal("read_network", ["maxResults": "5"]) == "maxResults must be an integer")
+        #expect(refusal("read_network", ["maxResults": 0]) == "Invalid maxResults: 0. Use a positive integer.")
+        #expect(refusal("read_network", ["type": ["xhr"]]) == "type must be a string")
+        #expect(refusal("read_network", ["clear": 1]) == "clear must be a boolean")
+    }
+
+    @Test func resizeWindowRequiresBothDimensionsAsPositiveBoundedIntegers() throws {
+        #expect(refusal("resize_window", ["height": 600])?.hasPrefix("width is required") == true)
+        #expect(refusal("resize_window", ["width": 800])?.hasPrefix("height is required") == true)
+        #expect(refusal("resize_window", [:])?.hasPrefix("width is required") == true)
+        #expect(refusal("resize_window", ["width": "800", "height": 600]) == "width must be an integer")
+        #expect(refusal("resize_window", ["width": 0, "height": 600])?.hasPrefix("Invalid width: 0") == true)
+        #expect(refusal("resize_window", ["width": 800, "height": -5])?.hasPrefix("Invalid height: -5") == true)
+        #expect(refusal("resize_window", ["width": 800, "height": 10_001])?.hasPrefix("Invalid height: 10001") == true)
+        #expect(refusal("resize_window", ["width": 10_000, "height": 1]) == nil)
+
+        // 800.0 used to send nothing for width.
+        let params = try SafariMCPServer.resizeWindowParams(["width": 800.0, "height": 600])
+        #expect(params["width"]?.intValue == 800)
+        #expect(params["height"]?.intValue == 600)
+    }
+
+    @Test func pageReadingRefusesWrongTypes() {
+        #expect(refusal("read_page", ["format": 1]) == "format must be a string")
+        #expect(refusal("read_page", ["maxChars": "100"]) == "maxChars must be an integer")
+        #expect(refusal("read_page", ["maxNodes": 0]) == "Invalid maxNodes: 0. Use a positive integer.")
+        #expect(refusal("snapshot", ["maxNodes": true]) == "maxNodes must be an integer")
+        #expect(refusal("find", ["selector": 1]) == "selector must be a string")
+        #expect(refusal("find", ["role": ["button"]]) == "role must be a string")
+        #expect(refusal("javascript_tool", ["code": 42]) == "code must be a string")
+    }
+
+    @Test func navigationRefusesWrongTypes() {
+        #expect(refusal("navigate", ["url": 5]) == "url must be a string")
+        #expect(refusal("navigate", ["action": true]) == "action must be a string")
+        #expect(refusal("navigate", ["action": "sideways"])?.hasPrefix("Invalid navigation action: sideways") == true)
+        #expect(refusal("tabs_create", ["url": ["https://example.com"]]) == "url must be a string")
+        #expect(refusal("navigate", ["url": "https://example.com", "action": "goto"]) == nil)
+    }
+
+    @Test func waitRefusesWrongTypesRatherThanFallingBackToTheDefaults() {
+        #expect(refusal("wait", ["seconds": "5"]) == "seconds must be a number")
+        #expect(refusal("wait", ["timeout": "5", "selector": "#a"]) == "timeout must be a number")
+        #expect(refusal("wait", ["selector": 5]) == "selector must be a string")
+        #expect(refusal("wait", ["text": false]) == "text must be a string")
+    }
+
+    @Test func toolsWithNothingToCheckPassThrough() {
+        #expect(refusal("status", ["anything": 1]) == nil)
+        #expect(refusal("click", ["selector": "#a"]) == nil)
+    }
+}
