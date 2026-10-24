@@ -78,6 +78,7 @@ The proofs authenticate the handshake, not the stream that follows: later frames
 Bridge protocol 2 does not interoperate with 0.3.x: a 0.3.x extension is told to update, and its token, which it sends in the clear, is only compared. A 0.4 extension dialling a 0.3.x server is closed without a message, because that server cannot parse the new hello. Install matching app and `mcp-safari` versions together.
 
 The extension is sandboxed, and its only file grant is read access to that `tokens/` directory. It passes a file on to the background script only if the file is a regular file of at most 256 bytes holding a UUID, opened without following a symlink, and only if its name is a canonical port number. Anything else in the directory is skipped. The host app holds no file grants at all. An unknown native message gets a fixed error rather than an echo, and a missing token is reported as a code with no paths in it.
+
 The token file is removed when the server stops, including on SIGTERM, SIGINT and SIGHUP. A server that is killed outright cannot remove it, so each token file has a `<port>.pid` file beside it naming the owning process, and a starting server deletes the token files whose recorded owner is no longer running. A token with no owner record is left alone, since nothing proves its server is gone.
 
 The listener binds to the loopback address, so only processes on this machine can reach it, and a connection is never given MCP traffic before its handshake succeeds.
