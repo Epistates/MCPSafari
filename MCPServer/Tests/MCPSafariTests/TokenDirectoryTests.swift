@@ -27,8 +27,7 @@ struct TokenDirectoryTests {
         #expect(direct.recovery == nil)
     }
 
-    /// A symlinked token root is a warning, not a hard failure: the server still
-    /// runs, and an older extension reading the legacy root may still connect.
+    /// A symlinked token root is a warning, not a hard failure: the server still runs.
     @Test func aSymlinkedTokenDirectoryDoesNotFailTheWholeReport() throws {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -61,11 +60,9 @@ struct TokenDirectoryTests {
         #expect(report.checks.first { $0.code == "token_file" }?.status == .ok)
     }
 
-    /// Application Support is preferred precisely because `~/.config` is the
-    /// path users symlink into dotfiles repos.
-    @Test func applicationSupportIsThePreferredTokenRoot() {
-        #expect(WebSocketBridge.tokenRootURLs.first == WebSocketBridge.applicationSupportDirectoryURL)
-        #expect(WebSocketBridge.tokenRootURLs.contains(WebSocketBridge.configDirectoryURL))
+    /// Application Support is the only token root precisely because `~/.config` is
+    /// the path users symlink into dotfiles repos.
+    @Test func applicationSupportIsTheOnlyTokenRoot() {
         // Compared as paths on purpose. URL equality also compares the trailing
         // slash, and the one-argument `appendingPathComponent` decides that by
         // asking the filesystem, so a URL comparison here passes or fails on
@@ -79,12 +76,30 @@ struct TokenDirectoryTests {
         #expect(!WebSocketBridge.tokenDirectoryURL.path.contains(".config"))
     }
 
+    /// A shared `token` file beside the per-port ones used to be written for
+    /// extension builds that predate per-port tokens. Those builds cannot speak the
+    /// current protocol, so it only left a second copy of the secret on disk, in a
+    /// file another process could replace.
+    @Test func onlyThePerPortTokenAndItsOwnerRecordAreWritten() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoot: root)
+        await bridge.start()
+        defer { Task { await bridge.stop() } }
+        let port = await bridge.port
+
+        let atRoot = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        #expect(atRoot == ["tokens"])
+        let tokens = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("tokens").path)
+        #expect(Set(tokens) == [String(port), "\(port).pid"])
+    }
+
     @Test func tokenPublicationFailureStopsListenerAndIsDiagnosable() async throws {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let blocked = root.appendingPathComponent("not-a-directory")
         try Data().write(to: blocked)
-        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoots: [blocked])
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoot: blocked)
         await bridge.start()
         let status = await bridge.status()
         #expect(status.listener == .failed)
@@ -99,7 +114,7 @@ struct TokenDirectoryTests {
     @Test func shutdownRemovesOnlyOwnedPerPortTokens() async throws {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoots: [root])
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoot: root)
         await bridge.start()
         let port = await bridge.port
         let token = root.appendingPathComponent("tokens/\(port)")
@@ -119,7 +134,7 @@ struct TokenDirectoryTests {
     @Test func theOwnerIsRecordedBesideTheTokenWithoutChangingIt() async throws {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoots: [root])
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoot: root)
         await bridge.start()
         let port = await bridge.port
         let token = root.appendingPathComponent("tokens/\(port)")
@@ -163,7 +178,7 @@ struct TokenDirectoryTests {
         try plant(9004, owner: "not a pid")
         try plant(9005, owner: "1")
 
-        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoots: [root])
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoot: root)
         await bridge.start()
         defer { Task { await bridge.stop() } }
 

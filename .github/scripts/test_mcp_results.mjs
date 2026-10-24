@@ -63,11 +63,9 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         catch { server.kill("SIGKILL"); await bounded(exited, "kill server"); }
         lines.close();
         if (port && token) {
-            for (const root of ["Library/Application Support/MCPSafari", ".config/mcp-safari"]) {
-                const path = join(homedir(), root, "tokens", String(port));
-                // Never delete another process's replacement token.
-                if (await readFile(path, "utf8").catch(() => null) === token) await rm(path);
-            }
+            const path = join(homedir(), "Library/Application Support/MCPSafari/tokens", String(port));
+            // Never delete another process's replacement token.
+            if (await readFile(path, "utf8").catch(() => null) === token) await rm(path);
         }
         await rm(directory, { recursive: true, force: true });
     });

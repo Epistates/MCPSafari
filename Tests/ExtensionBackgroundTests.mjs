@@ -15,7 +15,7 @@ const popupHTML = readFileSync(
     "utf8"
 );
 
-function backgroundHarness(initialTokens, { profile } = {}) {
+function backgroundHarness(initialTokens, { profile, nativeResponse } = {}) {
     const tokenMap = new Map(Object.entries(initialTokens));
     const sockets = [];
     const timers = [];
@@ -49,6 +49,7 @@ function backgroundHarness(initialTokens, { profile } = {}) {
             onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
             sendNativeMessage: async () => {
                 nativeMessageCount++;
+                if (nativeResponse) return nativeResponse;
                 const response = { tokens: Object.fromEntries(tokenMap) };
                 // The appex omits this for extension builds without profile support.
                 if (profile !== undefined) response.profile = profile;
@@ -196,6 +197,22 @@ test("a connection that was authenticated redials without a token read", async (
 
     assert.equal(harness.nativeMessageCount(), reads);
     assert.equal(harness.sockets.length, 2);
+});
+
+test("a single shared token from the host app is not dialled with", async () => {
+    // Only the per-port map is read. A host app that answers with the old single
+    // token has nothing the extension will use, so it dials nothing rather than
+    // trying one secret against every port.
+    const harness = backgroundHarness({}, { nativeResponse: { token: "shared-token" } });
+    await settle();
+
+    // A port the user adds by hand is dialled once tokens are read, with whatever
+    // token there is for it.
+    harness.runtimeListeners[0]({ type: "addPort", port: "8091" }, {}, () => {});
+    await settle();
+
+    assert.equal(harness.sockets.length, 0);
+    assert.equal(harness.evaluate("connections.get(8091).state"), "disconnected");
 });
 
 test("popup status polling does not restart disconnected ports", async () => {

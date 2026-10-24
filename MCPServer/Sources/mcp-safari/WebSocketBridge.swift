@@ -54,7 +54,7 @@ actor WebSocketBridge {
 
     private var pendingRequests: [String: PendingRequest] = [:]
     private let logger: Logger
-    private let tokenRoots: [URL]
+    private let tokenRoot: URL
     private let requestedPort: UInt16
     private(set) var port: UInt16
     private var listenerStatus = ListenerStatus.stopped
@@ -107,12 +107,12 @@ actor WebSocketBridge {
     private static let maxRebindDelay: Duration = .seconds(30)
     static let maxMessageBytes = 32 * 1024 * 1024
     static let maxPendingRequests = 128
-    /// Primary token root. The sandboxed extension reads tokens through a
+    /// Where tokens live. The sandboxed extension reads tokens through a
     /// home-relative-path exception that the sandbox evaluates against the
-    /// *resolved* path, and `~/.config` is commonly symlinked into a dotfiles
-    /// repo — which puts the real file outside the granted path and makes it
-    /// unreadable. `~/Library/Application Support` is effectively never
-    /// symlinked, so tokens live there.
+    /// *resolved* path, and a directory under `~/.config` is commonly symlinked
+    /// into a dotfiles repo, which puts the real file outside the granted path and
+    /// makes it unreadable. `~/Library/Application Support` is effectively never
+    /// symlinked, so tokens live there and nowhere else.
     ///
     /// Every component below says whether it is a directory. The one-argument
     /// `appendingPathComponent` asks the filesystem instead, and appends a
@@ -127,17 +127,6 @@ actor WebSocketBridge {
             .appendingPathComponent("Application Support", isDirectory: true)
             .appendingPathComponent("MCPSafari", isDirectory: true)
     }()
-
-    /// Legacy token root, still written so extension builds that predate the
-    /// move keep authenticating.
-    static let configDirectoryURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config", isDirectory: true)
-            .appendingPathComponent("mcp-safari", isDirectory: true)
-    }()
-
-    /// Token roots to populate, most preferred first.
-    static let tokenRootURLs: [URL] = [applicationSupportDirectoryURL, configDirectoryURL]
 
     /// Directory where per-port auth tokens are written for the extension to read.
     static let tokenDirectoryURL: URL = applicationSupportDirectoryURL
@@ -195,7 +184,7 @@ actor WebSocketBridge {
     }
 
     func status() -> Status {
-        let tokenFilePath = tokenFile(for: port, under: tokenRoots[0]).path
+        let tokenFilePath = tokenFile(for: port).path
         // Whichever profile a call with no tab handle would drive, falling back
         // to a rejected build only when nothing is connected to report instead.
         let reported = activeProfileID.flatMap { metadataByProfile[$0] } ?? rejectedExtension
@@ -254,15 +243,14 @@ actor WebSocketBridge {
     init(
         port: UInt16 = 8089,
         logger: Logger,
-        tokenRoots: [URL] = WebSocketBridge.tokenRootURLs,
+        tokenRoot: URL = WebSocketBridge.applicationSupportDirectoryURL,
         handshakeDeadline: Duration = .seconds(2),
         rebindDelay: Duration = .seconds(2),
         beforeTokenPublication: (@Sendable () async -> Void)? = nil
     ) throws {
-        precondition(!tokenRoots.isEmpty)
         self.rebindDelay = rebindDelay
         self.beforeTokenPublication = beforeTokenPublication
-        self.tokenRoots = tokenRoots
+        self.tokenRoot = tokenRoot
         self.requestedPort = port
         self.port = port
         self.logger = logger
@@ -273,25 +261,15 @@ actor WebSocketBridge {
         self.authToken = UUID().uuidString
     }
 
-    private func writeAuthTokenFile(for port: UInt16) throws {
-        // The preferred root must succeed; the legacy root is best effort so a
-        // broken or unwritable `~/.config` cannot stop the server from starting.
-        try writeToken(for: port, under: tokenRoots[0])
-        for root in tokenRoots.dropFirst() {
-            do { try writeToken(for: port, under: root) }
-            catch { logger.debug("Could not write legacy token under \(root.path): \(error)") }
-        }
-    }
-
-    /// The per-port token file under one root.
+    /// The per-port token file.
     ///
     /// Every component says whether it is a directory. The one-argument
     /// `appendingPathComponent` asks the filesystem instead and appends a
     /// trailing slash only for a path that already exists, so the same
     /// expression produced different values depending on whether the server had
     /// ever run. That was a real CI flake once; two callers still had that form.
-    private func tokenFile(for port: UInt16, under root: URL) -> URL {
-        root.appendingPathComponent("tokens", isDirectory: true)
+    private func tokenFile(for port: UInt16) -> URL {
+        tokenRoot.appendingPathComponent("tokens", isDirectory: true)
             .appendingPathComponent(String(port), isDirectory: false)
     }
 
@@ -302,34 +280,28 @@ actor WebSocketBridge {
     /// files whose names are a bare port number, so a name with a suffix is ignored
     /// by it and by the extension. The pid is what lets a later server tell a token
     /// left behind by a process that died from one a live server is using.
-    private func ownerFile(for port: UInt16, under root: URL) -> URL {
-        root.appendingPathComponent("tokens", isDirectory: true)
+    private func ownerFile(for port: UInt16) -> URL {
+        tokenRoot.appendingPathComponent("tokens", isDirectory: true)
             .appendingPathComponent("\(port).pid", isDirectory: false)
     }
 
-    private func writeToken(for port: UInt16, under root: URL) throws {
+    private func writeAuthTokenFile(for port: UInt16) throws {
         let fileManager = FileManager.default
-        let tokenDirectory = root.appendingPathComponent("tokens", isDirectory: true)
+        let tokenDirectory = tokenRoot.appendingPathComponent("tokens", isDirectory: true)
 
         try fileManager.createDirectory(at: tokenDirectory, withIntermediateDirectories: true)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenRoot.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenDirectory.path)
 
         // The owner goes first, so a token never exists on disk without a record of
         // whose it is.
-        let ownerFilePath = ownerFile(for: port, under: root).path
+        let ownerFilePath = ownerFile(for: port).path
         try String(getpid()).write(toFile: ownerFilePath, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ownerFilePath)
 
-        let tokenFilePath = tokenFile(for: port, under: root).path
+        let tokenFilePath = tokenFile(for: port).path
         try authToken.write(toFile: tokenFilePath, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFilePath)
-
-        // Keep the single-token path populated for older extension builds.
-        // Current builds prefer the per-port map and avoid its rewrite race.
-        let singleTokenPath = root.appendingPathComponent("token", isDirectory: false).path
-        try authToken.write(toFile: singleTokenPath, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: singleTokenPath)
     }
 
     func start() async {
@@ -399,7 +371,7 @@ actor WebSocketBridge {
                         failStart(Failure(
                             code: "token_write_failed",
                             message: "Could not publish the authentication token for port \(boundPort).",
-                            recovery: "Check permissions for \(tokenRoots[0].path). The server keeps retrying, or restart the MCP client."
+                            recovery: "Check permissions for \(tokenRoot.path). The server keeps retrying, or restart the MCP client."
                         ))
                         return
                     }
@@ -462,15 +434,13 @@ actor WebSocketBridge {
 
     /// Removes this bridge's own per-port token for `port`, and nothing else.
     private func removeOwnedTokenFiles(for port: UInt16) {
-        for root in tokenRoots {
-            let url = tokenFile(for: port, under: root)
-            if (try? String(contentsOf: url, encoding: .utf8)) == authToken {
-                try? FileManager.default.removeItem(at: url)
-            }
-            let owner = ownerFile(for: port, under: root)
-            if (try? String(contentsOf: owner, encoding: .utf8)) == String(getpid()) {
-                try? FileManager.default.removeItem(at: owner)
-            }
+        let url = tokenFile(for: port)
+        if (try? String(contentsOf: url, encoding: .utf8)) == authToken {
+            try? FileManager.default.removeItem(at: url)
+        }
+        let owner = ownerFile(for: port)
+        if (try? String(contentsOf: owner, encoding: .utf8)) == String(getpid()) {
+            try? FileManager.default.removeItem(at: owner)
         }
     }
 
@@ -483,20 +453,18 @@ actor WebSocketBridge {
     /// running, and nothing proves it is dead.
     private func removeStaleTokenFiles() {
         let fileManager = FileManager.default
-        for root in tokenRoots {
-            let directory = root.appendingPathComponent("tokens", isDirectory: true)
-            guard let names = try? fileManager.contentsOfDirectory(atPath: directory.path) else { continue }
-            for name in names where name.hasSuffix(".pid") {
-                guard let port = UInt16(name.dropLast(".pid".count)) else { continue }
-                let owner = ownerFile(for: port, under: root)
-                guard let text = try? String(contentsOf: owner, encoding: .utf8),
-                      let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
-                      pid > 1, pid != getpid(), !Self.isProcessAlive(pid)
-                else { continue }
-                logger.info("Removing the token for port \(port): its server (pid \(pid)) is gone")
-                try? fileManager.removeItem(at: tokenFile(for: port, under: root))
-                try? fileManager.removeItem(at: owner)
-            }
+        let directory = tokenRoot.appendingPathComponent("tokens", isDirectory: true)
+        guard let names = try? fileManager.contentsOfDirectory(atPath: directory.path) else { return }
+        for name in names where name.hasSuffix(".pid") {
+            guard let port = UInt16(name.dropLast(".pid".count)) else { continue }
+            let owner = ownerFile(for: port)
+            guard let text = try? String(contentsOf: owner, encoding: .utf8),
+                  let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  pid > 1, pid != getpid(), !Self.isProcessAlive(pid)
+            else { continue }
+            logger.info("Removing the token for port \(port): its server (pid \(pid)) is gone")
+            try? fileManager.removeItem(at: tokenFile(for: port))
+            try? fileManager.removeItem(at: owner)
         }
     }
 
@@ -522,8 +490,6 @@ actor WebSocketBridge {
 
     func stop() {
         // Remove only owned per-port tokens while this listener still owns its port.
-        // The shared legacy `token` is deliberately left alone: another process
-        // can replace it between an ownership check and unlink.
         removeOwnedTokenFiles(for: port)
         lifecycleGeneration += 1
         rebindTask?.cancel()

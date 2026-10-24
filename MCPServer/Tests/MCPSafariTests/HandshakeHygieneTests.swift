@@ -26,7 +26,7 @@ struct HandshakeHygieneTests {
         let bridge = try WebSocketBridge(
             port: port,
             logger: Logger(label: "HandshakeHygieneTests"),
-            tokenRoots: [tokenRoot],
+            tokenRoot: tokenRoot,
             handshakeDeadline: handshakeDeadline
         )
         await bridge.start()
@@ -241,7 +241,7 @@ struct HandshakeHygieneTests {
         let bridge = try WebSocketBridge(
             port: 0,
             logger: Logger(label: "HandshakeHygieneTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
         defer { Task { await bridge.stop() } }

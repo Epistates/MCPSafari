@@ -10,7 +10,7 @@ function connectToPort(port) {
     if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) return;
 
     // Security: every server instance requires its per-port auth token.
-    const authToken = authTokensByPort.get(port) || legacyAuthToken;
+    const authToken = authTokensByPort.get(port);
     if (!authToken) {
         conn.state = "disconnected";
         return; // Skip — can't verify server identity without auth

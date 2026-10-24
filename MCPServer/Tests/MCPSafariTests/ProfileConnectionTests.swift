@@ -24,7 +24,7 @@ struct ProfileConnectionTests {
         let bridge = try WebSocketBridge(
             port: port,
             logger: Logger(label: "ProfileConnectionTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
         let boundPort = await bridge.port

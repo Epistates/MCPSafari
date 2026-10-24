@@ -204,7 +204,6 @@ async function loadAuthTokens() {
         }
         if (response && response.tokens) {
             authTokensByPort.clear();
-            legacyAuthToken = null;
             for (const [port, token] of Object.entries(response.tokens)) {
                 const parsedPort = parseInt(port, 10);
                 if (parsedPort >= 1024 && parsedPort <= 65535 && token) {
@@ -216,10 +215,6 @@ async function loadAuthTokens() {
             }
             ensurePortsForKnownTokens();
             console.log(`[MCPSafari] Loaded ${authTokensByPort.size} auth token(s)`);
-        } else if (response && response.token) {
-            authTokensByPort.clear();
-            legacyAuthToken = response.token;
-            console.log("[MCPSafari] Legacy auth token loaded");
         } else {
             console.warn("[MCPSafari] Failed to load auth tokens:", response?.error || "unknown");
         }

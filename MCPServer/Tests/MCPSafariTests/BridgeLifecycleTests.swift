@@ -52,7 +52,7 @@ struct BridgeLifecycleTests {
         let bridge = try WebSocketBridge(
             port: first,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
 
@@ -90,7 +90,7 @@ struct BridgeLifecycleTests {
         let bridge = try WebSocketBridge(
             port: first,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
         defer { Task { await bridge.stop() } }
@@ -122,7 +122,7 @@ struct BridgeLifecycleTests {
         let bridge = try WebSocketBridge(
             port: first,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot],
+            tokenRoot: tokenRoot,
             rebindDelay: .milliseconds(50)
         )
         await bridge.start()
@@ -152,7 +152,7 @@ struct BridgeLifecycleTests {
         let bridge = try WebSocketBridge(
             port: 8371,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
         defer { Task { await bridge.stop() } }
@@ -179,7 +179,7 @@ struct BridgeLifecycleTests {
         let bridge = try WebSocketBridge(
             port: port,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot],
+            tokenRoot: tokenRoot,
             beforeTokenPublication: { for await _ in gateStream { break } }
         )
         let starting = Task { await bridge.start() }
@@ -210,7 +210,7 @@ struct BridgeLifecycleTests {
         let bridge = try WebSocketBridge(
             port: 8311,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
         #expect(await bridge.status().listener == .listening)

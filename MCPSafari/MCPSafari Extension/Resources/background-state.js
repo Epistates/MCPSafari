@@ -13,7 +13,6 @@ const connections = new Map();
 /** @type {Set<number>} Manually added ports (persisted across restarts) */
 const manualPorts = new Set();
 let selectedTabId = null;
-let legacyAuthToken = null;
 // Safari runs a separate instance of this extension per profile, each with its own
 // background page reading the same tokens. Without an identity in the handshake every
 // instance looks like the same client, and the server evicts whichever one connected
