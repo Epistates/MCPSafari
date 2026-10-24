@@ -48,6 +48,13 @@ downloaded file back to the workflow run and commit that produced it, which a ch
 Every workflow action is pinned by commit SHA, and dependency resolution is locked to
 `Package.resolved`.
 
+A release is built only from a commit that is on `main` and has passed the test suites and the
+dependency audit. Both products are built before the signing certificate is imported, so build-time
+code never runs with the key present. Each shipped archive is then unpacked and its signature,
+notarization ticket, team, hardened runtime and entitlements are checked again. The signing secrets
+sit in a protected `release` environment that needs a reviewer's approval; see
+[Repository settings](docs/development.md#repository-settings).
+
 ## Browser access and data
 
 MCPSafari runs locally, but your MCP client receives tool results and may send them to its model provider. The extension can read and act on sites where you grant it access, using your existing Safari session.
