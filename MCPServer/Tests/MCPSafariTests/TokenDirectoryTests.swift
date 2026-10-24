@@ -89,6 +89,10 @@ struct TokenDirectoryTests {
         let status = await bridge.status()
         #expect(status.listener == .failed)
         #expect(status.lastError?.code == "token_write_failed")
+        // Not the generic "open Safari" advice: Safari is not the problem (#154).
+        let failure = await bridgeFailure { _ = try await bridge.send(action: "tabs_query") }
+        #expect(failure?.code == "bridge_unavailable")
+        #expect(failure?.message.contains("Could not publish the authentication token") == true)
         await bridge.stop()
     }
 

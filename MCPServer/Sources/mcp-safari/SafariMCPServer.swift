@@ -192,7 +192,7 @@ actor SafariMCPServer {
     private func resolveProfileIndex(_ args: [String: Value]) async throws -> Int {
         if let handle = try TabHandle.resolve(args["tabId"]) { return handle.profileIndex }
         guard let selected = await bridge.connectedProfiles().first(where: \.selected) else {
-            throw WebSocketBridge.BridgeError.notConnected
+            throw await bridge.noConnectionError()
         }
         return selected.index
     }

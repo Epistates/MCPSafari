@@ -82,6 +82,9 @@ struct BridgeLifecycleTests {
         // Without a reason recorded, `doctor` and `status` report a dead bridge
         // and leave the user to guess that something else holds the ports.
         #expect(status.lastError?.code == "bridge_bind_failed")
+        // The last port tried is held by someone else. Reporting it would point
+        // `status` at that other server's token file.
+        #expect(status.port == first)
 
         for descriptor in held { Darwin.close(descriptor) }
         held = []
@@ -91,6 +94,71 @@ struct BridgeLifecycleTests {
         #expect(status.listener == .listening)
         #expect(status.lastError == nil)
         #expect(status.port == first)
+        await bridge.stop()
+    }
+
+    /// "Open Safari and click the extension icon" is the wrong advice when the
+    /// server never opened its port, and it is what every tool said (#154).
+    @Test func everyCallSaysWhyWhenTheBridgeCouldNotBind() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let first: UInt16 = 8401
+        let held = holdPorts(from: first, count: 10)
+        defer { for descriptor in held { Darwin.close(descriptor) } }
+        try #require(held.count == 10, "every port in the sweep has to be occupied for this to test anything")
+
+        let bridge = try WebSocketBridge(
+            port: first,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoots: [tokenRoot]
+        )
+        await bridge.start()
+        defer { Task { await bridge.stop() } }
+        let reason = try #require(await bridge.status().lastError)
+
+        let failures = [
+            await bridgeFailure { _ = try await bridge.send(action: "tabs_query") },
+            await bridgeFailure { _ = try await bridge.send(action: "tabs_query", profileIndex: 0) },
+            await bridgeFailure { _ = try await bridge.broadcast(action: "tabs_query") },
+        ]
+        for failure in failures {
+            #expect(failure?.code == "bridge_unavailable")
+            #expect(failure?.message.contains(reason.message) == true)
+            #expect(failure?.message.contains(reason.recovery) == true)
+        }
+    }
+
+    /// A port held when the client started is not a reason to stay dead for the
+    /// life of the process (#154).
+    @Test func aBridgeThatCouldNotBindRetriesWithoutBeingAsked() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let first: UInt16 = 8411
+        var held = holdPorts(from: first, count: 10)
+        defer { for descriptor in held { Darwin.close(descriptor) } }
+        try #require(held.count == 10, "every port in the sweep has to be occupied for this to test anything")
+
+        let bridge = try WebSocketBridge(
+            port: first,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoots: [tokenRoot],
+            rebindDelay: .milliseconds(50)
+        )
+        await bridge.start()
+        #expect(await bridge.status().listener == .failed)
+
+        for descriptor in held { Darwin.close(descriptor) }
+        held = []
+
+        #expect(await eventually { await bridge.status().listener == .listening })
+        let status = await bridge.status()
+        #expect(status.port == first)
+        #expect(status.lastError == nil)
+        // With the listener up, a call is back to being about the extension.
+        let failure = await bridgeFailure { _ = try await bridge.send(action: "tabs_query") }
+        #expect(failure?.code == "bridge_disconnected")
         await bridge.stop()
     }
 

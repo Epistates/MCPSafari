@@ -60,6 +60,16 @@ struct BridgeMessageTests {
             recoveryAction: "call_status"
         ))
 
+        let unavailable = WebSocketBridge.BridgeError.bridgeUnavailable(.init(
+            code: "bridge_bind_failed",
+            message: "No free port in 8089-8098 for the extension bridge.",
+            recovery: "Quit whatever is holding those ports."
+        )).toolFailure
+        #expect(unavailable.code == "bridge_unavailable")
+        #expect(unavailable.message == "The extension bridge is not running. No free port in 8089-8098 for the extension bridge. Quit whatever is holding those ports.")
+        #expect(!unavailable.message.contains("Open Safari"))
+        #expect(WebSocketBridge.BridgeError.bridgeUnavailable(nil).toolFailure.code == "bridge_unavailable")
+
         let timeout = WebSocketBridge.BridgeError.timeout(action: "click", seconds: 0.5).toolFailure
         #expect(timeout.code == "bridge_timeout")
         #expect(timeout.message.contains("click after 0.5 seconds"))
