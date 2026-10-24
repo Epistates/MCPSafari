@@ -26,7 +26,12 @@ async function handleNavigate(params) {
             message = "Navigated to";
             break;
 
+        // `goto` and `reload` go through the tabs API and need no access to the
+        // page. Going back or forward is a script run inside it, so it parks on
+        // Safari's dialog like any other page-touching call and is gated like
+        // one. Before the load wait is armed, so a refusal leaves no listener.
         case "back":
+            await ensureTabAccess(tabId);
             const backComplete = waitForTabLoad(tabId, beforeTab);
             await browser.scripting.executeScript({
                 target: { tabId },
@@ -37,6 +42,7 @@ async function handleNavigate(params) {
             break;
 
         case "forward":
+            await ensureTabAccess(tabId);
             const forwardComplete = waitForTabLoad(tabId, beforeTab);
             await browser.scripting.executeScript({
                 target: { tabId },

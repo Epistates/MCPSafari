@@ -174,6 +174,8 @@ So a tool that needs a page it has not been granted fails with `permission_requi
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
 
+Every tool that reads or acts on a page is gated this way, including `navigate` with `back` or `forward` (which runs a script in the page) and `resize_window`. A few operations are browser chrome and need no access to any page, so they work on an ungranted tab: `tabs_context`, `tabs_create`, `close_tab`, and `navigate` with `goto` or `reload`. That is deliberate. Going to a new URL is how a caller gets off a page it cannot use.
+
 ### Results
 
 Every successful tool result includes an object in `structuredContent`, alongside the existing `content` text or image blocks. The object envelope is required by the negotiated MCP 2025-11-25 protocol; its payload may contain arrays, objects, strings, numbers, booleans, or null.

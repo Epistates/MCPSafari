@@ -178,6 +178,9 @@ async function handleResizeWindow(params) {
     // window and the user clicked into another, the resize landed on the user's
     // and a screenshot afterwards did not match the viewport that was asked for.
     const tabId = params.tabId || (await getActiveTabId());
+    // The `tabs.get` below parks on Safari's dialog like every other call that
+    // reads the tab, so an ungranted tab rode the bridge timeout here.
+    await ensureTabAccess(tabId);
     const tab = await browser.tabs.get(tabId);
     await browser.windows.update(tab.windowId, {
         width: params.width,
