@@ -138,7 +138,27 @@ struct ProtectedPathsTests {
             #expect(defaults.contains(root.standardizedFileURL.path.lowercased()))
         }
         #expect(ProtectedPaths.isProtected(WebSocketBridge.tokenDirectoryURL.appendingPathComponent("8089").path))
-        #expect(ProtectedPaths.isProtected(WebSocketBridge.legacyTokenFilePath))
+    }
+
+    // The bridge may stop writing the legacy ~/.config/mcp-safari token, but a
+    // file left there is still a credential, so the protection does not follow
+    // whatever the bridge currently writes to.
+    @Test func bothHistoricRootsStayProtectedWhateverTheBridgeWrites() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let appSupport = home.appendingPathComponent("Library/Application Support/MCPSafari")
+        let legacy = home.appendingPathComponent(".config/mcp-safari")
+        let known = ProtectedPaths.roots(for: ProtectedPaths.knownTokenRoots)
+
+        for path in [
+            appSupport.appendingPathComponent("tokens/8089").path,
+            legacy.appendingPathComponent("tokens/8089").path,
+            legacy.appendingPathComponent("token").path,
+            legacy.path,
+        ] {
+            #expect(ProtectedPaths.isProtected(path, roots: known), "\(path) is not protected")
+            #expect(ProtectedPaths.isProtected(path), "\(path) is not protected by default")
+        }
+        #expect(!ProtectedPaths.isProtected(home.appendingPathComponent(".config/other-tool/token").path, roots: known))
     }
 
     // MARK: - file: URLs

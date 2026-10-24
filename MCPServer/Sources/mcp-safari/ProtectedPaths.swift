@@ -19,8 +19,28 @@ import Foundation
 /// dotfiles repository is the reason resolving matters: the files then live
 /// under a path that never mentions the directory the roots are named by.
 enum ProtectedPaths {
+    /// Both places a token has ever been written, named here rather than taken
+    /// from the bridge. The bridge may stop writing to the legacy one, but a
+    /// token file left behind there is still a valid credential until its
+    /// server exits and until someone deletes it, so the directory stays
+    /// off limits whether or not anything is still writing to it.
+    static let knownTokenRoots: [URL] = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            home.appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+                .appendingPathComponent("MCPSafari", isDirectory: true),
+            home.appendingPathComponent(".config", isDirectory: true)
+                .appendingPathComponent("mcp-safari", isDirectory: true),
+        ]
+    }()
+
+    /// What is protected by default: the known roots, plus whatever the bridge
+    /// currently writes to, in case that is somewhere else.
+    static let defaultTokenRoots: [URL] = knownTokenRoots + WebSocketBridge.tokenRootURLs
+
     /// The folded forms of the token roots, both as written and as resolved.
-    static func roots(for tokenRoots: [URL] = WebSocketBridge.tokenRootURLs) -> [String] {
+    static func roots(for tokenRoots: [URL] = defaultTokenRoots) -> [String] {
         var roots: [String] = []
         for root in tokenRoots {
             for path in [root.standardizedFileURL.path, canonicalPath(root.path)] {
