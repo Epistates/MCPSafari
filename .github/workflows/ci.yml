@@ -118,3 +118,14 @@ jobs:
             build \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO
+
+      # The extension's token reader is the only path a token takes to Safari,
+      # and every way it can fail is silent, so its unit tests run here too.
+      - name: Test Safari Extension token reader
+        run: |
+          cd MCPSafari
+          xcodebuild test -project MCPSafari.xcodeproj \
+            -scheme "MCPSafari" \
+            -destination 'platform=macOS' \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO
