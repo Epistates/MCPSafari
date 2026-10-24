@@ -38,27 +38,6 @@ struct BridgeLifecycleTests {
         return held
     }
 
-    /// A plain TCP connection to the loopback address, or nil if it is refused.
-    private static func connectLoopback(port: UInt16) -> Int32? {
-        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { return nil }
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = port.bigEndian
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard connected == 0 else {
-            Darwin.close(descriptor)
-            return nil
-        }
-        return descriptor
-    }
-
     /// Ports here sit above the extension's auto-scan range (8089-8098) so a
     /// running Safari never dials them.
     @Test func aBridgeThatCouldNotBindStillStartsOnceAPortFreesUp() async throws {
@@ -162,24 +141,6 @@ struct BridgeLifecycleTests {
         await bridge.stop()
     }
 
-    /// Writes a WebSocket upgrade by hand so the request headers are under this
-    /// test's control. `NWConnection`'s own WebSocket client wants a URL
-    /// endpoint rather than a host and port, and `URLSessionWebSocketTask` sends
-    /// no `Origin` at all, so neither can ask this question.
-    private func upgradeRequest(port: UInt16, origin: String?) -> String {
-        let key = Data((0..<16).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        var lines = [
-            "GET / HTTP/1.1",
-            "Host: 127.0.0.1:\(port)",
-            "Upgrade: websocket",
-            "Connection: Upgrade",
-            "Sec-WebSocket-Key: \(key)",
-            "Sec-WebSocket-Version: 13",
-        ]
-        if let origin { lines.append("Origin: \(origin)") }
-        return lines.joined(separator: "\r\n") + "\r\n\r\n"
-    }
-
     /// Whether a loopback WebSocket server can see the browser's `Origin` at all
     /// decides whether #121 is implementable, and it is: the header reaches
     /// `setClientRequestHandler`, which also gets to refuse the handshake.
@@ -199,20 +160,10 @@ struct BridgeLifecycleTests {
         #expect(await bridge.lastHandshakeOrigin == nil)
 
         let origin = "safari-web-extension://0E4C1B2A-TEST"
-        let descriptor = try #require(Self.connectLoopback(port: port))
-        defer { Darwin.close(descriptor) }
+        let socket = try #require(RawSocket.dial(port: port, origin: origin))
+        #expect(socket.reply() == .upgraded, "the handshake is accepted, not refused")
 
-        let request = Array(upgradeRequest(port: port, origin: origin).utf8)
-        try #require(Darwin.write(descriptor, request, request.count) == request.count)
-
-        var reply = [UInt8](repeating: 0, count: 256)
-        let read = Darwin.read(descriptor, &reply, reply.count)
-        try #require(read > 0)
-        let status = String(decoding: reply.prefix(read), as: UTF8.self)
-        #expect(status.hasPrefix("HTTP/1.1 101"), "the handshake is accepted, not refused: \(status)")
-
-        try await Task.sleep(for: .milliseconds(250))
-        #expect(await bridge.lastHandshakeOrigin == origin)
+        #expect(await eventually { await bridge.lastHandshakeOrigin == origin })
     }
 
     /// The listener is ready a little before its token is on disk, and a socket
@@ -236,30 +187,18 @@ struct BridgeLifecycleTests {
 
         // The listener accepts TCP as soon as it is ready, which is before the
         // hook above returns, so this connects inside the gap.
-        var descriptor: Int32?
+        var dialled: RawSocket?
         let deadline = Date().addingTimeInterval(10)
-        while descriptor == nil, Date() < deadline { descriptor = Self.connectLoopback(port: port) }
-        let socket = try #require(descriptor, "the listener never came up")
-        defer { Darwin.close(socket) }
+        while dialled == nil, Date() < deadline { dialled = RawSocket.dial(port: port) }
+        let socket = try #require(dialled, "the listener never came up")
 
-        let request = Array(upgradeRequest(port: port, origin: nil).utf8)
-        try #require(Darwin.write(socket, request, request.count) == request.count)
-
-        var timeout = timeval(tv_sec: 0, tv_usec: 300_000)
-        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        var reply = [UInt8](repeating: 0, count: 256)
-        // Held means silent: a read that times out. A cancelled socket instead
-        // reads end-of-file, or is reset.
-        let held = Darwin.read(socket, &reply, reply.count)
-        #expect(held == -1 && errno == EAGAIN, "the socket is neither served nor dropped yet")
+        // Held means silent. A cancelled socket instead reads end-of-file or is reset.
+        #expect(socket.reply(within: 0.3) == .silent, "the socket is neither served nor dropped yet")
 
         gate.yield()
         await starting.value
 
-        timeout = timeval(tv_sec: 5, tv_usec: 0)
-        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        let read = Darwin.read(socket, &reply, reply.count)
-        #expect(read > 0 && String(decoding: reply.prefix(read), as: UTF8.self).hasPrefix("HTTP/1.1 101"))
+        #expect(socket.reply() == .upgraded)
     }
 
     /// A listener left in place by one failed attempt would also make `stop()`

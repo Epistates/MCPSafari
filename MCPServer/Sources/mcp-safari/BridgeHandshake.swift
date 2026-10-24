@@ -62,7 +62,17 @@ enum BridgeHandshake {
         return bounded.isEmpty ? WebSocketBridge.defaultProfileID : bounded
     }
 
+    /// The largest first frame a connection may send before it has authenticated.
+    /// A real handshake is a couple of hundred bytes. The listener's own message
+    /// limit is 32 MiB, because it has to admit tool responses and cannot vary per
+    /// connection, so without this an unauthenticated peer could make the server
+    /// decode as much JSON as it cared to send.
+    static let maxFrameBytes = 4 * 1024
+
+    /// Nil means the frame is not a handshake at all, whatever it contains, and the
+    /// bridge closes the connection.
     static func decision(for data: Data, expectedToken: String) -> HandshakeDecision? {
+        guard data.count <= maxFrameBytes else { return nil }
         guard let message = try? JSONDecoder().decode(Message.self, from: data) else { return nil }
         guard message.auth == expectedToken else { return .rejectToken }
         if let protocolVersion = message.protocolVersion,

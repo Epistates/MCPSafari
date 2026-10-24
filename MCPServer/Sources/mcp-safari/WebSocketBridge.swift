@@ -91,8 +91,11 @@ actor WebSocketBridge {
     private static let maxAuthenticatingConnections = 8
     /// How many distinct profile ids this bridge will ever hand a handle to.
     private static let maxProfiles = 32
-    /// How long a connection may sit without completing its handshake. Injected
-    /// so a test does not have to wait out the real one.
+    /// How long a connection may sit without completing its handshake. The
+    /// extension sends its first frame within milliseconds of the socket opening,
+    /// so this only has to cover a slow machine, and every second beyond that is a
+    /// second an unauthenticated peer holds one of the few slots. Injected so a
+    /// test does not have to wait out the real one.
     private let handshakeDeadline: Duration
     /// Runs once the listener is ready and before its token is written. The gap is
     /// real but a few milliseconds wide, so a test that wants to dial inside it has
@@ -252,7 +255,7 @@ actor WebSocketBridge {
         port: UInt16 = 8089,
         logger: Logger,
         tokenRoots: [URL] = WebSocketBridge.tokenRootURLs,
-        handshakeDeadline: Duration = .seconds(10),
+        handshakeDeadline: Duration = .seconds(2),
         rebindDelay: Duration = .seconds(2),
         beforeTokenPublication: (@Sendable () async -> Void)? = nil
     ) throws {
