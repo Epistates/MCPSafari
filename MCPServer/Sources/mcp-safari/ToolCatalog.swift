@@ -202,7 +202,7 @@ extension SafariMCPServer {
                         "clearFirst": .object(["type": .string("boolean")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code. " + Self.nativeRequirements),
+                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code; text over 1000 characters is refused. " + Self.nativeRequirements),
                         ]),
                         "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,

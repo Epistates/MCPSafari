@@ -540,32 +540,8 @@ actor SafariMCPServer {
 
     private func handleNativeTypeText(_ args: [String: Value]) async throws -> CallTool.Result {
         let input = try Self.nativeInputPlan(args)
-        let traceSession = try await startTraceIfNeeded(args)
-        do {
-            let preparation = try await send("native_type_text", args, params: interactionParams(args))
-            guard preparation.success else {
-                return try await resultAfterAction(preparation, args, traceSession: traceSession)
-            }
-
-            let message = try Self.typeNativeText(
-                input,
-                deadline: Self.numberValue(args["_batchDeadline"])
-            )
-            let response = BridgeResponse(
-                id: preparation.id,
-                success: true,
-                data: AnyCodable(message),
-                error: nil,
-                errorCode: nil,
-                retryable: nil,
-                recoveryAction: nil
-            )
-            return try await resultAfterAction(response, args, traceSession: traceSession)
-        } catch {
-            if let traceSession {
-                _ = try? await stopTraceResponse(traceSession, args, waitForDuration: false)
-            }
-            throw error
+        return try await runNativeAction("native_type_text", args) { _ in
+            try await Self.typeNativeText(input, deadline: Self.numberValue(args["_batchDeadline"]))
         }
     }
 
@@ -583,7 +559,7 @@ actor SafariMCPServer {
     private func runNativeAction(
         _ action: String,
         _ args: [String: Value],
-        perform: (BridgeResponse) throws -> String
+        perform: (BridgeResponse) async throws -> String
     ) async throws -> CallTool.Result {
         try Self.ensureNativeInputPermission()
         let traceSession = try await startTraceIfNeeded(args)
@@ -593,7 +569,7 @@ actor SafariMCPServer {
                 return try await resultAfterAction(preparation, args, traceSession: traceSession)
             }
 
-            let message = try perform(preparation)
+            let message = try await perform(preparation)
             let response = BridgeResponse(
                 id: preparation.id,
                 success: true,

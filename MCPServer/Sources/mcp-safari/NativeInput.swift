@@ -55,6 +55,11 @@ extension SafariMCPServer {
             throw ToolInputError("submitKey must be a string")
         }
 
+        let characterCount = text.count
+        guard characterCount <= maxNativeTextCharacters else {
+            throw ToolInputError("Native type_text types at most \(maxNativeTextCharacters) characters and this text has \(characterCount). Use type_text without native for longer text: native typing is for short input that synthetic typing cannot enter.")
+        }
+
         let submitKey = args["submitKey"]?.stringValue
         let submitKeyCode = try nativeSubmitKeyCode(for: submitKey)
         let clearFirst = args["clearFirst"]?.boolValue == true
@@ -94,41 +99,114 @@ extension SafariMCPServer {
         ))
     }
 
+    /// What native typing needs from the machine, so the loop below can be
+    /// driven by a fake in tests without keystrokes reaching the real keyboard.
+    struct NativeKeyboard: Sendable {
+        let safariIsFrontmost: @Sendable () -> Bool
+        let postText: @Sendable (String) throws -> Void
+        let postKey: @Sendable (CGKeyCode, CGEventFlags) throws -> Void
+
+        static func live() throws -> NativeKeyboard {
+            guard let source = CGEventSource(stateID: .hidSystemState) else {
+                throw nativeInputUnavailable("macOS could not create a native keyboard event.")
+            }
+            let box = EventSourceBox(source)
+            return NativeKeyboard(
+                safariIsFrontmost: { SafariMCPServer.safariIsActive() },
+                postText: { try SafariMCPServer.postText($0, source: box.source) },
+                postKey: { try SafariMCPServer.postKey(code: $0, flags: $1, source: box.source) }
+            )
+        }
+    }
+
+    /// The source is only ever used by one task at a time, one event after
+    /// another, which is all `CGEventSource` asks of its caller.
+    private final class EventSourceBox: @unchecked Sendable {
+        let source: CGEventSource
+
+        init(_ source: CGEventSource) {
+            self.source = source
+        }
+    }
+
+    /// Native typing is for short input that synthetic typing cannot enter. The
+    /// cap keeps one call from holding the user's keyboard for minutes.
+    nonisolated static let maxNativeTextCharacters = 1000
+
+    /// How many characters go out between checks that Safari still has focus.
+    /// Every keystroke would be too chatty to be worth it, and one check at each
+    /// end leaves a long text typing into whatever took focus from Safari.
+    nonisolated static let nativeFocusCheckInterval = 16
+
+    /// Types one character at a time, off the actor and yielding between
+    /// characters. The posting is synchronous, so running it on the actor would
+    /// stall every other tool call for as long as the text takes to type.
     nonisolated static func typeNativeText(
         _ input: NativeInputPlan,
-        deadline: Double? = nil
-    ) throws -> String {
-        func checkDeadline() throws {
-            try checkNativeDeadline(deadline)
+        deadline: Double? = nil,
+        keyboard: NativeKeyboard? = nil
+    ) async throws -> String {
+        let keyboard = try keyboard ?? NativeKeyboard.live()
+        let characters = Array(input.text)
+        var delivered = 0
+
+        try checkNativeDeadline(deadline)
+        guard keyboard.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
         }
 
-        try checkDeadline()
-        try ensureSafariIsFrontmost()
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
-            throw nativeInputUnavailable("macOS could not create a native keyboard event.")
+        do {
+            if let selectAllKeyCode = input.selectAllKeyCode {
+                try checkNativeDeadline(deadline)
+                try keyboard.postKey(selectAllKeyCode, .maskCommand)
+                try await nativeKeystrokePause()
+                try checkNativeDeadline(deadline)
+                try keyboard.postKey(51, [])
+                try await nativeKeystrokePause()
+            }
+            for (index, character) in characters.enumerated() {
+                try Task.checkCancellation()
+                try checkNativeDeadline(deadline)
+                if index > 0, index % nativeFocusCheckInterval == 0, !keyboard.safariIsFrontmost() {
+                    throw NativeInputError(failure: nativeFocusFailure(
+                        eventsAlreadySent: true,
+                        delivered: (delivered, characters.count)
+                    ))
+                }
+                try keyboard.postText(String(character))
+                delivered += 1
+                try await nativeKeystrokePause()
+            }
+            if let submitKeyCode = input.submitKeyCode {
+                try checkNativeDeadline(deadline)
+                try keyboard.postKey(submitKeyCode, [])
+                try await nativeKeystrokePause()
+            }
+        } catch is CancellationError {
+            throw NativeInputError(failure: ToolFailure(
+                code: "native_input_cancelled",
+                message: "The call was cancelled after \(delivered) of \(characters.count) characters were delivered with native input.",
+                retryable: false,
+                recoveryAction: "inspect_error"
+            ))
         }
 
-        if let selectAllKeyCode = input.selectAllKeyCode {
-            try checkDeadline()
-            try postKey(code: selectAllKeyCode, flags: .maskCommand, source: source)
-            try checkDeadline()
-            try postKey(code: 51, source: source)
+        guard keyboard.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(
+                eventsAlreadySent: true,
+                delivered: (delivered, characters.count)
+            ))
         }
-        for character in input.text {
-            try checkDeadline()
-            try postText(String(character), source: source)
-        }
-        if let submitKeyCode = input.submitKeyCode {
-            try checkDeadline()
-            try postKey(code: submitKeyCode, source: source)
-        }
-        // One check before and one after typing: a per-keystroke re-check
-        // would abort mid-word on any transient focus blip without saying
-        // how much was delivered.
-        try ensureSafariIsFrontmost(eventsAlreadySent: true)
 
         let suffix = input.submitKey.map { " then pressed \($0)" } ?? ""
         return "Typed \(input.text.count) character(s) with native input\(suffix)"
+    }
+
+    /// The gap that lets the receiving app take each keystroke before the next.
+    /// A suspension rather than a sleep, so the thread is free for other work
+    /// and a cancelled call stops here.
+    private nonisolated static func nativeKeystrokePause() async throws {
+        try await Task.sleep(for: .milliseconds(5))
     }
 
     private nonisolated static func nativeSubmitKeyCode(for key: String?) throws -> CGKeyCode? {
@@ -148,11 +226,18 @@ extension SafariMCPServer {
     /// the same one. Nothing sent is a clean refusal the caller can retry.
     /// Something sent is not retryable, because a retry is not a recovery, it is
     /// a second stream of input into whatever is frontmost now.
-    nonisolated static func nativeFocusFailure(eventsAlreadySent: Bool) -> ToolFailure {
-        ToolFailure(
+    ///
+    /// `delivered` is how much of a typed text went out before focus was lost,
+    /// so the caller knows what the page and the other application each received.
+    nonisolated static func nativeFocusFailure(
+        eventsAlreadySent: Bool,
+        delivered: (sent: Int, total: Int)? = nil
+    ) -> ToolFailure {
+        let progress = delivered.map { " Delivered \($0.sent) of \($0.total) characters before that." } ?? ""
+        return ToolFailure(
             code: "native_input_focus_lost",
             message: eventsAlreadySent
-                ? "Safari lost focus during native input, so some events may have gone to another application. Tell the user before retrying: a retry sends the whole input again."
+                ? "Safari lost focus during native input, so some events may have gone to another application.\(progress) Tell the user before retrying: a retry sends the whole input again."
                 : "Safari is not the frontmost application, so nothing was sent. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it, or omit native to use synthetic input, which does not need focus.",
             retryable: !eventsAlreadySent,
             recoveryAction: "ask_user"
@@ -160,14 +245,17 @@ extension SafariMCPServer {
     }
 
     private nonisolated static func ensureSafariIsFrontmost(eventsAlreadySent: Bool = false) throws {
-        // NSWorkspace.frontmostApplication freezes at first touch in this
-        // run-loop-less process; a fresh fetch reads current state.
-        let safariIsActive = NSRunningApplication
-            .runningApplications(withBundleIdentifier: "com.apple.Safari")
-            .contains { $0.isActive }
-        guard safariIsActive else {
+        guard safariIsActive() else {
             throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: eventsAlreadySent))
         }
+    }
+
+    private nonisolated static func safariIsActive() -> Bool {
+        // NSWorkspace.frontmostApplication freezes at first touch in this
+        // run-loop-less process; a fresh fetch reads current state.
+        NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.apple.Safari")
+            .contains { $0.isActive }
     }
 
     private nonisolated static func nativeInputUnavailable(_ message: String) -> NativeInputError {
@@ -190,7 +278,11 @@ extension SafariMCPServer {
         }
     }
 
-    private nonisolated static func postText(_ text: String, source: CGEventSource) throws {
+    /// The key-down and key-up pair that types `text`, not yet posted.
+    nonisolated static func textKeyEvents(
+        _ text: String,
+        source: CGEventSource
+    ) throws -> (down: CGEvent, up: CGEvent) {
         let utf16 = Array(text.utf16)
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
@@ -201,9 +293,18 @@ extension SafariMCPServer {
             keyDown.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
             keyUp.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
         }
-        keyDown.post(tap: .cgSessionEventTap)
-        keyUp.post(tap: .cgSessionEventTap)
-        Thread.sleep(forTimeInterval: 0.005)
+        // A `.hidSystemState` source reports the modifiers that are physically
+        // down, so a key the user is holding would turn typed text into a
+        // shortcut: "q" with Command held is Command-Q. Typed text is never one.
+        keyDown.flags = []
+        keyUp.flags = []
+        return (keyDown, keyUp)
+    }
+
+    private nonisolated static func postText(_ text: String, source: CGEventSource) throws {
+        let events = try textKeyEvents(text, source: source)
+        events.down.post(tap: .cgSessionEventTap)
+        events.up.post(tap: .cgSessionEventTap)
     }
 
     private nonisolated static func postKey(
@@ -220,7 +321,6 @@ extension SafariMCPServer {
         keyUp.flags = flags
         keyDown.post(tap: .cgSessionEventTap)
         keyUp.post(tap: .cgSessionEventTap)
-        Thread.sleep(forTimeInterval: 0.005)
     }
 
     struct NativeKeyCombo: Equatable, Sendable {
@@ -358,6 +458,7 @@ extension SafariMCPServer {
     nonisolated static func pressNativeKey(_ combo: NativeKeyCombo, deadline: Double? = nil) throws -> String {
         let source = try nativeEventSource(deadline: deadline)
         try postKey(code: combo.keyCode, flags: combo.flags, source: source)
+        Thread.sleep(forTimeInterval: 0.005)
         try ensureSafariIsFrontmost(eventsAlreadySent: true)
         return "Pressed \(combo.label) with native input"
     }
