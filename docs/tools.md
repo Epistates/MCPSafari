@@ -266,6 +266,8 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 
 Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Use `eventTypes` for an exact-match allowlist such as `["dom.mutation", "network.fetch"]`; omit it to capture all URL/history, console, fetch/XHR, and DOM mutation events during the action window.
 
+Attribute mutation events carry the attribute's old and new value, cut to 512 characters with `truncated: true`. They never carry the `value` or `checked` attribute, because frameworks mirror what a user types into `value`, nor any attribute of a field the snapshot would redact, such as a password or one-time-code input. Those events say `valueOmitted: true` instead.
+
 ### Bounded action batches
 
 Use `run_steps` for a fixed sequence of existing interactions and waits with a shared default tab:

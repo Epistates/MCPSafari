@@ -59,6 +59,96 @@
         return parts.join(" > ");
     }
 
+    // ─── Attribute values ────────────────────────────────────────────
+
+    // Frameworks mirror what a user types into the `value` attribute, so
+    // recording old and new values of every attribute change wrote a typed
+    // password into the trace. The same rule as the snapshot's redaction, kept
+    // here because this file runs in the page's world and cannot read that one.
+    // Tests/sensitive-field-rule.test.mjs fails if the two drift apart, so
+    // change both together.
+    //
+    // BEGIN sensitive-field-rule
+    const SENSITIVE_AUTOCOMPLETE = new Set([
+        "current-password",
+        "new-password",
+        "one-time-code",
+        "cc-number",
+        "cc-csc",
+        "cc-exp",
+        "cc-exp-month",
+        "cc-exp-year",
+    ]);
+    // A name or label is only a hint, so short words must match whole (`pin`
+    // is a secret, `shipping` is not) and long ones may sit inside a longer
+    // run (`newpassword`, `confirmPassword`).
+    const SECRET_HINT_WORDS = new Set(["pass", "pwd", "pin", "otp", "cvv", "cvc", "cvn", "ssn", "secret", "token", "2fa"]);
+    const SECRET_HINT_FRAGMENTS = ["password", "passwd", "passcode", "passphrase", "pincode", "secret", "token", "onetime"];
+    // Types that carry a label or a fixed value rather than something typed.
+    const NON_SECRET_TYPES = new Set(["button", "submit", "reset", "image", "checkbox", "radio", "file", "range", "color"]);
+
+    function hintLooksSecret(hint) {
+        const words = String(hint)
+            .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+            .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter(Boolean);
+        const joined = words.join("");
+        return words.some((word) => SECRET_HINT_WORDS.has(word))
+            || SECRET_HINT_FRAGMENTS.some((fragment) => joined.includes(fragment));
+    }
+
+    function isSensitiveField({ tag, type, autocomplete, hints }) {
+        if (tag !== "input" && tag !== "textarea") return false;
+        const kind = String(type || "").toLowerCase();
+        if (kind === "password") return true;
+        if (String(autocomplete || "").toLowerCase().split(/\s+/).some((token) => SENSITIVE_AUTOCOMPLETE.has(token))) {
+            return true;
+        }
+        if (tag === "input" && NON_SECRET_TYPES.has(kind)) return false;
+        return hints.some((hint) => hint && hintLooksSecret(hint));
+    }
+    // END sensitive-field-rule
+
+    // Unlike the snapshot there is no remembering that a field was once a
+    // password: a trace is a short window and, whatever the field's type is by
+    // then, its `value` and `checked` are never recorded below.
+    function isSensitiveElement(node) {
+        const attr = (name) => (typeof node.getAttribute === "function" ? node.getAttribute(name) : null);
+        return isSensitiveField({
+            tag: node.tagName ? node.tagName.toLowerCase() : "",
+            type: attr("type"),
+            autocomplete: attr("autocomplete"),
+            hints: [attr("name"), node.id, attr("aria-label"), attr("inputmode"), attr("autocomplete")],
+        });
+    }
+
+    // Long enough for a class list or an inline style, short enough that one
+    // mutation cannot carry a page's worth of data into the trace.
+    const MAX_ATTRIBUTE_VALUE = 512;
+    const ALWAYS_OMITTED_ATTRIBUTES = new Set(["value", "checked"]);
+
+    function boundedValue(value, detail) {
+        if (typeof value !== "string" || value.length <= MAX_ATTRIBUTE_VALUE) return value;
+        detail.truncated = true;
+        return value.slice(0, MAX_ATTRIBUTE_VALUE);
+    }
+
+    function attributeValues(mutation) {
+        const detail = {};
+        const name = String(mutation.attributeName).toLowerCase();
+        // Said rather than silently absent, so a trace reader can tell "the
+        // value was withheld" from "nothing changed".
+        if (ALWAYS_OMITTED_ATTRIBUTES.has(name) || isSensitiveElement(mutation.target)) {
+            detail.valueOmitted = true;
+            return detail;
+        }
+        if (mutation.oldValue !== null) detail.oldValue = boundedValue(mutation.oldValue, detail);
+        detail.value = boundedValue(mutation.target.getAttribute(mutation.attributeName), detail);
+        return detail;
+    }
+
     function pushEvent(trace, type, detail = {}, at = now()) {
         if (trace.eventTypes && !trace.eventTypes.has(type)) return;
         if (trace.events.length >= MAX_EVENTS) {
@@ -123,8 +213,7 @@
 
                 if (mutation.type === "attributes") {
                     detail.attribute = mutation.attributeName;
-                    if (mutation.oldValue !== null) detail.oldValue = mutation.oldValue;
-                    detail.value = mutation.target.getAttribute(mutation.attributeName);
+                    Object.assign(detail, attributeValues(mutation));
                 } else if (mutation.type === "childList") {
                     detail.added = mutation.addedNodes.length;
                     detail.removed = mutation.removedNodes.length;
