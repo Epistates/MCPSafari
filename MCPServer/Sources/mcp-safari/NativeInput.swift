@@ -552,16 +552,113 @@ extension SafariMCPServer {
         return source
     }
 
-    nonisolated static func moveNativePointer(to target: CGPoint, deadline: Double? = nil) throws -> String {
+    /// One on-screen window as the window server reports it. `bounds` are in
+    /// global display coordinates with the origin at the top left, which is the
+    /// same space the pointer events are posted in.
+    struct NativeWindowInfo: Equatable, Sendable {
+        let ownerProcessID: pid_t
+        let ownerName: String
+        let bounds: CGRect
+        let layer: Int
+        let alpha: Double
+    }
+
+    /// Every on-screen window, front to back, across all layers. Overridable so
+    /// the pointer guard can be tested against a made-up desktop.
+    typealias NativeWindowLister = @Sendable () -> [NativeWindowInfo]
+
+    nonisolated static let liveNativeWindows: NativeWindowLister = {
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else { return [] }
+        return list.compactMap { entry in
+            guard let pid = entry[kCGWindowOwnerPID as String] as? Int,
+                  let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary)
+            else { return nil }
+            return NativeWindowInfo(
+                ownerProcessID: pid_t(pid),
+                ownerName: entry[kCGWindowOwnerName as String] as? String ?? "another application",
+                bounds: bounds,
+                layer: entry[kCGWindowLayer as String] as? Int ?? 0,
+                alpha: entry[kCGWindowAlpha as String] as? Double ?? 1
+            )
+        }
+    }
+
+    /// Whether the window at the top of the stack under `point` is Safari's.
+    ///
+    /// The frontmost check says Safari is the active application, which says
+    /// nothing about what is drawn at a given point: a window of another app can
+    /// sit over part of Safari, and so can the Dock or the menu bar. A pointer
+    /// event goes to whatever is topmost there, so a click aimed at a page
+    /// element would land in another app. Windows of every layer count, because
+    /// the Dock (layer 20) and the menu bar (layer 24) take pointer events just
+    /// as an ordinary window does. The two exceptions are fully transparent
+    /// windows, which take none, and the window server's own cursor window,
+    /// which follows the pointer and so is always under it.
+    nonisolated static func ensurePointerIsOverSafari(
+        at point: CGPoint,
+        windows: [NativeWindowInfo],
+        safariProcessIDs: Set<pid_t>
+    ) throws {
+        let cursorLayer = Int(CGWindowLevelForKey(.cursorWindow))
+        let topmost = windows.first { window in
+            window.bounds.contains(point) && window.alpha > 0 && window.layer < cursorLayer
+        }
+        guard let topmost, safariProcessIDs.contains(topmost.ownerProcessID) else {
+            throw NativeInputError(failure: nativePointerObscuredFailure(at: point, by: topmost?.ownerName))
+        }
+    }
+
+    /// The refusal for a pointer target that Safari is not showing. The same
+    /// family as losing focus before anything was sent: nothing went out, so the
+    /// call can be retried once the window is out of the way.
+    nonisolated static func nativePointerObscuredFailure(at point: CGPoint, by owner: String?) -> ToolFailure {
+        let spot = "(\(Int(point.x)), \(Int(point.y)))"
+        let cause = owner.map { "a window of \($0) is on top of" } ?? "no window is at"
+        return ToolFailure(
+            code: "native_input_focus_lost",
+            message: "Safari is not showing the point \(spot) because \(cause) it, so nothing was sent. Native input posts a real pointer event at that spot, which would go to whatever is there instead. Ask the user to bring the Safari window to the front or move the other window, or omit native to use synthetic input, which does not depend on what is on screen.",
+            retryable: true,
+            recoveryAction: "ask_user"
+        )
+    }
+
+    private nonisolated static func ensurePointersAreOverSafari(_ points: [CGPoint], windows: NativeWindowLister) throws {
+        let windows = windows()
+        let safariProcessIDs = Set(
+            NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").map(\.processIdentifier)
+        )
+        for point in points {
+            try ensurePointerIsOverSafari(at: point, windows: windows, safariProcessIDs: safariProcessIDs)
+        }
+    }
+
+    nonisolated static func moveNativePointer(
+        to target: CGPoint,
+        deadline: Double? = nil,
+        windows: NativeWindowLister = liveNativeWindows
+    ) throws -> String {
         let source = try nativeEventSource(deadline: deadline)
+        try ensurePointersAreOverSafari([target], windows: windows)
         let start = CGEvent(source: nil)?.location ?? target
         try postPointerPath(from: start, to: target, mouseType: .mouseMoved, source: source)
         try ensureSafariIsFrontmost(eventsAlreadySent: true)
         return "Moved pointer to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
-    nonisolated static func dragNativePointer(from start: CGPoint, to target: CGPoint, deadline: Double? = nil) throws -> String {
+    nonisolated static func dragNativePointer(
+        from start: CGPoint,
+        to target: CGPoint,
+        deadline: Double? = nil,
+        windows: NativeWindowLister = liveNativeWindows
+    ) throws -> String {
         let source = try nativeEventSource(deadline: deadline)
+        // Both ends up front: a drag refused at its destination would otherwise
+        // already have the button down at its source.
+        try ensurePointersAreOverSafari([start, target], windows: windows)
         try postMouse(type: .mouseMoved, at: start, source: source)
         Thread.sleep(forTimeInterval: 0.05)
         try postMouse(type: .leftMouseDown, at: start, source: source)
