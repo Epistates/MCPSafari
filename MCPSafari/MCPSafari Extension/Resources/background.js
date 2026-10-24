@@ -19,9 +19,17 @@ async function getActiveTabId() {
             // through here would drop the caller's pinned tab over a question
             // the user has not answered yet.
             if (err instanceof DeadlineExceeded) throw permissionRequiredError(null, true);
-            // Tab was closed, clear selection
-            selectedTabId = null;
-            persistSelectedTab(null);
+            // Falling through to the user's active tab here sent the next
+            // untabbed `type_text` or `click` to whatever they happened to be
+            // looking at. A pinned tab that is gone is an error the caller has
+            // to hear about; one that failed for any other reason keeps its pin.
+            if (await tabIsGone(selectedTabId)) {
+                const closedId = selectedTabId;
+                selectedTabId = null;
+                persistSelectedTab(null);
+                throw tabClosedError(closedId);
+            }
+            throw err;
         }
     }
     let tabs;
@@ -38,6 +46,19 @@ async function getActiveTabId() {
     }
     if (tabs.length === 0) throw new Error("No active tab found");
     return tabs[0].id;
+}
+
+// `tabs.get` rejects with a message that differs between browsers and says
+// nothing a caller could branch on, so absence is confirmed against the list.
+// Anything short of a clean "not in the list" counts as not gone: losing a pin
+// over a listing that itself failed is the bug this exists to prevent.
+async function tabIsGone(tabId) {
+    try {
+        const tabs = await withDeadline(browser.tabs.query({}), TAB_LISTING_TIMEOUT_MS);
+        return !tabs.some((tab) => tab.id === tabId);
+    } catch {
+        return false;
+    }
 }
 
 function delay(ms) {

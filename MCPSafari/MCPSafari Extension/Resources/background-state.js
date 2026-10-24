@@ -58,6 +58,19 @@ function permissionRequiredError(origin, pending) {
     return error;
 }
 
+// The tab `select_tab` pinned is gone. Not retryable as it stands: repeating the
+// call finds the same absence, and the caller has to choose a tab again.
+function tabClosedError(tabId) {
+    const error = new Error(
+        `The tab pinned with select_tab (id ${tabId}) no longer exists, so this call was not run. `
+        + `Call tabs_context to list the open tabs, then select_tab again.`
+    );
+    error.code = "tab_closed";
+    error.retryable = false;
+    error.recoveryAction = "call_tabs_context";
+    return error;
+}
+
 // The origin is what Safari grants by, so it is the unit anything asking the
 // user to grant something has to speak in. Also the part of a URL with no
 // secrets in it, which is why unreachable frames are named this way.
