@@ -89,10 +89,10 @@ Tokens are written only under `~/Library/Application Support/MCPSafari/`. Earlie
 
 ### Input validation
 
-- URL schemes restricted to `http`, `https`, `about`, and `file`
+- URL schemes restricted to `http`, `https`, `about`, and `file`, judged after the normalization the browser applies (leading and trailing control characters and spaces dropped, tabs and newlines removed), and the normalized URL is what is sent
 - Navigation actions validated against an allowlist
 - Optional arguments of the wrong type rejected with `invalid_input`, never read as absent, so a mistyped filter cannot return unfiltered data and a mistyped flag cannot fall back to its default
-- Regex patterns capped at 200 characters and validated before forwarding
+- Regex patterns held to the bounded subset (at most 200 UTF-16 code units, no repetition, groups, or backreferences) and validated by the server before forwarding, so the check does not depend on the page-world filter, which a page can rewrite
 - Wait durations capped at 300 seconds
 - File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call
 - `find` returns at most 50 matches per call

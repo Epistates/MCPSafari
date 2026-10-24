@@ -297,7 +297,7 @@ limits (1,000 console messages, 500 network requests and 500 resource entries) a
 `pattern` and `urlPattern` support a bounded regex subset: literals, dots, anchors,
 character classes, escaped characters, and alternation, up to 200 characters.
 Repetition (`*`, `+`, `?`, `{}`), groups, and backreferences are rejected, as are
-invalid patterns. Filter rejection never silently returns unfiltered data. For
+invalid patterns. The server applies the same rule before the request is forwarded, counting length in UTF-16 code units, so a pattern the page-side filter would refuse is refused up front. Filter rejection never silently returns unfiltered data. For
 example, use `error|warning` or `^https://example\.com/` rather than `(error)+`.
 
 The bridge accepts up to 128 in-flight requests and 32 MiB per WebSocket message.

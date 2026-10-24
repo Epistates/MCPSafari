@@ -202,27 +202,105 @@ extension SafariMCPServer {
 
     // MARK: Validators
 
-    /// The URL a tool may send the browser to. Shared by `navigate` and
-    /// `tabs_create`, which used to carry a copy each.
+    /// The URL a tool may send the browser to, as the browser will read it.
+    /// Shared by `navigate` and `tabs_create`.
+    ///
+    /// The scheme is judged on the string a browser parses, not on what
+    /// Foundation makes of the raw one. WebKit drops leading and trailing control
+    /// characters and spaces and deletes every tab and newline before it looks
+    /// for the scheme, so `" javascript:alert(1)"` and `"jav\tascript:alert(1)"`
+    /// are `javascript:` URLs to Safari whatever `URL(string:)` thinks. Judging
+    /// the same normalized string, and sending it, means the scheme that was
+    /// checked is the scheme that runs.
     nonisolated static func validatedNavigationURL(_ url: String) throws -> String {
-        guard let parsed = URL(string: url),
-              let scheme = parsed.scheme?.lowercased(),
-              allowedURLSchemes.contains(scheme)
+        let normalized = browserNormalizedURL(url)
+        guard let scheme = urlScheme(of: normalized),
+              allowedURLSchemes.contains(scheme.lowercased()),
+              URL(string: normalized) != nil
         else {
             throw ToolInputError("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")
         }
-        return url
+        return normalized
     }
 
-    /// A regex for `read_console` and `read_network`. Shared by both, which used
-    /// to carry a copy each.
+    private nonisolated static func browserNormalizedURL(_ url: String) -> String {
+        let scalars = Array(url.unicodeScalars)
+        // C0 controls and space at either end; tab, LF and CR anywhere.
+        let isStrippable: (Unicode.Scalar) -> Bool = { $0.value <= 0x20 }
+        guard let first = scalars.firstIndex(where: { !isStrippable($0) }),
+              let last = scalars.lastIndex(where: { !isStrippable($0) })
+        else { return "" }
+        var normalized = String.UnicodeScalarView()
+        normalized.append(contentsOf: scalars[first...last].filter { ![0x09, 0x0A, 0x0D].contains($0.value) })
+        return String(normalized)
+    }
+
+    /// The scheme of an absolute URL: an ASCII letter, then letters, digits,
+    /// `+`, `-` or `.`, then `:`. Nil for a relative reference such as `//host`.
+    private nonisolated static func urlScheme(of url: String) -> String? {
+        var scheme = ""
+        for (offset, scalar) in url.unicodeScalars.enumerated() {
+            if scalar == ":" { return scheme.isEmpty ? nil : scheme }
+            let isLetter = ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar)
+            let isContinuation = isLetter || ("0"..."9").contains(scalar) || "+-.".unicodeScalars.contains(scalar)
+            guard offset == 0 ? isLetter : isContinuation else { return nil }
+            scheme.unicodeScalars.append(scalar)
+        }
+        return nil
+    }
+
+    /// The longest pattern `read_console` and `read_network` accept, in UTF-16
+    /// code units, which is how the page-world filters count it.
+    nonisolated static let maxFilterPatternLength = 200
+
+    /// A regex for `read_console` and `read_network`, held to the same bounded
+    /// subset the page-world filters in console-interceptor.js and
+    /// network-interceptor.js enforce: at most 200 UTF-16 code units, none of
+    /// `( ) * + ? { }` outside an escape, and no backreference. Those are the
+    /// constructs that let matching work grow faster than pattern times input.
+    ///
+    /// The server is the gate rather than the page, because a page can replace
+    /// the page-side check along with everything else it can rewrite there, and
+    /// the call then costs nothing to refuse before the extension sees it.
     nonisolated static func validatedFilterPattern(_ pattern: String, name: String) throws -> String {
-        guard pattern.count <= 200 else {
-            throw ToolInputError("\(name) too long (max 200 characters)")
+        let length = pattern.utf16.count
+        guard length <= maxFilterPatternLength else {
+            throw ToolInputError("\(name) is too long: \(length) UTF-16 code units, max \(maxFilterPatternLength)")
+        }
+        guard isBoundedFilterSubset(pattern) else {
+            throw ToolInputError("Unsupported \(name): use literals, dots, anchors, character classes, or alternation; no repetition, groups, or backreferences.")
         }
         guard (try? NSRegularExpression(pattern: pattern)) != nil else {
             throw ToolInputError("Invalid regex \(name): \(pattern)")
         }
         return pattern
+    }
+
+    /// The same two tests the page-world filters make, in the same order of
+    /// operations. A backreference is a backslash and `1`-`9` or `k` found
+    /// anywhere in the raw pattern. Quantifiers and groups are looked for only
+    /// after every backslash and the character after it are dropped, as
+    /// `/\\./g` does there, which leaves a line terminator after a backslash in
+    /// place exactly as it does in JavaScript, where `.` does not match one.
+    private nonisolated static func isBoundedFilterSubset(_ pattern: String) -> Bool {
+        let units = Array(pattern.utf16)
+        let backslash: UInt16 = 0x5C
+        let backreferenceMarkers = Set("123456789k".utf16)
+        for (index, unit) in units.enumerated() where unit == backslash && index + 1 < units.count {
+            if backreferenceMarkers.contains(units[index + 1]) { return false }
+        }
+
+        let lineTerminators: Set<UInt16> = [0x0A, 0x0D, 0x2028, 0x2029]
+        let quantifiersAndGroups = Set("()*+?{}".utf16)
+        var index = 0
+        while index < units.count {
+            if units[index] == backslash, index + 1 < units.count, !lineTerminators.contains(units[index + 1]) {
+                index += 2
+                continue
+            }
+            if quantifiersAndGroups.contains(units[index]) { return false }
+            index += 1
+        }
+        return true
     }
 }
