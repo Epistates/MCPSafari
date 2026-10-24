@@ -10,10 +10,22 @@ const source = readFileSync(
 
 function loadInterceptor({ observerThrows = false } = {}) {
     let observer;
+    const nativeFetchCalls = [];
 
+    // Stands in for the browser's own: it records what the wrapper hands down.
     class XMLHttpRequest {
-        open() {}
+        constructor() { this.listeners = {}; this.status = 200; this.statusText = "OK"; }
+        open(...args) { this.opened = args; }
         send() {}
+        addEventListener(type, listener) { this.listeners[type] = listener; }
+    }
+
+    // A Request carries its own method and url, which is all the wrapper reads.
+    class Request {
+        constructor(url, init) {
+            this.url = url;
+            this.method = String(init?.method ?? "GET").toUpperCase();
+        }
     }
 
     class PerformanceObserver {
@@ -33,16 +45,20 @@ function loadInterceptor({ observerThrows = false } = {}) {
 
     const window = {
         addEventListener() {},
-        fetch: async (input) => ({
-            status: String(input).includes("feed") ? 200 : 404,
-            statusText: "OK",
-        }),
+        fetch: async (input, ...rest) => {
+            nativeFetchCalls.push([input, ...rest]);
+            return {
+                status: String(input).includes("feed") ? 200 : 404,
+                statusText: "OK",
+            };
+        },
         postMessage() {},
     };
     window.window = window;
 
     vm.runInNewContext(source, {
         PerformanceObserver,
+        Request,
         URL,
         XMLHttpRequest,
         location: { origin: "https://example.test" },
@@ -50,7 +66,7 @@ function loadInterceptor({ observerThrows = false } = {}) {
         window,
     });
 
-    return { observer, window };
+    return { observer, window, nativeFetchCalls, Request, XMLHttpRequest };
 }
 
 test("resource reads expose buffered subresource timings without changing the default feed", () => {
@@ -223,6 +239,83 @@ test("XHR and fetch capture still install when PerformanceObserver is unavailabl
     assert.deepEqual(readNetwork(window, { type: "resource" }), []);
 });
 
+
+// The wrappers sit in front of every request the page makes, so a capture bug
+// is a broken page. Each of these is a call the native function accepts.
+test("fetch with a null init is captured and reaches the native call unchanged", async () => {
+    const { window, nativeFetchCalls } = loadInterceptor();
+
+    const response = await window.fetch("https://example.test/api/feed", null);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(nativeFetchCalls[0], ["https://example.test/api/feed", null]);
+    assert.deepEqual(readNetwork(window, { type: "fetch" }).map((r) => [r.method, r.url]), [
+        ["GET", "https://example.test/api/feed"],
+    ]);
+});
+
+test("a Request carries its own method into the capture", async () => {
+    const { window, Request } = loadInterceptor();
+
+    await window.fetch(new Request("https://example.test/api/feed", { method: "post" }));
+    await window.fetch(new Request("https://example.test/api/feed", { method: "POST" }), { method: "put" });
+    await window.fetch(new Request("https://example.test/api/feed"));
+
+    assert.deepEqual(readNetwork(window, { type: "fetch" }).map((r) => r.method), ["POST", "PUT", "GET"]);
+});
+
+test("fetch with a URL object or an odd init is still captured", async () => {
+    const { window } = loadInterceptor();
+
+    await window.fetch(new URL("https://example.test/api/feed"), { method: 5 });
+    await window.fetch("https://example.test/api/feed", undefined);
+
+    assert.deepEqual(readNetwork(window, { type: "fetch" }).map((r) => r.method), ["5", "GET"]);
+});
+
+test("a throwing init getter does not turn into a wrapper failure", async () => {
+    const { window } = loadInterceptor();
+    const init = { get method() { throw new Error("getter"); } };
+
+    // The native fake does not read it, so the call succeeds; what matters is
+    // that the capture's own read of it could not take the request down.
+    const response = await window.fetch("https://example.test/api/feed", init);
+
+    assert.equal(response.status, 200);
+});
+
+test("XMLHttpRequest.open tolerates a method that is not a string", () => {
+    const { XMLHttpRequest } = loadInterceptor();
+
+    for (const method of [undefined, null, 5, { toString: () => "get" }]) {
+        const xhr = new XMLHttpRequest();
+        assert.doesNotThrow(() => xhr.open(method, "https://example.test/x"), String(method));
+        // The native open sees exactly what the page passed.
+        assert.equal(xhr.opened[0], method);
+    }
+});
+
+test("XMLHttpRequest.open with a lowercase method is captured upper-cased", () => {
+    const { window, XMLHttpRequest } = loadInterceptor();
+    const xhr = new XMLHttpRequest();
+
+    xhr.open("post", "https://example.test/api/feed");
+    xhr.send();
+    xhr.listeners.loadend();
+
+    assert.deepEqual(readNetwork(window, { type: "xhr" }).map((r) => [r.method, r.url]), [
+        ["POST", "https://example.test/api/feed"],
+    ]);
+});
+
+test("XMLHttpRequest.open tolerates a url that cannot become a string", () => {
+    const { XMLHttpRequest } = loadInterceptor();
+    const xhr = new XMLHttpRequest();
+    const hostile = { toString() { throw new Error("no string for you"); } };
+
+    assert.doesNotThrow(() => xhr.open("GET", hostile));
+    assert.doesNotThrow(() => xhr.send());
+});
 
 test("resource URLs have a per-entry cap with a truncation marker", () => {
     const { observer, window } = loadInterceptor();
