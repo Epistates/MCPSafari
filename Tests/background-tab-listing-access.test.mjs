@@ -42,7 +42,7 @@ function loadBackground({ stored = {}, slowStorage = false } = {}) {
             executeScript: async ({ target }) => {
                 calls.scripting += 1;
                 const tab = TABS.find((candidate) => candidate.id === target.tabId);
-                if (tab && tab.url && tab.url.startsWith("https://refused.example")) {
+                if (tab && tab.url && new URL(tab.url).origin === "https://refused.example") {
                     throw new Error("This extension does not have access to this tab");
                 }
                 return [{ result: true }];
@@ -233,7 +233,7 @@ test("the remembered set is capped and evicts the origin confirmed longest ago",
     assert.equal(harness.evaluate('grantedOrigins.has("https://site0.example")'), true);
     assert.equal(harness.evaluate('grantedOrigins.has("https://one-more.example")'), true);
     assert.equal(harness.stored.grantedOrigins.length, cap);
-    assert.equal(harness.stored.grantedOrigins.includes("https://site1.example"), false);
+    assert.equal(harness.stored.grantedOrigins.some((origin) => origin === "https://site1.example"), false);
 });
 
 test("a stored set larger than the cap is trimmed on load, keeping the most recent", async () => {
