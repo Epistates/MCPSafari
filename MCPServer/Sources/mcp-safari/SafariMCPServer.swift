@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import MCP
+import struct os.OSAllocatedUnfairLock
 
 /// Core MCP server that registers Safari automation tools and bridges
 /// tool calls to the Safari extension via WebSocket.
@@ -165,12 +166,58 @@ actor SafariMCPServer {
         let handle = try TabHandle.resolve(args["tabId"])
         var params = params
         if let handle { params["tabId"] = AnyCodable(handle.tabID) }
-        return try await bridge.send(
+        // Resolved here rather than left to the bridge, so the profile a request
+        // went to is known and can qualify the tab the extension reports back.
+        let profileIndex: Int
+        if let handle { profileIndex = handle.profileIndex } else { profileIndex = try await resolveProfileIndex(args) }
+        var response = try await bridge.send(
             action: action,
             params: params,
             timeout: timeout ?? Self.bridgeTimeout(args),
-            profileIndex: handle?.profileIndex
+            profileIndex: profileIndex
         )
+        response.profileIndex = profileIndex
+        if let tab = Self.resolvedHandle(of: response) { Self.batchPin?.recordFirst(tab) }
+        return response
+    }
+
+    /// The tab the extension resolved for a response, named by a handle.
+    static func resolvedHandle(of response: BridgeResponse) -> TabHandle? {
+        guard let tabID = response.resolvedTabId, let profileIndex = response.profileIndex else { return nil }
+        return TabHandle(profileIndex: profileIndex, tabID: tabID)
+    }
+
+    /// `args` with `tabId` filled in from the tab `response` was resolved against,
+    /// when the caller named none.
+    ///
+    /// A call that names no tab acts on whichever tab is selected at the time,
+    /// and the follow-ups it makes itself (the wait, the snapshot, the end of a
+    /// trace) are separate requests that would each pick again. If the user, or
+    /// a parallel call, moves the selection in between, they land on a different
+    /// tab than the action did. An older extension reports no tab, and the
+    /// arguments are returned as they were.
+    static func pinned(_ args: [String: Value], to response: BridgeResponse) -> [String: Value] {
+        guard args["tabId"] == nil || args["tabId"] == .null,
+              let handle = resolvedHandle(of: response)
+        else { return args }
+        var pinned = args
+        pinned["tabId"] = .string(handle.description)
+        return pinned
+    }
+
+    /// The first tab a `run_steps` batch resolved, so the steps after it act on
+    /// the same one when the batch names none. Set around each step by
+    /// `handleRunSteps`, and read by `send`, which is where responses arrive.
+    @TaskLocal static var batchPin: BatchTabPin?
+
+    final class BatchTabPin: Sendable {
+        private let first = OSAllocatedUnfairLock<TabHandle?>(initialState: nil)
+
+        var handle: TabHandle? { first.withLock { $0 } }
+
+        func recordFirst(_ handle: TabHandle) {
+            first.withLock { if $0 == nil { $0 = handle } }
+        }
     }
 
     /// Rewrites the `id` of a tab object the extension returned into the handle
@@ -514,7 +561,9 @@ actor SafariMCPServer {
                 error: nil,
                 errorCode: nil,
                 retryable: nil,
-                recoveryAction: nil
+                recoveryAction: nil,
+                resolvedTabId: preparation.resolvedTabId,
+                profileIndex: preparation.profileIndex
             )
             return try await resultAfterAction(response, args, traceSession: traceSession)
         } catch {
@@ -722,6 +771,7 @@ actor SafariMCPServer {
         var batchArgs = args
         batchArgs["_batchDeadline"] = .double(ProcessInfo.processInfo.systemUptime + plan.timeout)
         let traceSession = try await startTraceIfNeeded(batchArgs)
+        let pin = BatchTabPin()
         var results: [Value] = []
         var content: [Tool.Content] = []
 
@@ -745,7 +795,18 @@ actor SafariMCPServer {
 
             var stepArguments = step.arguments
             stepArguments["_batchDeadline"] = batchArgs["_batchDeadline"]
-            let result = await handleToolCall(.init(name: step.tool, arguments: stepArguments))
+            // With no batch tab, step 1 acts on whichever tab is selected and
+            // every later step acts on that same one, even if the selection
+            // moves while the batch runs.
+            if stepArguments["tabId"] == nil, let tab = pin.handle {
+                stepArguments["tabId"] = .string(tab.description)
+            }
+            let result = await Self.$batchPin.withValue(pin) {
+                await handleToolCall(.init(name: step.tool, arguments: stepArguments))
+            }
+            if batchArgs["tabId"] == nil, let tab = pin.handle {
+                batchArgs["tabId"] = .string(tab.description)
+            }
             content.append(Self.textContent("--- Step \(index): \(step.tool) ---"))
             content.append(contentsOf: result.content)
             results.append(try .object([
@@ -867,6 +928,8 @@ actor SafariMCPServer {
     private struct TraceSession {
         let id: String
         let duration: Double
+        /// The tab `start_trace` resolved, when the extension reported one.
+        let tab: TabHandle?
     }
 
     private func resultAfterAction(
@@ -875,6 +938,8 @@ actor SafariMCPServer {
         wantSnapshot: Bool? = nil,
         traceSession: TraceSession? = nil
     ) async throws -> CallTool.Result {
+        // Everything after the action goes to the tab the action went to.
+        let args = Self.pinned(args, to: response)
         var content = [Self.textContent(responseText(response))]
         var details: [String: Value] = ["result": Self.structuredPayload(response.data)]
         guard response.success else {
@@ -934,7 +999,11 @@ actor SafariMCPServer {
             throw ToolInputError("Trace did not return an id")
         }
 
-        return TraceSession(id: traceID, duration: options.duration)
+        return TraceSession(
+            id: traceID,
+            duration: options.duration,
+            tab: Self.resolvedHandle(of: response)
+        )
     }
 
     private func stopTraceResponse(
@@ -942,6 +1011,12 @@ actor SafariMCPServer {
         _ args: [String: Value],
         waitForDuration: Bool = true
     ) async throws -> BridgeResponse {
+        // The trace lives on the tab it was started on. Stopping it is aimed
+        // there when nothing more specific names a tab.
+        var args = args
+        if args["tabId"] == nil || args["tabId"] == .null, let tab = traceSession.tab {
+            args["tabId"] = .string(tab.description)
+        }
         if waitForDuration, traceSession.duration > 0 {
             try await Task.sleep(for: .seconds(min(traceSession.duration, Self.batchRemaining(args))))
         }

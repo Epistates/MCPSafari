@@ -207,16 +207,27 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     // Every request the extension received, in order, so a test can show that a
     // refused call never reached it.
     const received = [];
+    // The tab the user has selected, which a request that names none acts on.
+    // `moveSelectionAfter` makes the user switch tabs once that action has been
+    // answered, the way they can while a multi-request call is still running.
+    let selectedTab = 7;
+    let moveSelectionAfter;
+    const requests = [];
+    const untargeted = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab"]);
     await connect("default", async ({ action, params }) => {
         sentActions.add(action);
         received.push(action);
+        requests.push({ action, tabId: params.tabId });
         inFlight.set(action, (inFlight.get(action) ?? 0) + 1);
         peakInFlight.set(action, Math.max(peakInFlight.get(action) ?? 0, inFlight.get(action)));
         if (answerDelayMs) await new Promise((resolve) => setTimeout(resolve, answerDelayMs));
         inFlight.set(action, inFlight.get(action) - 1);
-        if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user" };
+        // Reported on success and failure alike, null where no tab is involved.
+        const resolvedTabId = untargeted.has(action) ? null : (params.tabId ?? selectedTab);
+        if (action === moveSelectionAfter) selectedTab = 9;
+        if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user", resolvedTabId };
         const data = responseData(action, params);
-        return { success: true, data: typeof data === "string" ? data : JSON.stringify(data) };
+        return { success: true, data: typeof data === "string" ? data : JSON.stringify(data), resolvedTabId };
     });
 
     const { tools } = await call("tools/list");
@@ -317,6 +328,59 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await Promise.all([0, 1, 2, 3].map(() => tool("snapshot")));
     assert.ok(peakInFlight.get("snapshot") > 1, "the fixture never overlapped two plain reads");
     answerDelayMs = 0;
+
+    // A call that names no tab acts on the selected one, and its own follow-ups
+    // are separate requests. The extension reports the tab it resolved, and the
+    // follow-ups go to that tab even if the user switches while the call runs.
+    const sentSince = (start) => requests.slice(start).map(({ action, tabId }) => `${action}:${tabId ?? "-"}`);
+    selectedTab = 7;
+    moveSelectionAfter = "click";
+    let start = requests.length;
+    await tool("click", { selector: "body", waitForText: "Done", includeSnapshot: true });
+    moveSelectionAfter = undefined;
+    assert.deepEqual(sentSince(start), ["click:-", "wait:7", "snapshot:7"]);
+
+    selectedTab = 7;
+    moveSelectionAfter = "click";
+    start = requests.length;
+    await tool("click", { selector: "body", trace: true, traceDuration: 0 });
+    moveSelectionAfter = undefined;
+    assert.deepEqual(sentSince(start), ["start_trace:-", "click:-", "stop_trace:7"]);
+
+    // An explicit tab is left alone.
+    selectedTab = 9;
+    start = requests.length;
+    await tool("click", { selector: "body", tabId: "p0t3", includeSnapshot: true });
+    assert.deepEqual(sentSince(start), ["click:3", "snapshot:3"]);
+
+    // A batch with no tab pins the first step's tab for every later step, and
+    // for its final snapshot and trace.
+    selectedTab = 7;
+    moveSelectionAfter = "click";
+    start = requests.length;
+    const pinnedBatch = await tool("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body" } },
+            { tool: "hover", arguments: { selector: "body" } },
+            { tool: "wait", arguments: { text: "Done" } },
+            { tool: "click", arguments: { selector: "body", tabId: "p0t3" } },
+        ],
+        includeSnapshot: true, trace: true, traceDuration: 0,
+    });
+    moveSelectionAfter = undefined;
+    assert.equal(pinnedBatch.structuredContent.completedSteps, 4);
+    assert.deepEqual(sentSince(start), [
+        "start_trace:-", "click:-", "hover:7", "wait:7", "click:3", "stop_trace:7", "snapshot:7",
+    ]);
+    selectedTab = 7;
+
+    // A batch that names a tab uses it throughout.
+    start = requests.length;
+    await tool("run_steps", {
+        tabId: "p0t5",
+        steps: [{ tool: "click", arguments: { selector: "body" } }, { tool: "wait", arguments: { seconds: 0 } }],
+    });
+    assert.deepEqual(sentSince(start), ["click:5"]);
 
     // A wrong-typed argument is refused before the extension hears of the call.
     // Reading it as absent would have run the call with a default the caller

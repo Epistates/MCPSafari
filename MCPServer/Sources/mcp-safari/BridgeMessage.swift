@@ -24,6 +24,17 @@ struct BridgeResponse: Codable, Sendable {
     let errorCode: String?
     let retryable: Bool?
     let recoveryAction: String?
+    /// The tab the extension resolved for this request, as its own tab id, on
+    /// success and failure alike. Null for requests that name no tab to resolve
+    /// (listing, creating, closing, selecting) and absent from an older extension.
+    var resolvedTabId: Int?
+    /// The profile the request was routed to. Not on the wire: the server sets
+    /// it, because the tab id above only means something together with it.
+    var profileIndex: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, success, data, error, errorCode, retryable, recoveryAction, resolvedTabId
+    }
 
     var toolFailure: ToolFailure {
         ToolFailure(

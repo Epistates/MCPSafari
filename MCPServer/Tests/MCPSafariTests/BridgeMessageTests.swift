@@ -23,6 +23,40 @@ struct BridgeMessageTests {
         #expect(decoded.params["fields"]?.objectValue?["#subscribed"]?.boolValue == true)
     }
 
+    // The extension names the tab it resolved at the top level of every reply,
+    // success or failure, and null where no tab is involved. An older extension
+    // sends nothing, which must keep decoding.
+    @Test func bridgeResponseReadsTheResolvedTabWhenThereIsOne() throws {
+        func decode(_ json: String) throws -> BridgeResponse {
+            try JSONDecoder().decode(BridgeResponse.self, from: Data(json.utf8))
+        }
+        #expect(try decode(#"{"id":"1","success":true,"data":"ok","resolvedTabId":42}"#).resolvedTabId == 42)
+        #expect(try decode(#"{"id":"1","success":false,"error":"no","resolvedTabId":7}"#).resolvedTabId == 7)
+        #expect(try decode(#"{"id":"1","success":true,"data":"[]","resolvedTabId":null}"#).resolvedTabId == nil)
+        #expect(try decode(#"{"id":"1","success":true,"data":"ok"}"#).resolvedTabId == nil)
+        // The profile is the server's to set, never read off the wire.
+        #expect(try decode(#"{"id":"1","success":true,"profileIndex":3}"#).profileIndex == nil)
+    }
+
+    @Test func followUpsAreAimedAtTheTabTheActionResolved() {
+        func reply(tab: Int?, profile: Int?) -> BridgeResponse {
+            BridgeResponse(
+                id: "1", success: true, data: nil, error: nil, errorCode: nil,
+                retryable: nil, recoveryAction: nil, resolvedTabId: tab, profileIndex: profile
+            )
+        }
+        let pinned = SafariMCPServer.pinned(["selector": "#a"], to: reply(tab: 7, profile: 2))
+        #expect(pinned["tabId"]?.stringValue == "p2t7")
+        #expect(pinned["selector"]?.stringValue == "#a")
+
+        // A named tab is never replaced, an older extension reports none, and a
+        // tab id without its profile cannot be turned into a handle.
+        #expect(SafariMCPServer.pinned(["tabId": "p0t3"], to: reply(tab: 7, profile: 0))["tabId"]?.stringValue == "p0t3")
+        #expect(SafariMCPServer.pinned([:], to: reply(tab: nil, profile: 0))["tabId"] == nil)
+        #expect(SafariMCPServer.pinned([:], to: reply(tab: 7, profile: nil))["tabId"] == nil)
+        #expect(SafariMCPServer.pinned(["tabId": .null], to: reply(tab: 7, profile: 1))["tabId"]?.stringValue == "p1t7")
+    }
+
     @Test func bridgeResponsePreservesErrors() throws {
         let response = BridgeResponse(
             id: "request-1",

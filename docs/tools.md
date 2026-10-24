@@ -121,6 +121,8 @@ Console and network capture run in the page's JavaScript context. Pages can obse
 
 Safari runs a separate, complete instance of the extension in every profile, and each instance numbers its own tabs, so tab 5 names a different page in each one. The handle carries the profile the way an element UID carries its frame. Omit `tabId` to act on the selected tab of the selected profile.
 
+A call that names no tab acts on the selected tab, and its follow-ups stay on that same tab: the extension reports which tab it resolved, and the post-action wait, the `includeSnapshot` snapshot and the end of a trace are sent to it, so switching tabs while a call runs does not split it across two pages. A `run_steps` batch that names no tab does the same, taking the first step's tab for every later step and for its final snapshot and trace. (An older extension reports no tab, and then each request picks the selected tab itself.)
+
 Naming a profile that is not connected fails with `profile_not_connected` rather than falling back to another one, because answering from a different browser window is worse than refusing.
 
 `tabs_context`, `tabs_create` and `select_tab` mark each tab `access: "granted"` or `"not_granted"`, with an `accessHint` pointing at the toolbar popup when it is not granted. `select_tab` on such a tab still succeeds and pins the tab's profile. The result also says in prose, once for a whole listing, that reading or acting on those tabs will fail with `permission_required` until the user grants the site.
