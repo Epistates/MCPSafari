@@ -37,7 +37,7 @@ enum ProtectedPaths {
 
     /// What is protected by default: the known roots, plus whatever the bridge
     /// currently writes to, in case that is somewhere else.
-    static let defaultTokenRoots: [URL] = knownTokenRoots + WebSocketBridge.tokenRootURLs
+    static let defaultTokenRoots: [URL] = knownTokenRoots + [WebSocketBridge.applicationSupportDirectoryURL]
 
     /// The folded forms of the token roots, both as written and as resolved.
     static func roots(for tokenRoots: [URL] = defaultTokenRoots) -> [String] {

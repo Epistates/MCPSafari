@@ -134,9 +134,8 @@ struct ProtectedPathsTests {
 
     @Test func theDefaultRootsAreTheRealTokenRoots() {
         let defaults = ProtectedPaths.defaultRoots
-        for root in WebSocketBridge.tokenRootURLs {
-            #expect(defaults.contains(root.standardizedFileURL.path.lowercased()))
-        }
+        let root = WebSocketBridge.applicationSupportDirectoryURL
+        #expect(defaults.contains(root.standardizedFileURL.path.lowercased()))
         #expect(ProtectedPaths.isProtected(WebSocketBridge.tokenDirectoryURL.appendingPathComponent("8089").path))
     }
 
