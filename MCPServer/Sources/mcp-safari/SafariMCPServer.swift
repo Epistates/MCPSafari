@@ -1,12 +1,6 @@
-import AppKit
-import ApplicationServices
-import Carbon
-import CoreGraphics
 import Foundation
-import ImageIO
 import Logging
 import MCP
-import UniformTypeIdentifiers
 
 /// Core MCP server that registers Safari automation tools and bridges
 /// tool calls to the Safari extension via WebSocket.
