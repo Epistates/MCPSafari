@@ -137,6 +137,15 @@ test("an appex that reports no profile leaves the handshake on the default", asy
     assert.equal(harness.openLatestSocket().profileId, "default");
 });
 
+test("the extension dials the IPv4 loopback address, never the name localhost", async () => {
+    // The server binds 127.0.0.1 only. `localhost` can resolve to ::1 first, where
+    // a different local user could be listening, and the handshake carries the token.
+    const harness = backgroundHarness({ 8091: "current-token" });
+    await settle();
+
+    assert.equal(harness.sockets.at(-1).url, "ws://127.0.0.1:8091");
+});
+
 test("popup status polling does not restart disconnected ports", async () => {
     const harness = backgroundHarness({ 8091: "current-token" });
     await settle();

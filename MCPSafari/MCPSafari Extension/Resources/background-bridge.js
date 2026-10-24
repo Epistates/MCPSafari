@@ -17,7 +17,10 @@ function connectToPort(port) {
     }
 
     conn.state = "connecting";
-    const wsUrl = `ws://localhost:${port}`;
+    // The literal address the server binds, not the name `localhost`. The name can
+    // resolve to ::1 first, where another local user could be listening and would
+    // receive the handshake.
+    const wsUrl = `ws://127.0.0.1:${port}`;
     const socket = new WebSocket(wsUrl);
     conn.ws = socket;
 

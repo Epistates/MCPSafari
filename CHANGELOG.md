@@ -63,6 +63,9 @@
 - The native message handler no longer echoes unknown messages back, and no longer puts the home directory in its error. An unrecognised message gets `{"error": "unsupported_message"}`, a missing token gets `{"error": "no_token_files"}`, and the log records a fixed word rather than the message.
 - The sandbox grants are narrower. The extension's read exception covers `~/Library/Application Support/MCPSafari/tokens/` instead of the whole `MCPSafari` folder, and `com.apple.security.files.user-selected.read-only` is dropped from both the app and the extension, since neither opens a file panel. The two `.entitlements` files are now the only source: the app target names its file explicitly and the `ENABLE_*` build settings that used to synthesise a second copy are gone, so a local build and the release signing carry the same entitlements.
 
+### Security
+- The extension dials the bridge at `127.0.0.1` rather than `localhost`. The server binds the IPv4 loopback address only, but the name `localhost` can resolve to `::1` first, where a different local user could be listening and would receive the handshake, token included.
+
 ## [0.3.2] - 2026-09-14
 ### Added
 - `mcp-safari --help`, `-h`, `--version`, and `-V`. All four were rejected as unknown arguments before, so the only way to read the version off the binary was `mcp-safari doctor`, which reports on the whole install. Help goes to stdout and exits 0 when asked for explicitly, and wins over anything else on the command line; usage errors still go to stderr with a non-zero status.
