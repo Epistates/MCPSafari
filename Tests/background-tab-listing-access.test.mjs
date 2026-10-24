@@ -18,9 +18,14 @@ const TABS = [
     { id: 6, windowId: 2, index: 3, active: false, url: "file:///Users/someone/secret.txt", title: "secret.txt" },
 ];
 
-function loadBackground({ sessionStore = {} } = {}) {
+// `stored` is the browser's local storage, which outlives the harness: hand one
+// harness's to the next to simulate a restart. `slowStorage` makes the first
+// read of it hang until `releaseStorage()`.
+function loadBackground({ stored = {}, slowStorage = false } = {}) {
     const calls = { scripting: 0, permissionsContains: 0 };
-    const stored = { ...sessionStore };
+    const timers = [];
+    let releaseStorage = () => {};
+    const storageGate = slowStorage ? new Promise((resolve) => { releaseStorage = resolve; }) : null;
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         permissions: {
@@ -44,12 +49,14 @@ function loadBackground({ sessionStore = {} } = {}) {
             },
         },
         storage: {
-            local: { get: async () => ({}), set() {} },
-            session: {
-                get: async (key) => (key in stored ? { [key]: stored[key] } : {}),
-                set: (values) => { Object.assign(stored, values); },
-                remove: async () => {},
+            local: {
+                get: async (key) => {
+                    if (storageGate && key === "grantedOrigins") await storageGate;
+                    return key in stored ? { [key]: stored[key] } : {};
+                },
+                set: (values) => { Object.assign(stored, JSON.parse(JSON.stringify(values))); },
             },
+            session: { get: async () => ({}), set() {}, remove: async () => {} },
         },
         tabs: {
             query: async () => TABS,
@@ -71,7 +78,7 @@ function loadBackground({ sessionStore = {} } = {}) {
         Error,
         Promise,
         URL,
-        setTimeout: () => 0,
+        setTimeout: (callback) => timers.push(callback) - 1,
         WebSocket: class { send() {} },
     });
     vm.runInContext(source, context);
@@ -79,6 +86,8 @@ function loadBackground({ sessionStore = {} } = {}) {
     return {
         calls,
         stored,
+        releaseStorage,
+        fireTimers: () => { while (timers.length) timers.shift()(); },
         evaluate: (expression) => vm.runInContext(expression, context),
     };
 }
@@ -178,15 +187,92 @@ test("permissions.contains is not taken as a grant", async () => {
     assert.equal(harness.calls.permissionsContains, 0);
 });
 
-test("what was learned survives the background page being suspended", async () => {
+test("what was learned survives a restart", async () => {
     const first = loadBackground();
     await first.evaluate("ensureTabAccess(1)");
     assert.deepEqual([...first.stored.grantedOrigins], ["https://granted.example"]);
 
-    const resumed = loadBackground({ sessionStore: { grantedOrigins: first.stored.grantedOrigins } });
-    await resumed.evaluate("restoreSessionState()");
+    // A new background page over the same local storage, which is what a Safari
+    // restart is. Nothing has touched the site in this run.
+    const restarted = loadBackground({ stored: first.stored });
+    assert.equal((await listing(restarted)).get(1).access, "not_granted", "before startup has loaded it");
+    await restarted.evaluate("restoreSessionState()");
 
-    assert.equal((await listing(resumed)).get(1).access, "granted");
+    const tabs = await listing(restarted);
+    assert.equal(tabs.get(1).access, "granted");
+    assert.equal(tabs.get(1).title, "Inbox (3)");
+    assert.equal(restarted.calls.scripting, 0, "and nothing was probed to find out");
+});
+
+test("a refusal removes the origin from storage as well as from memory", async () => {
+    const first = loadBackground();
+    first.evaluate("grantedOrigins.add('https://refused.example'); grantedOrigins.add('https://granted.example')");
+    await first.evaluate("ensureTabAccess(1)");
+    await assert.rejects(first.evaluate("ensureTabAccess(3)"));
+
+    assert.deepEqual([...first.stored.grantedOrigins], ["https://granted.example"]);
+
+    const restarted = loadBackground({ stored: first.stored });
+    await restarted.evaluate("restoreSessionState()");
+    assert.equal((await listing(restarted)).get(3).access, "not_granted");
+});
+
+test("the remembered set is capped and evicts the origin confirmed longest ago", async () => {
+    const harness = loadBackground();
+    const cap = harness.evaluate("MAX_GRANTED_ORIGINS");
+    assert.equal(cap, 500);
+
+    harness.evaluate(`for (let i = 0; i < ${cap}; i += 1) rememberOriginAccess("https://site" + i + ".example", true)`);
+    assert.equal(harness.evaluate("grantedOrigins.size"), cap);
+    // Confirming site0 again makes it the most recent, so site1 is now the oldest.
+    harness.evaluate('rememberOriginAccess("https://site0.example", true)');
+    harness.evaluate('rememberOriginAccess("https://one-more.example", true)');
+
+    assert.equal(harness.evaluate("grantedOrigins.size"), cap);
+    assert.equal(harness.evaluate('grantedOrigins.has("https://site1.example")'), false);
+    assert.equal(harness.evaluate('grantedOrigins.has("https://site0.example")'), true);
+    assert.equal(harness.evaluate('grantedOrigins.has("https://one-more.example")'), true);
+    assert.equal(harness.stored.grantedOrigins.length, cap);
+    assert.equal(harness.stored.grantedOrigins.includes("https://site1.example"), false);
+});
+
+test("a stored set larger than the cap is trimmed on load, keeping the most recent", async () => {
+    const stored = { grantedOrigins: Array.from({ length: 700 }, (_, i) => `https://site${i}.example`) };
+    const harness = loadBackground({ stored });
+
+    await harness.evaluate("restoreSessionState()");
+
+    assert.equal(harness.evaluate("grantedOrigins.size"), 500);
+    assert.equal(harness.evaluate('grantedOrigins.has("https://site699.example")'), true);
+    assert.equal(harness.evaluate('grantedOrigins.has("https://site199.example")'), false);
+});
+
+test("slow storage does not hold startup: tabs read as not granted until it lands, then nothing is lost", async () => {
+    const first = loadBackground();
+    await first.evaluate("ensureTabAccess(1)");
+    const harness = loadBackground({ stored: first.stored, slowStorage: true });
+
+    const starting = harness.evaluate("restoreSessionState()");
+    // Past the deadline, startup carries on with nothing loaded.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        harness.fireTimers();
+    }
+    await starting;
+    assert.equal((await listing(harness)).get(1).access, "not_granted");
+
+    // Learned while the read is outstanding, and not written over what is stored.
+    await assert.rejects(harness.evaluate("ensureTabAccess(3)"));
+    harness.evaluate("rememberOriginAccess('https://learned.example', true)");
+    assert.deepEqual([...harness.stored.grantedOrigins], ["https://granted.example"]);
+
+    harness.releaseStorage();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal((await listing(harness)).get(1).access, "granted");
+    assert.deepEqual(
+        [...harness.stored.grantedOrigins].sort(),
+        ["https://granted.example", "https://learned.example"]
+    );
 });
 
 test("tabs_create reports the URL it was given but withholds the title of an unreached site", async () => {

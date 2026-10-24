@@ -158,18 +158,34 @@ async function ensureTabAccess(tabId) {
  * the tabs API returns a URL and title for every tab whether or not its site
  * was granted, so neither of those can tell the two apart.
  *
- * Learned by `ensureTabAccess` and dropped when it is refused, and kept in
- * session storage so a suspended background page does not forget it.
+ * Learned by `ensureTabAccess` and dropped the moment it is refused. Kept in
+ * local storage, so it survives a suspended background page and a Safari
+ * restart, and bounded: insertion order is recency of confirmation, oldest
+ * first, and the oldest is evicted past MAX_GRANTED_ORIGINS. A site the user
+ * revokes in Safari Settings stays in here until a call to it is refused.
  *
  * @type {Set<string>}
  */
 const grantedOrigins = new Set();
+const MAX_GRANTED_ORIGINS = 500;
 
 function rememberOriginAccess(origin, granted) {
-    if (!origin || grantedOrigins.has(origin) === granted) return;
-    if (granted) grantedOrigins.add(origin);
-    else grantedOrigins.delete(origin);
-    persistGrantedOrigins();
+    if (!origin) return;
+    if (!granted) {
+        if (grantedOrigins.delete(origin)) persistGrantedOrigins();
+        return;
+    }
+    // Re-adding moves it to the recent end. Only a change in what is stored is
+    // written: a probe lands on most calls, and its order alone is not worth a
+    // storage write.
+    const known = grantedOrigins.delete(origin);
+    grantedOrigins.add(origin);
+    let evicted = false;
+    while (grantedOrigins.size > MAX_GRANTED_ORIGINS) {
+        grantedOrigins.delete(grantedOrigins.values().next().value);
+        evicted = true;
+    }
+    if (!known || evicted) persistGrantedOrigins();
 }
 
 function failureResponse(id, error, resolvedTabId = null) {

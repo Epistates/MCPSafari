@@ -150,6 +150,9 @@ test("a tab that does not exist is refused and not pinned", async () => {
 test("a lookup parked behind a dialog does not stop the pin", async () => {
     // The deadline is fired by hand: the harness's timer only runs short waits.
     const harness = loadBackground({ getTab: () => new Promise(() => {}) });
+    // Startup arms a deadline of its own; let it finish so the one captured
+    // below is the lookup's.
+    await new Promise((resolve) => setImmediate(resolve));
     harness.evaluate("setTimeout = (callback) => { globalThis.__fire = callback; return 1; }");
 
     const pending = harness.request("select_tab", { tabId: 7 });

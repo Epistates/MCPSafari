@@ -313,12 +313,49 @@ function persistSelectedTab(tabId) {
     } catch (_) { /* storage may not be available */ }
 }
 
+// True only while a read that outran its deadline is still in flight. Writing
+// then would replace the stored set with the part loaded so far.
+let grantedOriginsReadPending = false;
+
 function persistGrantedOrigins() {
+    if (grantedOriginsReadPending) return;
     try {
-        if (browser.storage && browser.storage.session) {
-            browser.storage.session.set({ grantedOrigins: [...grantedOrigins] });
+        if (browser.storage && browser.storage.local) {
+            browser.storage.local.set({ grantedOrigins: [...grantedOrigins] });
         }
     } catch (_) { /* storage may not be available */ }
+}
+
+// Runs before the bridge connects, so it is ahead of the first `tabs_query`
+// unless storage is slow. Storage gets the same short deadline as a probe; past
+// it startup goes on with what is loaded, the rest of the stored origins read
+// as not granted, and the read is merged in whenever it does arrive. The stored
+// ones go first in the merge: they are older than anything learned meanwhile.
+async function loadGrantedOrigins() {
+    const read = (async () => {
+        try {
+            if (!browser.storage || !browser.storage.local) return;
+            const data = await browser.storage.local.get("grantedOrigins");
+            if (!Array.isArray(data.grantedOrigins)) return;
+            const merged = new Set([
+                ...data.grantedOrigins.filter((origin) => typeof origin === "string"),
+                ...grantedOrigins,
+            ]);
+            grantedOrigins.clear();
+            for (const origin of [...merged].slice(-MAX_GRANTED_ORIGINS)) grantedOrigins.add(origin);
+        } catch (_) { /* ignore */ }
+    })();
+    try {
+        await withDeadline(read, PERMISSION_PROBE_TIMEOUT_MS);
+    } catch (_) {
+        // DeadlineExceeded: the read carries on and merges when it lands, and
+        // what was learned in the meantime is written back then.
+        grantedOriginsReadPending = true;
+        read.then(() => {
+            grantedOriginsReadPending = false;
+            persistGrantedOrigins();
+        });
+    }
 }
 
 async function restoreSessionState() {
@@ -349,19 +386,10 @@ async function restoreSessionState() {
         }
     } catch (_) { /* ignore */ }
 
-    // Origins found reachable earlier in this browser session. Without them a
-    // suspended background page would describe every tab as not granted until
-    // each had been touched again.
-    try {
-        if (browser.storage && browser.storage.session) {
-            const data = await browser.storage.session.get("grantedOrigins");
-            if (Array.isArray(data.grantedOrigins)) {
-                for (const origin of data.grantedOrigins) {
-                    if (typeof origin === "string") grantedOrigins.add(origin);
-                }
-            }
-        }
-    } catch (_) { /* ignore */ }
+    // Sites found reachable on an earlier run. Without them every restart, and
+    // every suspension of the background page, would describe each tab as not
+    // granted until a call had touched its site again.
+    await loadGrantedOrigins();
 
     // Initialize all ports in the auto-scan range.
     // connectAll() will attempt each — servers that exist get connected,

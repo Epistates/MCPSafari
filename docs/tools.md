@@ -178,6 +178,8 @@ Safari reports a URL and title for every tab, granted or not, which would otherw
 
 A site counts as reached once a call has run on a page there. MCPSafari does not check ahead, because asking Safari about a site it has not been granted is what raises the permission dialog, and a listing would raise one per site. So right after the user grants a site, its tabs still read as `not_granted` until a call reads one of them, such as `snapshot` on that tab, and the next `tabs_context` shows them.
 
+Granted status is remembered across Safari restarts once a tool call has succeeded on that site, for up to 500 sites. A site revoked in Safari Settings keeps showing its URL and title in `tabs_context` until the next call to it is refused, which also forgets it.
+
 Every tool that reads or acts on a page is gated this way, including `navigate` with `back` or `forward` (which runs a script in the page) and `resize_window`. A few operations are browser chrome and need no access to any page, so they work on an ungranted tab: `tabs_context`, `tabs_create`, `close_tab`, `select_tab`, and `navigate` with `goto` or `reload`. That is deliberate. Going to a new URL is how a caller gets off a page it cannot use, and selecting a tab only records which tab later calls mean.
 
 `select_tab` on a tab whose site is not granted succeeds. It pins the tab and brings it forward, and its result reports `"access": "not_granted"` with the same `accessHint` instead of a URL and title. The first call that reads the page then fails with `permission_required`, naming the site to grant.
