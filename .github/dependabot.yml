@@ -1,10 +1,15 @@
 version: 2
 
+# A release is not proposed until it has been public for three days, which is
+# long enough for a hijacked or yanked release to be noticed and pulled before
+# it reaches a pull request here. Security updates ignore the cooldown.
 updates:
   - package-ecosystem: swift
     directory: /MCPServer
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       swift-dependencies:
         patterns:
@@ -14,6 +19,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       github-actions:
         patterns:
