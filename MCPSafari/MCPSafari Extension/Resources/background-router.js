@@ -96,10 +96,33 @@ async function routeAction(action, params) {
     throw new Error(`Unknown action: ${action}`);
 }
 
+// The tab tools that never fall back to the active tab. `tabs_close` and
+// `select_tab` demand a tab by name: closing whatever happens to be in front
+// because the caller left it out would be the wrong default. The other two have
+// no target tab to resolve.
+const TAB_FREE_ACTIONS = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab"]);
+
+function actsOnATab(action) {
+    return !TAB_FREE_ACTIONS.has(action)
+        && (BACKGROUND_HANDLERS.has(action) || CONTENT_ACTIONS.has(action) || CONTENT_PROXIES.has(action));
+}
+
+// A call that names no tab used to look the active tab up again at every step:
+// once per frame, once per follow-up. The user can change tabs between any two
+// of those, so one request could act on two pages. The target is decided here,
+// once, and travels as `params.tabId` from then on.
+async function withResolvedTab(action, params) {
+    if (!actsOnATab(action) || params.tabId) return params;
+    return { ...params, tabId: await getActiveTabId() };
+}
+
 async function handleRequest(request) {
-    const { id, action, params = {} } = request;
+    const { id, action, params: requested } = request;
+    let resolvedTabId = null;
 
     try {
+        const params = await withResolvedTab(action, requested ?? {});
+        resolvedTabId = params.tabId ?? null;
         const data = await routeAction(action, params);
         return {
             id,
@@ -112,8 +135,12 @@ async function handleRequest(request) {
             // a floor under every handler rather than a fix for that one.
             data: typeof data === "string" ? data : JSON.stringify(data ?? null),
             error: null,
+            // The tab this request acted on, or null for a tool that acts on
+            // none. Handed back so a caller sequencing several untabbed calls
+            // can pin the rest of the sequence to the first one's tab.
+            resolvedTabId,
         };
     } catch (err) {
-        return failureResponse(id, err);
+        return failureResponse(id, err, resolvedTabId);
     }
 }

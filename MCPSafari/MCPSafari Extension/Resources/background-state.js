@@ -146,7 +146,7 @@ async function ensureTabAccess(tabId) {
     }
 }
 
-function failureResponse(id, error) {
+function failureResponse(id, error, resolvedTabId = null) {
     return {
         id,
         success: false,
@@ -157,6 +157,7 @@ function failureResponse(id, error) {
         recoveryAction: typeof error.recoveryAction === "string"
             ? error.recoveryAction
             : "inspect_error",
+        resolvedTabId,
     };
 }
 
