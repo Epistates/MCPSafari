@@ -334,41 +334,23 @@ actor WebSocketBridge {
                 let newListener = try NWListener(using: makeWebSocketParameters(for: nwPort))
                 self.listener = newListener
 
-                let success = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                    nonisolated(unsafe) var resumed = false
-
-                    newListener.stateUpdateHandler = { [weak self] state in
-                        guard let self else { return }
-                        switch state {
-                        case .ready:
-                            if !resumed {
-                                resumed = true
-                                cont.resume(returning: true)
-                            }
-                            Task { await self.handleListenerState(state, listener: newListener) }
-                        // `.cancelled` is terminal too, and a concurrent `stop()`
-                        // can produce it while this continuation is still
-                        // suspended. Without it here, `start()` never returns and
-                        // takes the whole MCP server down with it, since
-                        // `withCheckedContinuation` cannot be cancelled either.
-                        case .failed, .cancelled:
-                            if !resumed {
-                                resumed = true
-                                cont.resume(returning: false)
-                            }
-                            Task { await self.handleListenerState(state, listener: newListener) }
-                        default:
-                            Task { await self.handleListenerState(state, listener: newListener) }
-                        }
-                    }
-
-                    newListener.newConnectionHandler = { [weak self] newConnection in
-                        guard let self else { return }
-                        Task { await self.handleNewConnection(newConnection) }
-                    }
-
-                    newListener.start(queue: self.networkQueue)
+                // `.cancelled` settles an attempt as well as `.ready` and `.failed`:
+                // a `stop()` that lands mid-sweep produces it, and an attempt that
+                // never settled would leave `start()` suspended for good. So does
+                // `.waiting`, and a deadline covers whatever else never arrives.
+                // See `ListenerAttempt`.
+                let (verdicts, report) = AsyncStream<Bool>.makeStream()
+                newListener.stateUpdateHandler = { [weak self] state in
+                    if let verdict = ListenerAttempt.verdict(for: state) { report.yield(verdict) }
+                    guard let self else { return }
+                    Task { await self.handleListenerState(state, listener: newListener) }
                 }
+                newListener.newConnectionHandler = { [weak self] newConnection in
+                    guard let self else { return }
+                    Task { await self.handleNewConnection(newConnection) }
+                }
+                newListener.start(queue: networkQueue)
+                let success = await ListenerAttempt.outcome(of: verdicts)
 
                 guard generation == lifecycleGeneration else {
                     discard(listener: newListener)
@@ -445,8 +427,15 @@ actor WebSocketBridge {
         logger.info("Will try to start the extension bridge again in \(delay)")
         rebindTask = Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
-            await self?.start()
+            await self?.rebind()
         }
+    }
+
+    private func rebind() async {
+        // Let go of this task's own handle first. `start()` cancels the pending
+        // retry, and a bind attempt run from a cancelled task fails at once.
+        rebindTask = nil
+        await start()
     }
 
     /// Removes this bridge's own per-port token for `port`, and nothing else.

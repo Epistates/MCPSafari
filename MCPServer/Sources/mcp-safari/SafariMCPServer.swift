@@ -35,7 +35,9 @@ actor SafariMCPServer {
     }
 
     func start() async throws {
-        await bridge.start()
+        // Not awaited: a bind that stalls must not hold up `initialize`. Until it
+        // finishes, tool calls fail with `bridge_unavailable` rather than waiting.
+        Task { await bridge.start() }
         await registerToolHandlers()
         let transport = ClientCapabilityNormalizingTransport(
             wrapping: StdioTransport(),

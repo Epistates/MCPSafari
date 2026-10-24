@@ -108,8 +108,15 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     });
     assert.equal(initialize.serverInfo.name, "mcp-safari");
     send({ method: "notifications/initialized" });
-    const statusResult = await tool("status");
-    const status = statusResult.structuredContent.status;
+    // The server answers `initialize` without waiting for its bridge to bind, so the
+    // listener may still be coming up on the first look.
+    let statusResult, status;
+    for (let attempt = 0; attempt < 50; attempt++) {
+        statusResult = await tool("status");
+        status = statusResult.structuredContent.status;
+        if (status.listener === "listening") break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     assert.deepEqual(status, JSON.parse(statusResult.content[0].text));
     assert.equal(status.listener, "listening");
     assert.ok(status.port > 0);
