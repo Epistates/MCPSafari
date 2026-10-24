@@ -58,6 +58,8 @@ Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the pa
 
 Native `press_key` refuses shortcuts that quit, close, hide, or leave Safari, or that lock, log out, or empty the Trash, with `invalid_input` and nothing sent. A real key event cannot be told apart from yours, so there is no page to contain it. A combination is refused when it holds Command plus Q, W, H, M, Tab, or Space; Control plus Space; Command and Option plus Escape; or Command and Shift plus Delete or Backspace. Extra modifiers do not get around it, so Command+Shift+Q and Control+Command+Q are refused too. Use `close_tab` to close a tab, or omit `native` to send the key to the page only. Native hover and drag move your real pointer; screen coordinates assume 100% page zoom. Before the first pointer event, the server finds the topmost window at each target point, including the Dock and the menu bar, and refuses with `native_input_focus_lost` and nothing sent unless it belongs to Safari, so a window of another app over the page cannot receive the click. `click` uses synthetic events and has no native mode. Running JavaScript does not make an event trusted.
 
+Tools that depend on what has focus run one at a time, in the order they arrive: native `type_text`, `press_key`, `hover` and `drag`, `screenshot`, and `select_tab` unless `bringToFront` is false. The extension focuses a tab or element and the server then acts on it, and a parallel call that moved focus in between would send the keystrokes or the click somewhere else. Other tools are not held up by them.
+
 ### Dialogs
 
 | Tool | Description |

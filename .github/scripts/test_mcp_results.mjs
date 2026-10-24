@@ -166,7 +166,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
             socket.addEventListener("open", () => socket.send(JSON.stringify({
                 hello: { clientNonce, extensionVersion: "9.9.9", protocolVersion: BRIDGE_PROTOCOL_VERSION, profileId },
             })));
-            socket.addEventListener("message", ({ data }) => {
+            socket.addEventListener("message", async ({ data }) => {
                 const message = JSON.parse(data);
                 if (message.challenge) {
                     serverNonce = message.challenge.serverNonce;
@@ -182,13 +182,22 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
                     else reject(new Error(`Authentication failed: ${message.error}`));
                     return;
                 }
-                socket.send(JSON.stringify({ id: message.id, ...respond(message) }));
+                socket.send(JSON.stringify({ id: message.id, ...(await respond(message)) }));
             });
         });
         await bounded(authenticated, "extension authentication");
     };
-    await connect("default", ({ action, params }) => {
+    // How many requests for each action the extension holds at once, and for how
+    // long it takes to answer one. The delay is what lets overlap happen at all.
+    const inFlight = new Map();
+    const peakInFlight = new Map();
+    let answerDelayMs = 0;
+    await connect("default", async ({ action, params }) => {
         sentActions.add(action);
+        inFlight.set(action, (inFlight.get(action) ?? 0) + 1);
+        peakInFlight.set(action, Math.max(peakInFlight.get(action) ?? 0, inFlight.get(action)));
+        if (answerDelayMs) await new Promise((resolve) => setTimeout(resolve, answerDelayMs));
+        inFlight.set(action, inFlight.get(action) - 1);
         if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user" };
         const data = responseData(action, params);
         return { success: true, data: typeof data === "string" ? data : JSON.stringify(data) };
@@ -271,6 +280,17 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.deepEqual(batch.structuredContent.trace, trace);
     assert.deepEqual([...exercised].sort(), tools.map(({ name }) => name).sort());
 
+    // A screenshot may activate its tab, and the extension's prepare step and the
+    // capture must not be pulled apart by a parallel call that focuses something
+    // else. The server serialises such calls end to end; an ordinary read is
+    // free to overlap, which is what shows the fixture could have caught it.
+    answerDelayMs = 40;
+    await Promise.all([0, 1, 2, 3].map(() => tool("screenshot")));
+    assert.equal(peakInFlight.get("screenshot"), 1, "screenshots overlapped at the extension");
+    await Promise.all([0, 1, 2, 3].map(() => tool("snapshot")));
+    assert.ok(peakInFlight.get("snapshot") > 1, "the fixture never overlapped two plain reads");
+    answerDelayMs = 0;
+
     failAction = "click";
     const failed = await tool("click", { selector: "body" }, false);
     assert.equal(failed.structuredContent.code, "permission_required");
@@ -280,6 +300,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(partial.structuredContent.tabs.length, 1);
     assert.equal(partial.structuredContent.profileFailures.length, 1);
     assert.match(partial.structuredContent.profileFailures[0], /Profile unavailable/);
+
 
     // The one boundary that spans both languages. This fixture answers any
     // action it is sent, including `default: Completed ${action}`, so every

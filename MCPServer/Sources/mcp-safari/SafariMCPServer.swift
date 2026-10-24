@@ -9,6 +9,11 @@ actor SafariMCPServer {
     private let bridge: WebSocketBridge
     private let logger: Logger
 
+    /// Held from the extension's prepare step through the act step of every tool
+    /// that depends on what has focus: native input, `screenshot`, and
+    /// `select_tab` when it brings the tab to the front.
+    private let focusLock = AsyncFIFOLock()
+
     init(port: UInt16 = 8089, logger: Logger) throws {
         self.logger = logger
         self.bridge = try WebSocketBridge(port: port, logger: logger)
@@ -338,7 +343,11 @@ actor SafariMCPServer {
         }
         var params: [String: AnyCodable] = [:]
         if let bringToFront = args["bringToFront"]?.boolValue { params["bringToFront"] = AnyCodable(bringToFront) }
-        let response = try await send("select_tab", args, params: params)
+        // Bringing a tab to the front moves focus, so it queues with the other
+        // focus-sensitive tools. Selecting without it touches nothing they use.
+        let response = args["bringToFront"]?.boolValue == false
+            ? try await send("select_tab", args, params: params)
+            : try await focusLock.withLock { try await send("select_tab", args, params: params) }
         guard response.success else { return textResult(response, as: "tab") }
         // Pinning the tab pins its profile too, so later calls that name no tab
         // stay in the browser window the caller just chose.
@@ -556,6 +565,11 @@ actor SafariMCPServer {
 
     // Shared flow for native input tools: permission, trace, bridge
     // preparation, then the CGEvent posting supplied by the caller.
+    //
+    // Preparation and posting run under the focus lock as one unit. The
+    // extension focuses the tab or element during preparation, and the events
+    // are only right while that focus holds; a parallel call that focuses
+    // something else in between would take the keystrokes or the click.
     private func runNativeAction(
         _ action: String,
         _ args: [String: Value],
@@ -564,12 +578,15 @@ actor SafariMCPServer {
         try Self.ensureNativeInputPermission()
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let preparation = try await send(action, args, params: interactionParams(args))
-            guard preparation.success else {
+            let (preparation, delivered) = try await focusLock.withLock { () -> (BridgeResponse, String?) in
+                let preparation = try await send(action, args, params: interactionParams(args))
+                guard preparation.success else { return (preparation, nil) }
+                return (preparation, try await perform(preparation))
+            }
+            guard let message = delivered else {
                 return try await resultAfterAction(preparation, args, traceSession: traceSession)
             }
 
-            let message = try await perform(preparation)
             let response = BridgeResponse(
                 id: preparation.id,
                 success: true,
@@ -686,7 +703,11 @@ actor SafariMCPServer {
         } catch {
             return Self.failureResult(toolFailure(for: error))
         }
-        let response = try await send("screenshot", args, params: params)
+        // The extension may activate the tab before capturing it, so the capture
+        // queues with the other focus-sensitive tools rather than racing them.
+        // The extension may activate the tab before capturing it, so the capture
+        // queues with the other focus-sensitive tools rather than racing them.
+        let response = try await focusLock.withLock { try await send("screenshot", args, params: params) }
 
         guard response.success, let raw = response.data?.stringValue else {
             return textResult(response, as: "screenshot")
