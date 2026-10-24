@@ -312,6 +312,14 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("read_console", { pattern: 5, clear: true }, /pattern must be a string/);
     await refuse("resize_window", { width: 800 }, /height is required/);
     await refuse("navigate", { url: "javascript:alert(1)" }, /disallowed scheme/);
+    // The wait and trace options are read before the action is sent. Checking
+    // them afterwards meant a caller who corrected the argument and retried
+    // submitted the form twice, or left a trace running that nothing stopped.
+    await refuse("click", { selector: "#submit", waitForSelector: "" }, /waitForSelector must not be empty/);
+    await refuse("click", { selector: "#submit", waitForText: 5 }, /waitForText must be a string/);
+    await refuse("click", { selector: "#submit", waitForText: "Done", waitTimeout: "5" }, /waitTimeout must be a number/);
+    await refuse("navigate", { url: "https://example.com/", trace: true, traceDuration: "long" }, /traceDuration must be a number/);
+    await refuse("type_text", { selector: "input", text: "x", trace: true, eventTypes: [""] }, /eventTypes must be an array/);
 
     failAction = "click";
     const failed = await tool("click", { selector: "body" }, false);

@@ -83,6 +83,45 @@ struct ToolParametersTests {
         #expect(refusal("wait", ["text": false]) == "text must be a string")
     }
 
+    // A caller who fixes the bad argument and retries would otherwise act twice.
+    @Test(arguments: SafariMCPServer.actionTools.sorted())
+    func everyActionToolChecksItsWaitOptionsBeforeActing(_ tool: String) {
+        #expect(refusal(tool, ["waitForSelector": 5]) == "waitForSelector must be a string")
+        #expect(refusal(tool, ["waitForSelector": ""]) == "waitForSelector must not be empty")
+        #expect(refusal(tool, ["waitForText": false]) == "waitForText must be a string")
+        #expect(refusal(tool, ["waitForText": ""]) == "waitForText must not be empty")
+        #expect(refusal(tool, ["waitForSelector": "#done", "waitTimeout": "5"]) == "waitTimeout must be a number")
+        // Wrong even when no wait was asked for: it would be dropped silently.
+        #expect(refusal(tool, ["waitTimeout": "5"]) == "waitTimeout must be a number")
+        #expect(refusal(tool, ["includeSnapshot": "true"]) == "includeSnapshot must be a boolean")
+        #expect(refusal(tool, ["waitForSelector": "#done", "waitForText": "Done", "waitTimeout": 5]) == nil)
+    }
+
+    @Test func traceOptionsAreCheckedBeforeStartTraceCanBeSent() {
+        #expect(refusal("click", ["trace": "yes"]) == "trace must be a boolean")
+        #expect(refusal("click", ["trace": true, "traceDuration": "long"]) == "traceDuration must be a number")
+        #expect(refusal("click", ["trace": true, "eventTypes": "dom.mutation"]) == "eventTypes must be an array of non-empty strings")
+        #expect(refusal("click", ["trace": true, "eventTypes": [""]]) == "eventTypes must be an array of non-empty strings")
+        #expect(refusal("run_steps", ["trace": true, "traceDuration": [1]]) == "traceDuration must be a number")
+        #expect(refusal("run_steps", ["includeSnapshot": 1]) == "includeSnapshot must be a boolean")
+        #expect(refusal("click", ["trace": true, "traceDuration": 5, "eventTypes": ["dom.mutation"]]) == nil)
+    }
+
+    @Test func theWaitAndTraceCapsHold() throws {
+        let wait = try #require(try SafariMCPServer.postActionWait(["waitForText": "x", "waitTimeout": 1e9]))
+        #expect(wait.timeout == 300)
+        #expect(try SafariMCPServer.postActionWait(["waitForText": "x", "waitTimeout": 301])?.timeout == 300)
+        #expect(try SafariMCPServer.postActionWait(["waitForText": "x", "waitTimeout": -1])?.timeout == 0.1)
+        #expect(try SafariMCPServer.postActionWait(["waitForText": "x"])?.timeout == 10)
+        #expect(try SafariMCPServer.postActionWait([:]) == nil)
+
+        #expect(try SafariMCPServer.traceOptions(["trace": true, "traceDuration": 999])?.duration == 30)
+        #expect(try SafariMCPServer.traceOptions(["trace": true, "traceDuration": -3])?.duration == 0)
+        #expect(try SafariMCPServer.traceOptions(["trace": true])?.duration == 2)
+        #expect(try SafariMCPServer.traceOptions(["trace": false, "traceDuration": 5]) == nil)
+        #expect(try SafariMCPServer.traceOptions([:]) == nil)
+    }
+
     @Test func toolsWithNothingToCheckPassThrough() {
         #expect(refusal("status", ["anything": 1]) == nil)
         #expect(refusal("click", ["selector": "#a"]) == nil)

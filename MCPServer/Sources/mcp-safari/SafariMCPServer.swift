@@ -717,8 +717,6 @@ actor SafariMCPServer {
         return textResult(response, as: "window")
     }
 
-    private static let maxTraceSeconds: Double = 30
-
     private func handleRunSteps(_ args: [String: Value]) async throws -> CallTool.Result {
         let plan: RunStepsPlan
         do {
@@ -932,18 +930,12 @@ actor SafariMCPServer {
     }
 
     private func startTraceIfNeeded(_ args: [String: Value]) async throws -> TraceSession? {
-        guard let traceValue = args["trace"] else { return nil }
-        guard let traceEnabled = traceValue.boolValue else { throw ToolInputError("trace must be a boolean") }
-        guard traceEnabled else { return nil }
+        // Every option is validated before `start_trace` goes out, so a bad one
+        // cannot leave a trace running that nothing will stop.
+        guard let options = try Self.traceOptions(args) else { return nil }
 
         var params: [String: AnyCodable] = [:]
-        if let value = args["eventTypes"] {
-            guard let values = value.arrayValue,
-                  values.allSatisfy({ $0.stringValue?.isEmpty == false }) else {
-                throw ToolInputError("eventTypes must be an array of non-empty strings")
-            }
-            params["eventTypes"] = AnyCodable(values.compactMap(\.stringValue))
-        }
+        if let eventTypes = options.eventTypes { params["eventTypes"] = AnyCodable(eventTypes) }
 
         let response = try await send("start_trace", args, params: params)
         guard response.success else { throw ToolInputError(responseText(response)) }
@@ -951,10 +943,7 @@ actor SafariMCPServer {
             throw ToolInputError("Trace did not return an id")
         }
 
-        return TraceSession(
-            id: traceID,
-            duration: try Self.cappedTraceDuration(args["traceDuration"])
-        )
+        return TraceSession(id: traceID, duration: options.duration)
     }
 
     private func stopTraceResponse(
@@ -970,19 +959,11 @@ actor SafariMCPServer {
     }
 
     private func waitAfterAction(_ args: [String: Value]) async throws -> BridgeResponse? {
-        guard args["waitForSelector"] != nil || args["waitForText"] != nil else { return nil }
+        guard let wait = try Self.postActionWait(args) else { return nil }
         var params: [String: AnyCodable] = [:]
-        if let selectorValue = args["waitForSelector"] {
-            guard let selector = selectorValue.stringValue else { throw ToolInputError("waitForSelector must be a string") }
-            guard !selector.isEmpty else { throw ToolInputError("waitForSelector must not be empty") }
-            params["selector"] = AnyCodable(selector)
-        }
-        if let textValue = args["waitForText"] {
-            guard let text = textValue.stringValue else { throw ToolInputError("waitForText must be a string") }
-            guard !text.isEmpty else { throw ToolInputError("waitForText must not be empty") }
-            params["text"] = AnyCodable(text)
-        }
-        let timeout = min(Self.cappedWaitTimeout(try Self.optionalNumber("waitTimeout", in: args)), Self.batchRemaining(args))
+        if let selector = wait.selector { params["selector"] = AnyCodable(selector) }
+        if let text = wait.text { params["text"] = AnyCodable(text) }
+        let timeout = min(wait.timeout, Self.batchRemaining(args))
         params["timeout"] = AnyCodable(timeout)
         return try await send(
             "wait", args,
@@ -993,13 +974,6 @@ actor SafariMCPServer {
 
     private func snapshotResponse(_ args: [String: Value]) async throws -> BridgeResponse {
         try await send("snapshot", args)
-    }
-
-    private static func cappedTraceDuration(_ value: Value?) throws -> Double {
-        if let value, Self.numberValue(value) == nil {
-            throw ToolInputError("traceDuration must be a number")
-        }
-        return max(0, min(Self.numberValue(value) ?? 2, Self.maxTraceSeconds))
     }
 
     private static func batchRemaining(_ args: [String: Value]) -> Double {

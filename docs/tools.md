@@ -254,7 +254,7 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 
 ### Post-action waits
 
-`navigate` and interaction tools support `waitForSelector`, `waitForText`, and `waitTimeout` to wait after a successful action before returning. When combined with `includeSnapshot: true`, the snapshot is captured after the wait.
+`navigate` and interaction tools support `waitForSelector`, `waitForText`, and `waitTimeout` to wait after a successful action before returning. When combined with `includeSnapshot: true`, the snapshot is captured after the wait. These options, and the trace options below, are checked before the action is sent, so a malformed one is refused without anything having happened and the corrected call is safe to send again. `waitTimeout` defaults to 10 seconds and is capped at 300.
 
 ### Page traces
 

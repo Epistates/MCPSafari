@@ -29,7 +29,15 @@ extension SafariMCPServer {
     /// the handler for every direct call, and by `run_steps` over each step while
     /// it plans, so a bad argument in step 7 is refused before step 1 acts.
     nonisolated static func preflight(tool: String, arguments args: [String: Value]) throws {
+        if actionTools.contains(tool) {
+            _ = try postActionWait(args)
+            _ = try traceOptions(args)
+            _ = try optionalBool("includeSnapshot", in: args)
+        }
         switch tool {
+        case "run_steps":
+            _ = try traceOptions(args)
+            _ = try optionalBool("includeSnapshot", in: args)
         case "tabs_create": _ = try tabsCreateParams(args)
         case "select_tab": _ = try selectTabParams(args)
         case "navigate": _ = try navigateParams(args)
@@ -173,6 +181,61 @@ extension SafariMCPServer {
             params[key] = AnyCodable(size)
         }
         return params
+    }
+
+    // MARK: Action options
+
+    /// The tools whose result goes through the post-action steps: the optional
+    /// wait, trace and snapshot that run after the action succeeded.
+    nonisolated static let actionTools: Set<String> = [
+        "navigate", "click", "type_text", "form_input", "select_option", "scroll",
+        "press_key", "hover", "drag", "upload_file", "drop_file", "handle_dialog",
+    ]
+
+    struct PostActionWait: Equatable {
+        let selector: String?
+        let text: String?
+        let timeout: Double
+    }
+
+    /// The wait to run after an action, or nil when none was asked for.
+    ///
+    /// Read before the action is sent, never after. These arguments used to be
+    /// checked only once the action had already run, so a caller who fixed a bad
+    /// `waitForSelector` and retried submitted the form a second time.
+    nonisolated static func postActionWait(_ args: [String: Value]) throws -> PostActionWait? {
+        let selector = try optionalString("waitForSelector", in: args)
+        let text = try optionalString("waitForText", in: args)
+        let timeout = try optionalNumber("waitTimeout", in: args)
+        if selector?.isEmpty == true { throw ToolInputError("waitForSelector must not be empty") }
+        if text?.isEmpty == true { throw ToolInputError("waitForText must not be empty") }
+        guard selector != nil || text != nil else { return nil }
+        return PostActionWait(selector: selector, text: text, timeout: cappedWaitTimeout(timeout))
+    }
+
+    struct TraceOptions: Equatable {
+        let eventTypes: [String]?
+        let duration: Double
+    }
+
+    nonisolated static let maxTraceSeconds: Double = 30
+
+    /// The trace to capture around an action, or nil when `trace` is not set.
+    /// Like the wait, it is read before anything is sent: `start_trace` used to go
+    /// out first and a bad `traceDuration` was found afterwards, leaving a trace
+    /// running that nothing would stop.
+    nonisolated static func traceOptions(_ args: [String: Value]) throws -> TraceOptions? {
+        let enabled = try optionalBool("trace", in: args)
+        let duration = try optionalNumber("traceDuration", in: args)
+        var eventTypes: [String]?
+        if let value = args["eventTypes"], value != .null {
+            guard let values = value.arrayValue,
+                  values.allSatisfy({ $0.stringValue?.isEmpty == false })
+            else { throw ToolInputError("eventTypes must be an array of non-empty strings") }
+            eventTypes = values.compactMap(\.stringValue)
+        }
+        guard enabled == true else { return nil }
+        return TraceOptions(eventTypes: eventTypes, duration: max(0, min(duration ?? 2, maxTraceSeconds)))
     }
 
     // MARK: Waiting
