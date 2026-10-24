@@ -113,6 +113,12 @@ A sensitive `<textarea>` also loses its default text from the snapshot, which wo
 
 The name test is a heuristic, so a secret under a name nobody has thought of is reported verbatim, and a field that was toggled out of password type inside a shadow root before the first snapshot reached that root is caught only by its name. Other field values are reported verbatim. This redaction does not cover every place a page may display a secret, or other outputs such as screenshots, HTML, and JavaScript results.
 
+### Tabs on sites you have not granted
+
+Safari's tabs API returns a URL and title for every open tab, including tabs on sites you never granted the extension, and the `tabs` permission is what allows that. `tabs_context`, `tabs_create`, `select_tab`, and `navigate` therefore describe a tab (its URL and its title) only when its site is known to be granted. The tab otherwise stays in the listing with its handle, window, and state and reports `"access": "not_granted"`, so an agent can still address it and is told what to ask you for.
+
+"Known" means a call has already run on a page of that site. It is not read from `permissions.contains`, which on Safari answers for what the manifest requests rather than what you granted, and it is not probed, because probing a site Safari has not decided on raises its permission dialog. The consequences are that a site you granted but nothing has touched yet reads as `not_granted` until something does, and that a grant you later revoke can keep reading as granted until the next call to that site is refused. The extension still receives the URL and title from Safari. This controls what it reports, and what Safari discloses to the extension is Safari's to decide.
+
 ### Tab URL redaction
 
 A URL is reported by `tabs_context`, `tabs_create`, `select_tab`, and `navigate`, and also appears in `read_network` records, trace events, and the `href` of links in a `snapshot`. An OAuth callback or a presigned download carries its credential in the query or fragment, and a URL can carry one in its userinfo. All of those places use one redaction, applied in the extension before a result leaves it:

@@ -16,7 +16,7 @@ This reference describes `main`, which may include tools and options not yet in 
 
 | Tool | Description |
 |-|-|
-| `tabs_context` | List open tabs across every connected Safari profile, with handles, URLs, and titles |
+| `tabs_context` | List open tabs across every connected Safari profile, with handles, state, and for sites MCPSafari has reached, URLs and titles (see [Website access](#website-access)) |
 | `tabs_create` | Open a new tab, optionally with a URL |
 | `close_tab` | Close a tab by handle |
 | `select_tab` | Pin a tab, and its Safari profile, as the default context for future calls |
@@ -173,6 +173,10 @@ So a tool that needs a page it has not been granted fails with `permission_requi
 - Access was refused, or was never asked for on this origin. Tell the user to grant it from the MCPSafari button in Safari's toolbar, or in Safari Settings > Extensions > MCPSafari Extension.
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
+
+Safari reports a URL and title for every tab, granted or not, which would otherwise let an agent read your browsing history. `tabs_context` therefore describes only tabs on sites MCPSafari has reached. Every other tab still appears with its handle, window, position, and state, so it stays usable, but carries no `url` or `title`, and reports `"access": "not_granted"` with an `accessHint` saying the user can grant the site from the MCPSafari button in Safari's toolbar. Tabs it can describe report `"access": "granted"`. `tabs_create` and `navigate` withhold the page title the same way, and `tabs_create` reports its `access` too.
+
+A site counts as reached once a call has run on a page there. MCPSafari does not check ahead, because asking Safari about a site it has not been granted is what raises the permission dialog, and a listing would raise one per site. So right after the user grants a site, its tabs still read as `not_granted` until a call touches one of them, such as `snapshot` or `select_tab` on that tab, and the next `tabs_context` shows them.
 
 Every tool that reads or acts on a page is gated this way, including `navigate` with `back` or `forward` (which runs a script in the page) and `resize_window`. A few operations are browser chrome and need no access to any page, so they work on an ungranted tab: `tabs_context`, `tabs_create`, `close_tab`, and `navigate` with `goto` or `reload`. That is deliberate. Going to a new URL is how a caller gets off a page it cannot use.
 

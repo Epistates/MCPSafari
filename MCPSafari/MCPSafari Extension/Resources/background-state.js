@@ -139,11 +139,37 @@ async function ensureTabAccess(tabId) {
             PERMISSION_PROBE_TIMEOUT_MS
         );
         tabAccessProbes.set(tabId, { at: Date.now(), error: null });
+        rememberOriginAccess(origin, true);
     } catch (err) {
         const refusal = permissionRequiredError(origin, err instanceof DeadlineExceeded);
         tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
+        rememberOriginAccess(origin, false);
         throw refusal;
     }
+}
+
+/**
+ * Origins a probe has found reachable. This is the only thing that can say a
+ * tab's site is granted without raising Safari's dialog, which is what a tab
+ * listing needs: it describes many tabs at once, and probing each would open a
+ * dialog per undecided site. Anything not in here is treated as not granted.
+ *
+ * `permissions.contains` is no help (see the note in background-config.js), and
+ * the tabs API returns a URL and title for every tab whether or not its site
+ * was granted, so neither of those can tell the two apart.
+ *
+ * Learned by `ensureTabAccess` and dropped when it is refused, and kept in
+ * session storage so a suspended background page does not forget it.
+ *
+ * @type {Set<string>}
+ */
+const grantedOrigins = new Set();
+
+function rememberOriginAccess(origin, granted) {
+    if (!origin || grantedOrigins.has(origin) === granted) return;
+    if (granted) grantedOrigins.add(origin);
+    else grantedOrigins.delete(origin);
+    persistGrantedOrigins();
 }
 
 function failureResponse(id, error, resolvedTabId = null) {

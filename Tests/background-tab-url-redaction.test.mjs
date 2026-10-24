@@ -45,6 +45,8 @@ function loadBackground() {
         console: { error() {}, log() {}, warn() {} },
         Date,
         Promise,
+        // A service worker has this; without it no URL has an origin.
+        URL,
         setTimeout: () => {},
         WebSocket: class { send() {} },
     });
@@ -92,6 +94,9 @@ test("code is only redacted next to state, so SKUs and coupons pass through", ()
 
 test("tab handlers return the redacted URL", async () => {
     const evaluate = loadBackground();
+    // A tab's URL and title are only described for a site the extension has
+    // reached, and the probe is what establishes that.
+    await evaluate("ensureTabAccess(7)");
 
     const [queried] = await evaluate("handleTabsQuery()");
     assert.equal(queried.url, REDACTED);

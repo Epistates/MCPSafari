@@ -65,7 +65,11 @@ async function handleNavigate(params) {
 
     // Return tab info so the caller knows where they landed
     tab = tab || (await browser.tabs.get(tabId));
-    return `${message} ${redactUrlSecrets(tab.url)} (${tab.title || ""})`
+    // The page's own title is not for a site that has not been granted.
+    const title = siteIsGranted(tab.url)
+        ? `(${tab.title || ""})`
+        : "(title withheld: MCPSafari has not been granted access to this site)";
+    return `${message} ${redactUrlSecrets(tab.url)} ${title}`;
 }
 
 async function waitForTabLoad(tabId, beforeTab, timeoutMs = 15000, noNavigationTimeoutMs = 1500) {

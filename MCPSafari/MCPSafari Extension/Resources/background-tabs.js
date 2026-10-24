@@ -96,6 +96,34 @@ function redactUrlSecrets(url) {
     return noUserinfo.slice(0, start) + redacted + tail.slice(copied);
 }
 
+// ─── What a tab may say about itself ─────────────────────────────────
+
+// Safari hands the tabs API a URL and title for every tab, including those on
+// sites the user never granted, which reads as browsing history. A tab whose
+// site is not known to be granted still appears, so its id stays usable, but
+// without the URL and title, and says why.
+//
+// "Known" is deliberately narrow, because the alternative to knowing is probing
+// and a probe on an undecided site raises Safari's dialog: see `grantedOrigins`.
+// A site nothing has touched yet is therefore reported as not granted even if
+// the user granted it, and becomes readable once any call has reached it.
+const NOT_GRANTED_HINT =
+    "URL and title withheld: MCPSafari has not been granted access to this site. "
+    + "The user can grant it from the MCPSafari button in Safari's toolbar, then list tabs again.";
+
+function siteIsGranted(url) {
+    // Nothing behind an about: page can be granted, and nothing in one is private.
+    if (typeof url === "string" && /^about:/i.test(url)) return true;
+    const origin = originOfUrl(url);
+    return origin !== null && grantedOrigins.has(origin);
+}
+
+function tabAccessFields(url) {
+    return siteIsGranted(url)
+        ? { access: "granted" }
+        : { access: "not_granted", accessHint: NOT_GRANTED_HINT };
+}
+
 async function handleTabsQuery() {
     // One tab awaiting a permission decision is enough to hold up the whole
     // listing, and there is no probe that helps because the block belongs to no
@@ -108,28 +136,35 @@ async function handleTabsQuery() {
         if (!(err instanceof DeadlineExceeded)) throw err;
         throw permissionRequiredError(null, true);
     }
-    return tabs.map((t) => ({
-        id: t.id,
-        url: redactUrlSecrets(t.url),
-        title: t.title || "",
-        active: t.active,
-        pinned: t.pinned || false,
-        audible: t.audible || false,
-        muted: t.mutedInfo ? t.mutedInfo.muted : false,
-        status: t.status || "complete",
-        windowId: t.windowId,
-        index: t.index,
-    }));
+    return tabs.map((t) => {
+        const access = tabAccessFields(t.url);
+        return {
+            id: t.id,
+            ...(access.access === "granted" ? { url: redactUrlSecrets(t.url), title: t.title || "" } : {}),
+            active: t.active,
+            pinned: t.pinned || false,
+            audible: t.audible || false,
+            muted: t.mutedInfo ? t.mutedInfo.muted : false,
+            status: t.status || "complete",
+            windowId: t.windowId,
+            index: t.index,
+            ...access,
+        };
+    });
 }
 
 async function handleTabsCreate(params) {
     const opts = {};
     if (params.url) opts.url = params.url;
     const tab = await browser.tabs.create(opts);
+    const url = tab.url || params.url;
+    const access = tabAccessFields(url);
+    // The URL is the one the caller asked for. The title is the page's own.
     return {
         id: tab.id,
-        url: redactUrlSecrets(tab.url || params.url),
-        title: tab.title || "",
+        url: redactUrlSecrets(url),
+        ...(access.access === "granted" ? { title: tab.title || "" } : {}),
+        ...access,
     };
 }
 
@@ -259,6 +294,14 @@ function persistSelectedTab(tabId) {
     } catch (_) { /* storage may not be available */ }
 }
 
+function persistGrantedOrigins() {
+    try {
+        if (browser.storage && browser.storage.session) {
+            browser.storage.session.set({ grantedOrigins: [...grantedOrigins] });
+        }
+    } catch (_) { /* storage may not be available */ }
+}
+
 async function restoreSessionState() {
     // Restore manually added ports (persists across Safari restarts)
     try {
@@ -282,6 +325,20 @@ async function restoreSessionState() {
                     selectedTabId = data.selectedTabId;
                 } catch {
                     await browser.storage.session.remove("selectedTabId");
+                }
+            }
+        }
+    } catch (_) { /* ignore */ }
+
+    // Origins found reachable earlier in this browser session. Without them a
+    // suspended background page would describe every tab as not granted until
+    // each had been touched again.
+    try {
+        if (browser.storage && browser.storage.session) {
+            const data = await browser.storage.session.get("grantedOrigins");
+            if (Array.isArray(data.grantedOrigins)) {
+                for (const origin of data.grantedOrigins) {
+                    if (typeof origin === "string") grantedOrigins.add(origin);
                 }
             }
         }
