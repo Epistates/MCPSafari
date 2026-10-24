@@ -188,18 +188,32 @@ actor SafariMCPServer {
         }
         tab["id"] = AnyCodable(TabHandle(profileIndex: profileIndex, tabID: tabID).description)
         var content = [Self.textContent(Self.jsonText(tab) ?? raw)]
-        // Selecting a tab on a site Safari has not granted succeeds, with the
-        // access state on the tab. The JSON carries it for a program; this
-        // sentence is for the model reading the result, which would otherwise
-        // find out only when its next read fails with `permission_required`.
-        if tab["access"]?.stringValue == "not_granted" {
-            let hint = tab["hint"]?.stringValue ?? "Ask the user to grant MCPSafari access to this site from the MCPSafari button in Safari's toolbar, or in Safari Settings > Extensions."
-            content.append(Self.textContent("The tab is selected, but access to its site is not granted, so reading or acting on the page will fail with permission_required until it is. \(hint)"))
-        }
+        if let note = Self.accessNote(for: [tab]) { content.append(Self.textContent(note)) }
         return CallTool.Result(
             content: content,
             structuredContent: .object(["tab": (try? Value(tab)) ?? .null])
         )
+    }
+
+    /// Tabs on a site Safari has not granted are listed, selected and created
+    /// like any other and carry `access: "not_granted"` and an `accessHint`. The
+    /// JSON carries that for a program; this sentence is for the model reading
+    /// the result, which would otherwise find out only when its next read fails
+    /// with `permission_required`. One sentence for a whole listing, with each
+    /// distinct hint said once, rather than one per tab.
+    static func accessNote(for tabs: [[String: AnyCodable]]) -> String? {
+        let ungranted = tabs.filter { $0["access"]?.stringValue == "not_granted" }
+        guard !ungranted.isEmpty else { return nil }
+        var hints: [String] = []
+        for hint in ungranted.compactMap({ $0["accessHint"]?.stringValue }) where !hints.contains(hint) {
+            hints.append(hint)
+        }
+        let subject = ungranted.count == 1
+            ? "Access to one tab's site is not granted"
+            : "Access to \(ungranted.count) tabs' sites is not granted"
+        return ([
+            "\(subject), so reading or acting on \(ungranted.count == 1 ? "it" : "them") will fail with permission_required until the user grants it.",
+        ] + hints).joined(separator: " ")
     }
 
     /// Which profile a call will land on. An explicit handle names it; otherwise it
@@ -251,6 +265,9 @@ actor SafariMCPServer {
         }
 
         var content = [Self.textContent(Self.jsonText(merged.tabs) ?? "[]")]
+        if let note = Self.accessNote(for: merged.tabs.compactMap(\.objectValue)) {
+            content.append(Self.textContent(note))
+        }
         if !merged.failures.isEmpty {
             content.append(Self.textContent(
                 "Tabs are missing from \(merged.failures.count) profile(s): "

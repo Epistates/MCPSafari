@@ -129,14 +129,26 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     let pageText = "Example Domain";
     let jsText = "42";
     let failAction;
-    const tab = { id: 7, url: "https://example.com/", title: "Example" };
+    // The shape the extension sends: tabs_query entries carry the browser's tab
+    // fields plus `access`, and url and title only for a granted site. An
+    // ungranted tab also carries `accessHint`.
+    const tab = {
+        id: 7, active: true, pinned: false, audible: false, muted: false, status: "complete",
+        windowId: 1, index: 0, access: "granted", url: "https://example.com/", title: "Example",
+    };
+    const ungrantedTab = (id) => ({
+        id, active: false, pinned: false, audible: false, muted: false, status: "complete",
+        windowId: 1, index: id, access: "not_granted",
+        accessHint: "Grant access from the MCPSafari button in Safari's toolbar.",
+    });
+    let queryTabs = [tab];
     const snapshot = { uid: "f0e1", tag: "body", children: [] };
     const trace = { events: [{ type: "click", timestamp: 1 }] };
     const responseData = (action, params) => {
         switch (action) {
-            case "tabs_query": return [tab];
-            case "tabs_create": return tab;
-            case "select_tab": return { ...tab, selected: true };
+            case "tabs_query": return queryTabs;
+            case "tabs_create": return { id: tab.id, access: "granted", url: tab.url, title: tab.title };
+            case "select_tab": return { id: tab.id, selected: true, access: "granted", url: tab.url, title: tab.title };
             case "read_page": return params.format === "snapshot" ? snapshot : pageText;
             case "snapshot": return snapshot;
             case "find": return [{ uid: "f0e1", tag: "body" }];
@@ -211,6 +223,17 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     const tabs = await tool("tabs_context");
     assert.equal(tabs.structuredContent.tabs[0].id, "p0t7");
     assert.deepEqual(tabs.structuredContent.profileFailures, []);
+    // A granted listing has nothing to add. An ungranted one says so once for
+    // the whole listing, with the extension's hint said once rather than per tab.
+    assert.equal(tabs.content.length, 1);
+    queryTabs = [tab, ungrantedTab(11), ungrantedTab(12)];
+    const mixed = await tool("tabs_context");
+    queryTabs = [tab];
+    assert.equal(mixed.structuredContent.tabs.length, 3);
+    assert.equal(mixed.structuredContent.tabs[1].access, "not_granted");
+    assert.equal(mixed.content.length, 2);
+    assert.match(mixed.content[1].text, /Access to 2 tabs' sites is not granted/);
+    assert.equal(mixed.content[1].text.split("Grant access from the MCPSafari button").length - 1, 1);
     for (const name of ["tabs_create", "select_tab"]) {
         const result = await tool(name, name === "select_tab" ? { tabId: "p0t7" } : {});
         assert.equal(result.structuredContent.tab.id, "p0t7");
@@ -366,14 +389,14 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     // still pins the tab's profile, and the result tells the model in prose that
     // the next read will be refused rather than leaving it to find out.
     await connect("third", ({ action }) => action === "select_tab"
-        ? { success: true, data: JSON.stringify({ id: 9, url: "https://example.org/", title: "Example", access: "not_granted", hint: "Grant example.org from the MCPSafari toolbar button." }) }
+        ? { success: true, data: JSON.stringify({ id: 9, selected: true, access: "not_granted", accessHint: "Grant example.org from the MCPSafari toolbar button." }) }
         : { success: false, error: "Not used" });
     const ungranted = await tool("select_tab", { tabId: "p2t9" });
     assert.equal(ungranted.structuredContent.tab.id, "p2t9");
     assert.equal(ungranted.structuredContent.tab.access, "not_granted");
     assert.match(ungranted.content[0].text, /not_granted/);
     const ungrantedText = ungranted.content.map(({ text }) => text).join("\n");
-    assert.match(ungrantedText, /access to its site is not granted/);
+    assert.match(ungrantedText, /Access to one tab's site is not granted/);
     assert.match(ungrantedText, /Grant example\.org from the MCPSafari toolbar button\./);
     const pinned = (await tool("status")).structuredContent.status.profiles.find((profile) => profile.selected);
     assert.equal(pinned.handle, "p2");
