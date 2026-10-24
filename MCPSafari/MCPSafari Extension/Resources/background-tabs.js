@@ -178,27 +178,46 @@ async function handleTabsClose(params) {
     return `Closed tab ${params.tabId}`;
 }
 
+// Selecting a tab is bookkeeping: it remembers which tab later calls mean, and
+// optionally brings it forward. Neither reads the page, so neither needs access
+// to it, and requiring it made the pin impossible on exactly the tab a caller
+// most needs to pin, the one the user has yet to grant. The first call that does
+// touch the page is gated as usual and reports `permission_required`.
+//
+// Nothing here probes, so nothing here raises Safari's dialog. The tab is looked
+// up under a deadline for its window and to confirm it exists; a lookup that is
+// parked on a dialog for some other tab does not stop the pin, which is only an
+// id, but then there is no window to bring forward and no URL to describe.
 async function handleSelectTab(params) {
     const tabId = params.tabId;
-    // Before the `tabs.get`, for the reason spelled out in `handleScreenshot`:
-    // that call parks on Safari's dialog too, so leaving it ungated means a
-    // blocked tab rides the bridge timeout and reports the wrong thing.
-    await ensureTabAccess(tabId);
-    const tab = await browser.tabs.get(tabId);
+    let tab = null;
+    try {
+        tab = await withDeadline(browser.tabs.get(tabId), PERMISSION_DEADLINE_MS);
+    } catch (err) {
+        // A tab that does not exist is the caller's mistake and must not be pinned.
+        if (!(err instanceof DeadlineExceeded)) throw err;
+    }
+
+    if (tab && params.bringToFront !== false) {
+        // Browser chrome, like `navigate`'s goto, and no more able to hang the
+        // call than the lookup above: a deadline here skips the focus and no more.
+        try {
+            await withDeadline(browser.tabs.update(tabId, { active: true }), PERMISSION_DEADLINE_MS);
+            await withDeadline(browser.windows.update(tab.windowId, { focused: true }), PERMISSION_DEADLINE_MS);
+        } catch (err) {
+            if (!(err instanceof DeadlineExceeded)) throw err;
+        }
+    }
+
     selectedTabId = tabId;
     persistSelectedTab(tabId);
 
-    // Optionally bring to front
-    if (params.bringToFront !== false) {
-        await browser.tabs.update(tabId, { active: true });
-        await browser.windows.update(tab.windowId, { focused: true });
-    }
-
+    const access = tabAccessFields(tab && tab.url);
     return {
-        id: tab.id,
-        url: redactUrlSecrets(tab.url),
-        title: tab.title || "",
+        id: tabId,
+        ...(access.access === "granted" ? { url: redactUrlSecrets(tab.url), title: tab.title || "" } : {}),
         selected: true,
+        ...access,
     };
 }
 

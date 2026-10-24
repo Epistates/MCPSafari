@@ -139,6 +139,7 @@ const UNGATED = new Map([
     ["tabs_query", "lists tabs from the tabs API and is deadlined on its own; it is the call every session starts with"],
     ["tabs_create", "opens a new tab, a browser operation that needs no access to any page"],
     ["tabs_close", "closes a tab by id, a browser operation that needs no access to the page being closed"],
+    ["select_tab", "pins a tab id and brings it forward, which is bookkeeping; the first call that reads the page is gated"],
 ]);
 
 // `navigate` is two things. Going to a URL and reloading go through the tabs API
