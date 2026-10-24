@@ -44,10 +44,17 @@ extension SafariMCPServer {
     }
 
     /// A positive integer, for the counts and caps that are meaningless at zero.
-    nonisolated static func optionalPositiveInt(_ key: String, in args: [String: Value]) throws -> Int? {
+    /// A value above `maximum` is brought down to it rather than refused: the
+    /// caller asked for "as much as you will give", and the documented ceiling
+    /// is what that means.
+    nonisolated static func optionalPositiveInt(
+        _ key: String,
+        in args: [String: Value],
+        maximum: Int = .max
+    ) throws -> Int? {
         guard let int = try optionalInt(key, in: args) else { return nil }
         guard int > 0 else { throw ToolInputError("Invalid \(key): \(int). Use a positive integer.") }
-        return int
+        return min(int, maximum)
     }
 
     private nonisolated static func present(_ key: String, in args: [String: Value]) -> Value? {

@@ -133,7 +133,7 @@ extension SafariMCPServer {
                     "properties": .object([
                         "maxNodes": .object([
                             "type": .string("integer"),
-                            "description": .string("Maximum nodes to return (default 2000)"),
+                            "description": .string("Maximum nodes to return (default 2000, max \(Self.maxSnapshotNodes))"),
                         ]),
                         "tabId": Self.tab,
                     ]),
@@ -149,11 +149,11 @@ extension SafariMCPServer {
                         "format": .object(["type": .string("string"), "enum": .array([.string("text"), .string("html"), .string("snapshot")])]),
                         "maxChars": .object([
                             "type": .string("integer"),
-                            "description": .string("Character cap for text and html (default 100000)"),
+                            "description": .string("Character cap for text and html (default 100000, max \(Self.maxPageChars))"),
                         ]),
                         "maxNodes": .object([
                             "type": .string("integer"),
-                            "description": .string("Node cap when format is snapshot (default 2000)"),
+                            "description": .string("Node cap when format is snapshot (default 2000, max \(Self.maxSnapshotNodes))"),
                         ]),
                         "tabId": Self.tab,
                     ]),
@@ -395,7 +395,7 @@ extension SafariMCPServer {
                         "type": .object(["type": .string("string"), "enum": .array([.string("all"), .string("xhr"), .string("fetch"), .string("resource")])]),
                         "urlPattern": .object(["type": .string("string"), "description": .string("Bounded regex on URL: literals, dots, anchors, character classes, alternation; no repetitions or groups (max 200 characters)")]),
                         "status": .object(["type": .string("integer"), "description": .string("Filter by HTTP status code (fetch/xhr only; 0 means network error)")]),
-                        "maxResults": .object(["type": .string("integer"), "description": .string("Return at most this many most recent entries")]),
+                        "maxResults": .object(["type": .string("integer"), "description": .string("Return at most this many most recent entries (max \(Self.maxNetworkResults))")]),
                         "clear": .object(["type": .string("boolean")]),
                         "tabId": Self.tab,
                     ]),

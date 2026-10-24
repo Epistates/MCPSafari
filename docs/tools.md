@@ -302,6 +302,8 @@ Repetition (`*`, `+`, `?`, `{}`), groups, and backreferences are rejected, as ar
 invalid patterns. The server applies the same rule before the request is forwarded, counting length in UTF-16 code units, so a pattern the page-side filter would refuse is refused up front. Filter rejection never silently returns unfiltered data. For
 example, use `error|warning` or `^https://example\.com/` rather than `(error)+`.
 
+Output size arguments have ceilings, and a larger value is brought down to the ceiling rather than refused: `maxChars` on `read_page` at 1,000,000 (default 100,000), `maxNodes` on `snapshot` and `read_page` at 10,000 (default 2,000), and `maxResults` on `read_network` at 1,000. Zero and negative values are refused with `invalid_input`.
+
 The bridge accepts up to 128 in-flight requests and 32 MiB per WebSocket message.
 File uploads retain their separate 10 MiB aggregate file limit. Large captures may
 need narrower selectors, fewer results, or smaller screenshots.

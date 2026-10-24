@@ -19,6 +19,14 @@ extension SafariMCPServer {
     nonisolated static let allowedConsoleLevels: Set<String> = ["all", "log", "warn", "error", "info", "debug"]
     nonisolated static let allowedNetworkTypes: Set<String> = ["all", "xhr", "fetch", "resource"]
 
+    /// The most a caller can ask for in one result. Each sits an order of
+    /// magnitude or so above the default, which is the point of raising a limit,
+    /// and well inside what the 32 MiB bridge message and the client's own output
+    /// limit can carry. Asking for more gets the maximum.
+    nonisolated static let maxPageChars = 1_000_000 // default 100,000
+    nonisolated static let maxSnapshotNodes = 10_000 // default 2,000
+    nonisolated static let maxNetworkResults = 1_000 // the buffers hold 500 requests
+
     /// Safari clamps a window to the screen anyway; this only turns a typo such
     /// as an extra zero into a refusal rather than a request for the whole desktop.
     nonisolated static let maxWindowDimension = 10_000
@@ -149,10 +157,10 @@ extension SafariMCPServer {
             }
             params["format"] = AnyCodable(format)
         }
-        if let maxChars = try optionalPositiveInt("maxChars", in: args) {
+        if let maxChars = try optionalPositiveInt("maxChars", in: args, maximum: maxPageChars) {
             params["maxChars"] = AnyCodable(maxChars)
         }
-        if let maxNodes = try optionalPositiveInt("maxNodes", in: args) {
+        if let maxNodes = try optionalPositiveInt("maxNodes", in: args, maximum: maxSnapshotNodes) {
             params["maxNodes"] = AnyCodable(maxNodes)
         }
         return params
@@ -160,7 +168,7 @@ extension SafariMCPServer {
 
     nonisolated static func snapshotParams(_ args: [String: Value]) throws -> [String: AnyCodable] {
         var params: [String: AnyCodable] = [:]
-        if let maxNodes = try optionalPositiveInt("maxNodes", in: args) {
+        if let maxNodes = try optionalPositiveInt("maxNodes", in: args, maximum: maxSnapshotNodes) {
             params["maxNodes"] = AnyCodable(maxNodes)
         }
         return params
@@ -214,7 +222,7 @@ extension SafariMCPServer {
             }
             params["status"] = AnyCodable(status)
         }
-        if let maxResults = try optionalPositiveInt("maxResults", in: args) {
+        if let maxResults = try optionalPositiveInt("maxResults", in: args, maximum: maxNetworkResults) {
             params["maxResults"] = AnyCodable(maxResults)
         }
         if let clear = try optionalBool("clear", in: args) { params["clear"] = AnyCodable(clear) }

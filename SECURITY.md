@@ -96,6 +96,7 @@ Tokens are written only under `~/Library/Application Support/MCPSafari/`. Earlie
 - Wait durations capped at 300 seconds
 - File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call
 - `find` returns at most 50 matches per call
+- `maxChars`, `maxNodes` and `maxResults` clamped to documented maxima, so a caller cannot ask for unbounded output
 
 ### Snapshot redaction
 

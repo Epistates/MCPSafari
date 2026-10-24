@@ -68,6 +68,26 @@ struct ToolParametersTests {
         #expect(refusal("javascript_tool", ["code": 42]) == "code must be a string")
     }
 
+    // A caller cannot ask for unbounded output; asking for more gets the maximum.
+    @Test func outputSizeRequestsAreClampedToTheDocumentedMaxima() throws {
+        let page = try SafariMCPServer.readPageParams(["maxChars": 2_000_000_000, "maxNodes": 1_000_000])
+        #expect(page["maxChars"]?.intValue == 1_000_000)
+        #expect(page["maxNodes"]?.intValue == 10_000)
+        #expect(try SafariMCPServer.snapshotParams(["maxNodes": .int(Int.max)])["maxNodes"]?.intValue == 10_000)
+        #expect(try SafariMCPServer.readNetworkParams(["maxResults": 50_000])["maxResults"]?.intValue == 1_000)
+
+        // At the maximum and below it nothing changes.
+        let exact = try SafariMCPServer.readPageParams(["maxChars": 1_000_000, "maxNodes": 7])
+        #expect(exact["maxChars"]?.intValue == 1_000_000)
+        #expect(exact["maxNodes"]?.intValue == 7)
+        #expect(try SafariMCPServer.readNetworkParams(["maxResults": 1_000])["maxResults"]?.intValue == 1_000)
+        #expect(try SafariMCPServer.readNetworkParams(["maxResults": 1])["maxResults"]?.intValue == 1)
+
+        // Clamping is for large values; zero and negatives are still wrong.
+        #expect(refusal("read_page", ["maxChars": 0]) == "Invalid maxChars: 0. Use a positive integer.")
+        #expect(refusal("read_network", ["maxResults": -1]) == "Invalid maxResults: -1. Use a positive integer.")
+    }
+
     @Test func navigationRefusesWrongTypes() {
         #expect(refusal("navigate", ["url": 5]) == "url must be a string")
         #expect(refusal("navigate", ["action": true]) == "action must be a string")
