@@ -167,6 +167,26 @@ async function handleSelectTab(params) {
     };
 }
 
+// Activating a tab does not mean it is still the one showing a moment later:
+// the user can click another, and a capture or a native keystroke then reaches
+// the wrong page. So the claim is checked against the window, which is the only
+// thing that knows, right where the result is about to be relied on.
+async function assertTabShowing(tabId, windowId, purpose) {
+    const showing = await withPermissionDeadline(
+        browser.tabs.query({ active: true, windowId }),
+        tabId
+    );
+    if (showing.length > 0 && showing[0].id === tabId) return;
+    const error = new Error(
+        `The tab is no longer the one showing in its window (another tab was activated), so ${purpose} `
+        + "would have reached the wrong page. Retry the call."
+    );
+    error.code = "tab_not_showing";
+    error.retryable = true;
+    error.recoveryAction = "retry";
+    throw error;
+}
+
 async function focusTabForNativeInput(tabIdParam) {
     const tabId = tabIdParam || (await getActiveTabId());
     // Native input needs the page anyway, and this ran before any gating, so a
@@ -176,6 +196,7 @@ async function focusTabForNativeInput(tabIdParam) {
     await browser.tabs.update(tabId, { active: true });
     await browser.windows.update(tab.windowId, { focused: true });
     await delay(100);
+    await assertTabShowing(tabId, tab.windowId, "native input");
     return tabId;
 }
 

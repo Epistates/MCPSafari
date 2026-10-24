@@ -56,6 +56,7 @@ function backgroundHarness(contentResponse) {
         },
         tabs: {
             get: async () => ({ id: 1, windowId: 7 }),
+            query: async () => [{ id: 1, active: true, windowId: 7 }],
             sendMessage: async () => contentResponses.shift(),
             update: async (...args) => { tabUpdates.push(args); },
             // Both listeners are registered at load: the access probe cache is

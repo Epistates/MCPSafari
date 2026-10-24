@@ -36,6 +36,8 @@ function loadBackground({ contentReply }) {
         },
         tabs: {
             get: async (id) => ({ id, active: true, windowId: 1 }),
+            // The tab showing in the window, which the capture confirms.
+            query: async () => [{ id: 1, active: true, windowId: 1 }],
             captureVisibleTab: async () => {
                 log.push("capture");
                 return "data:image/png;base64,AAAB";

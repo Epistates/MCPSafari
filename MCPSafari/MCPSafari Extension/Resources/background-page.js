@@ -36,10 +36,17 @@ async function handleScreenshot(params) {
     // fail and still produce a picture, and a probe would turn that graceful
     // degradation into a refusal. A capture is sub-second when it is permitted
     // at all, so a deadline here separates "blocked on the dialog" from "slow".
+    // captureVisibleTab takes the window, not the tab, and returns whichever
+    // tab is showing. The activation above is a request that the user's next
+    // click can undo, so it is confirmed on both sides of the capture: before,
+    // so a stale tab is not captured, and after, so a switch during the capture
+    // does not return another page's pixels under this tab's metadata.
+    await assertTabShowing(tabId, tab.windowId, "the screenshot");
     const dataUrl = await withPermissionDeadline(
         browser.tabs.captureVisibleTab(tab.windowId, { format: "png" }),
         tabId
     );
+    await assertTabShowing(tabId, tab.windowId, "the screenshot");
 
     return {
         // Raw base64, data URI prefix stripped
