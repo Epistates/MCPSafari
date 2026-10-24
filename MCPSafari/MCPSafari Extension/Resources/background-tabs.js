@@ -4,41 +4,96 @@
 
 // ─── Tab Handlers ────────────────────────────────────────────────────
 
-// Bearer and session values are redacted before a tab URL leaves the
-// extension. `code` is only treated as an OAuth code next to `state`;
+// Credentials are redacted from a URL before it leaves the extension, wherever
+// the URL turns up: tab listings, captured requests, trace events, link hrefs.
+// A presigned download or an OAuth callback carries its credential in the query
+// or fragment, and userinfo (`https://user:pw@host`) carries one in the
+// authority.
+//
+// A parameter name is judged by its words, not by an exact list. Spelled out as
+// a list it missed `auth_token`, `csrf_token`, `oauth_verifier` and anything
+// else nobody had thought of; matched as a bare substring it would take
+// `design` for `sig`. The name is percent-decoded first (`%74oken` is `token`),
+// split on separators and camelCase (`X-Goog-Signature`, `accessToken`), and
+// redacted when any word is one of SECRET_NAME_WORDS.
+//
+// Names that describe a secret rather than carrying one stay readable, which is
+// what the last word is for: `token_type=bearer` and `password_hint=cat` are
+// the token's type and a hint, and an agent shown `[redacted]` for either
+// learns nothing. `code` is only treated as an OAuth code next to `state`;
 // alone it is usually a SKU or coupon.
-//
-// Whole names rather than parts, deliberately. The pattern below requires an
-// `=` straight after the name, which is what keeps `token_type=bearer` and
-// `password_hint=cat` readable: both describe a secret rather than carrying
-// one. Matching `token` as a substring redacts those too, and an agent shown
-// `[redacted]` for a token's type learns nothing and loses something.
-//
-// The cost is that every spelling has to be listed. Bare `token` and `session`
-// were missing, which are the two most ordinary names in the class this exists
-// for, and the comment above already claimed session values were covered.
-const SECRET_URL_PARAMS = [
-    "access_token", "id_token", "refresh_token", "token",
-    "client_secret", "secret",
-    "api_key", "apikey", "api-key",
-    "password", "passwd", "pwd",
-    "session", "sessionid", "session_id", "sid",
-    "jwt", "auth", "authorization", "credential", "credentials",
-    "signature", "sig",
-    // Presigned S3 and CloudFront URLs, where the signature is the credential
-    // and the whole URL is the thing worth not leaking.
-    "x-amz-signature", "x-amz-security-token", "x-amz-credential",
-];
+const SECRET_NAME_WORDS = new Set([
+    "token", "secret", "key", "sig", "signature",
+    "password", "passwd", "pwd", "passcode",
+    "auth", "authorization", "session", "sid", "jwt",
+    "otp", "ticket", "verifier", "credential", "credentials",
+]);
+// Joined words ending in one of these are caught too, for names run together
+// (`accesstoken`, `clientsecret`). Short words are left out on purpose: `key`
+// would take `monkey`.
+const SECRET_NAME_SUFFIXES = ["token", "secret", "password", "passwd", "signature", "apikey", "sessionid", "credential", "credentials"];
+const DESCRIPTIVE_LAST_WORDS = new Set([
+    "type", "hint", "length", "expires", "expiry", "ttl", "algorithm", "alg", "format", "endpoint", "url", "uri", "count", "name", "method",
+]);
+const USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/i;
+
+function urlNameWords(name) {
+    let decoded = name;
+    try {
+        decoded = decodeURIComponent(name.replace(/\+/g, " "));
+    } catch { /* a malformed escape is matched as written */ }
+    return decoded
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean);
+}
+
+function isSecretUrlName(words) {
+    if (words.length === 0) return false;
+    if (DESCRIPTIVE_LAST_WORDS.has(words[words.length - 1]) && words.length > 1) return false;
+    const joined = words.join("");
+    return words.some((word) => SECRET_NAME_WORDS.has(word))
+        || SECRET_NAME_SUFFIXES.some((suffix) => joined.endsWith(suffix));
+}
 
 function redactUrlSecrets(url) {
     if (!url) return "";
+    const noUserinfo = String(url).replace(USERINFO, "$1[redacted]@");
     // Only the query and fragment carry parameters; `&` is legal in a path.
-    const start = url.search(/[?#]/);
-    if (start === -1) return url;
-    const tail = url.slice(start);
-    const names = /[?&#]state(?=[=&#]|$)/i.test(tail) ? [...SECRET_URL_PARAMS, "code"] : SECRET_URL_PARAMS;
-    const pattern = new RegExp(`([?&#](?:${names.join("|")})=)[^&#]*`, "gi");
-    return url.slice(0, start) + tail.replace(pattern, "$1[redacted]");
+    const start = noUserinfo.search(/[?#]/);
+    if (start === -1) return noUserinfo;
+    const tail = noUserinfo.slice(start);
+
+    // A name follows `?`, `&` or `#`, so a hash-routed callback
+    // (`#/cb?code=x`) is read the same as a plain query.
+    const parameter = /([?&#])([^=&#?]*)=/g;
+    const hasState = [...tail.matchAll(parameter)].some((match) => {
+        const words = urlNameWords(match[2]);
+        return words.length === 1 && words[0] === "state";
+    });
+    // `state` with no value (`&state`) is still the OAuth state.
+    const bareState = /[?&#]state(?=[&#]|$)/i.test(tail);
+
+    let redacted = "";
+    let copied = 0;
+    let match;
+    while ((match = parameter.exec(tail)) !== null) {
+        const words = urlNameWords(match[2]);
+        const isCode = words.length === 1 && words[0] === "code" && (hasState || bareState);
+        if (!isSecretUrlName(words) && !isCode) continue;
+        // The value ends at the next separator. Scanning on from there, rather
+        // than from the end of the name, keeps a `?token=` nested inside an
+        // earlier parameter's value (`?next=/cb?token=x`) in view.
+        const valueStart = parameter.lastIndex;
+        const rest = tail.slice(valueStart).search(/[&#]/);
+        const valueEnd = rest === -1 ? tail.length : valueStart + rest;
+        redacted += `${tail.slice(copied, valueStart)}[redacted]`;
+        copied = valueEnd;
+        parameter.lastIndex = valueEnd;
+    }
+    return noUserinfo.slice(0, start) + redacted + tail.slice(copied);
 }
 
 async function handleTabsQuery() {

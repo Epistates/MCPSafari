@@ -96,6 +96,56 @@ async function routeAction(action, params) {
     throw new Error(`Unknown action: ${action}`);
 }
 
+// URLs inside page data are redacted here, on the way out, with the one
+// implementation tab listings use. The scripts that capture them run in the
+// page's world, where `redactUrlSecrets` does not exist and where a page could
+// tamper with any copy of it, so the capture reports URLs as they were and this
+// is the last stop before they leave the extension.
+//
+// Every result is a fresh structured clone that nothing else holds, so these
+// edit in place. A value of an unexpected shape is returned untouched: the
+// page can send anything, and refusing to answer would be a worse outcome than
+// an unredacted field the content script already bounded.
+function redactEachUrl(entries, fields) {
+    if (!Array.isArray(entries)) return;
+    for (const entry of entries) redactFields(entry, fields);
+}
+
+function redactFields(entry, fields) {
+    if (!entry || typeof entry !== "object") return;
+    for (const field of fields) {
+        if (typeof entry[field] === "string") entry[field] = redactUrlSecrets(entry[field]);
+    }
+}
+
+function redactSnapshotLinks(node) {
+    const pending = [node];
+    while (pending.length > 0) {
+        const current = pending.pop();
+        if (!current || typeof current !== "object") continue;
+        redactFields(current, ["href"]);
+        if (Array.isArray(current.children)) pending.push(...current.children);
+    }
+}
+
+const RESULT_REDACTORS = new Map([
+    ["read_network", (data) => redactEachUrl(data, ["url"])],
+    ["get_network_requests", (data) => redactEachUrl(data, ["url"])],
+    ["stop_trace", (trace) => {
+        redactFields(trace, ["startUrl", "endUrl"]);
+        // `url` on network and history events, `from` and `to` on URL changes.
+        redactEachUrl(trace && trace.events, ["url", "from", "to"]);
+    }],
+    ["snapshot", redactSnapshotLinks],
+    ["read_page", redactSnapshotLinks],
+]);
+
+function redactResult(action, data) {
+    const redactor = RESULT_REDACTORS.get(action);
+    if (redactor) redactor(data);
+    return data;
+}
+
 // The tab tools that never fall back to the active tab. `tabs_close` and
 // `select_tab` demand a tab by name: closing whatever happens to be in front
 // because the caller left it out would be the wrong default. The other two have
@@ -123,7 +173,7 @@ async function handleRequest(request) {
     try {
         const params = await withResolvedTab(action, requested ?? {});
         resolvedTabId = params.tabId ?? null;
-        const data = await routeAction(action, params);
+        const data = redactResult(action, await routeAction(action, params));
         return {
             id,
             success: true,

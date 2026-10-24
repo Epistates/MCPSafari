@@ -132,6 +132,83 @@ test("the ordinary spellings of a bearer or session value are covered", () => {
     );
 });
 
+test("a parameter name is judged by its words, not by an exact list", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    for (const [url, expected] of [
+        ["https://a.example/?auth_token=abc", "https://a.example/?auth_token=[redacted]"],
+        ["https://a.example/?reset_token=abc", "https://a.example/?reset_token=[redacted]"],
+        ["https://a.example/?csrf_token=abc&page=2", "https://a.example/?csrf_token=[redacted]&page=2"],
+        ["https://a.example/cb?oauth_token=t&oauth_verifier=v", "https://a.example/cb?oauth_token=[redacted]&oauth_verifier=[redacted]"],
+        ["https://a.example/cb#access-token=abc&expires_in=60", "https://a.example/cb#access-token=[redacted]&expires_in=60"],
+        ["https://storage.example/f?X-Goog-Signature=abc&X-Goog-Expires=60", "https://storage.example/f?X-Goog-Signature=[redacted]&X-Goog-Expires=60"],
+        ["https://a.example/verify?otp=123456", "https://a.example/verify?otp=[redacted]"],
+        ["https://a.example/sso?ticket=ST-1-abc", "https://a.example/sso?ticket=[redacted]"],
+        ["https://a.example/?accessToken=abc", "https://a.example/?accessToken=[redacted]"],
+        ["https://a.example/?accesstoken=abc", "https://a.example/?accesstoken=[redacted]"],
+        ["https://a.example/?x-api-key=abc", "https://a.example/?x-api-key=[redacted]"],
+        ["https://a.example/?Passcode=1234", "https://a.example/?Passcode=[redacted]"],
+        ["https://a.example/?authorization_code=abc", "https://a.example/?authorization_code=[redacted]"],
+    ]) {
+        assert.equal(redact(url), expected, url);
+    }
+});
+
+test("a percent-encoded parameter name is decoded before it is matched", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    assert.equal(redact("https://a.example/?%74oken=abc"), "https://a.example/?%74oken=[redacted]");
+    assert.equal(redact("https://a.example/#%61ccess%5Ftoken=abc"), "https://a.example/#%61ccess%5Ftoken=[redacted]");
+    // A malformed escape is matched as written rather than throwing.
+    assert.equal(redact("https://a.example/?%zz=1&token=abc"), "https://a.example/?%zz=1&token=[redacted]");
+});
+
+test("userinfo in the authority is stripped", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    assert.equal(redact("https://user:hunter2@host.example/path?q=1"), "https://[redacted]@host.example/path?q=1");
+    assert.equal(redact("https://token@host.example/"), "https://[redacted]@host.example/");
+    assert.equal(redact("ftp://u:p@host.example"), "ftp://[redacted]@host.example");
+    // An `@` after the authority is just a character in the path or query.
+    assert.equal(redact("https://host.example/@user/repo"), "https://host.example/@user/repo");
+    assert.equal(redact("https://host.example/?email=a@b.example"), "https://host.example/?email=a@b.example");
+});
+
+test("a secret nested in an earlier parameter's value is still found", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    assert.equal(
+        redact("https://a.example/login?next=/cb?token=abc&other=1"),
+        "https://a.example/login?next=/cb?token=[redacted]&other=1"
+    );
+});
+
+test("fragments are covered, including a hash-routed callback", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    assert.equal(redact("https://a.example/#id_token=abc&state=s"), "https://a.example/#id_token=[redacted]&state=s");
+    assert.equal(redact("https://a.example/?a=1#reset_token=abc"), "https://a.example/?a=1#reset_token=[redacted]");
+});
+
+test("descriptive names stay readable even though they contain a secret word", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    for (const url of [
+        "https://a.example/cb#access_token_type=bearer",
+        "https://a.example/?token_type=Bearer&expires_in=3600",
+        "https://a.example/?secret_hint=pet",
+        "https://a.example/?monkey=1&turkey=2&design=flat",
+    ]) {
+        assert.equal(redact(url), url);
+    }
+});
+
 test("a name that describes a secret rather than carrying one stays readable", () => {
     const evaluate = loadBackground();
     const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);

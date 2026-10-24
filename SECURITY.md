@@ -115,9 +115,13 @@ The name test is a heuristic, so a secret under a name nobody has thought of is 
 
 ### Tab URL redaction
 
-A tab's URL is reported by `tabs_context`, `tabs_create`, `select_tab`, and `navigate`, and an OAuth callback or a presigned download carries its credential in the query or fragment. Those values come back as `[redacted]`: bearer and session parameters by name (`token`, `access_token`, `session`, `jwt`, `signature`, `X-Amz-Signature`, and the rest), plus `code` when `state` sits alongside it, since `code` on its own is more often a SKU than an OAuth code.
+A URL is reported by `tabs_context`, `tabs_create`, `select_tab`, and `navigate`, and also appears in `read_network` records, trace events, and the `href` of links in a `snapshot`. An OAuth callback or a presigned download carries its credential in the query or fragment, and a URL can carry one in its userinfo. All of those places use one redaction, applied in the extension before a result leaves it:
 
-Matching is on the whole parameter name, so a name that describes a secret rather than carrying one stays readable: `token_type=bearer` and `password_hint` are reported as they are. Two limits follow from that. The list is maintained by hand, so a credential under a name nobody has thought of is reported verbatim, and only the query and fragment are considered, so a secret in the path is not redacted.
+- A query or fragment value comes back as `[redacted]` when its parameter name contains a secret word: `token`, `secret`, `key`, `sig`, `signature`, `password`, `passwd`, `pwd`, `passcode`, `auth`, `authorization`, `session`, `sid`, `jwt`, `otp`, `ticket`, `verifier`, or `credential`. Names are split into words on separators and camelCase and percent-decoded first, so `auth_token`, `oauth_verifier`, `csrf_token`, `accessToken`, `X-Goog-Signature`, `#access-token=`, and `%74oken` are all covered. A name run together as one word is covered when it ends in `token`, `secret`, `password`, `signature`, `apikey`, or `sessionid`.
+- `code` is redacted when `state` sits alongside it, since `code` on its own is more often a SKU than an OAuth code.
+- Userinfo is replaced: `https://user:pw@host/` is reported as `https://[redacted]@host/`.
+
+A name whose last word only describes a secret stays readable, so `token_type=bearer`, `password_hint`, and `token_expires` are reported as they are, as is a name that merely contains a secret word as part of another, such as `design` or `monkey`. Two limits remain. The rule is a heuristic, so a credential under a name with none of those words is reported verbatim, and only the query, fragment, and userinfo are considered, so a secret in the path is not redacted. Page text, HTML, and console messages are not URL-redacted.
 
 ### Permissions
 
