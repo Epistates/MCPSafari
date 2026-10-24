@@ -4,64 +4,29 @@ import Testing
 @testable import MCPSafari
 
 /// Anything on the machine can open a bridge socket, since acceptance happens
-/// before the token is checked, and anything holding the token can finish a
+/// before anyone has proved anything, and anything holding the token can finish a
 /// handshake. These drive real loopback sockets because the defects are all in
 /// which connection the bridge decides to keep.
+///
+/// The exchange itself, in both directions, is `ChallengeHandshakeTests`.
 struct HandshakeHygieneTests {
-    private let tokenRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-
     private enum HandshakeTestError: Error {
         case unexpectedReply
     }
 
-    /// Ports sit above the extension's auto-scan range (8089-8098) so a running
-    /// Safari never dials them.
-    private func withStartedBridge(
-        port: UInt16,
-        handshakeDeadline: Duration = .seconds(10),
-        _ body: (WebSocketBridge, UInt16) async throws -> Void
-    ) async throws {
-        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tokenRoot) }
-        let bridge = try WebSocketBridge(
-            port: port,
-            logger: Logger(label: "HandshakeHygieneTests"),
-            tokenRoot: tokenRoot,
-            handshakeDeadline: handshakeDeadline
-        )
-        await bridge.start()
-        let boundPort = await bridge.port
-        do {
-            try await body(bridge, boundPort)
-        } catch {
-            await bridge.stop()
-            throw error
-        }
-        await bridge.stop()
-    }
-
-    private func makeTask(port: UInt16) -> URLSessionWebSocketTask {
-        URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
-    }
-
-    private func handshakePayload(token: String, profileId: String?) throws -> String {
-        var message: [String: Any] = [
-            "auth": token,
-            "extensionVersion": "0.3.2",
-            "protocolVersion": MCPSafariProduct.bridgeProtocolVersion,
-        ]
-        if let profileId { message["profileId"] = profileId }
-        return String(decoding: try JSONSerialization.data(withJSONObject: message), as: UTF8.self)
-    }
-
+    /// Completes the handshake as the real extension would.
     @discardableResult
     private func authenticate(
-        token: String,
-        profileId: String?,
-        on task: URLSessionWebSocketTask
+        _ bridge: WebSocketBridge,
+        profileId: String? = "default",
+        on transport: some FrameTransport
     ) async throws -> [String: Any] {
-        try await task.send(.string(handshakePayload(token: token, profileId: profileId)))
-        return try await receiveObject(on: task)
+        let extensionSide = TestExtension(
+            token: await bridge.authToken,
+            port: await bridge.port,
+            profileId: profileId
+        )
+        return try await extensionSide.handshake(over: transport)
     }
 
     private func receiveObject(on task: URLSessionWebSocketTask) async throws -> [String: Any] {
@@ -71,44 +36,19 @@ struct HandshakeHygieneTests {
         return parsed
     }
 
-    /// Waits for the server to hang up on this socket, reading past anything it says
-    /// first. Gives up after `timeout`, because a read that never fails would
-    /// otherwise stall the whole suite on exactly the bug the test is looking for.
-    private func serverHungUp(on task: URLSessionWebSocketTask, timeout: Duration = .seconds(5)) async -> Bool {
-        let hungUp = await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                while true {
-                    do { _ = try await task.receive() } catch { return true }
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return false
-            }
-            let first = await group.next() ?? false
-            // A pending `receive` is ended by cancelling the task, not the Swift task.
-            if !first { task.cancel() }
-            group.cancelAll()
-            return first
-        }
-        return hungUp
-    }
-
-    /// Completes the handshake over a raw socket, which is how the tests that need a
-    /// socket admitted without any WebSocket machinery behind it do it.
-    private func authenticate(token: String, on socket: RawSocket) throws -> [String: Any] {
-        try #require(socket.sendText(try handshakePayload(token: token, profileId: "default")))
-        let reply = try #require(socket.readText())
-        return try #require(try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any])
-    }
-
     @Test func aWrongTokenIsToldWhyAndNeverRegistersAProfile() async throws {
-        try await withStartedBridge(port: 0) { bridge, port in
-            let task = makeTask(port: port)
+        try await withStartedBridge { bridge, port in
+            let task = webSocketTask(port: port)
             defer { task.cancel() }
             task.resume()
 
-            let reply = try await authenticate(token: "not-the-token", profileId: "default", on: task)
+            // An extension holding the token of a previous server run: it checks the
+            // server's proof against that token, so to see the rejection it has to
+            // answer with the stale token's proof anyway, as a client that did not
+            // verify would. The server is what is under test here.
+            let extensionSide = TestExtension(token: await bridge.authToken, port: port)
+            let reply = try await extensionSide.handshake(over: task, proofToken: "not-the-token")
+
             // A silent close looks like a crash, so an extension holding the token
             // of a previous server run had no way to know it should read the new
             // one (#156).
@@ -123,29 +63,35 @@ struct HandshakeHygieneTests {
     }
 
     @Test func aSecondHandshakeDoesNotRegisterTheSameSocketTwice() async throws {
-        try await withStartedBridge(port: 8321) { bridge, port in
-            let task = makeTask(port: port)
+        try await withStartedBridge { bridge, port in
+            let task = webSocketTask(port: port)
             defer { task.cancel() }
             task.resume()
 
-            let token = await bridge.authToken
-            let reply = try await authenticate(token: token, profileId: "default", on: task)
+            let reply = try await authenticate(bridge, on: task)
             #expect(reply["auth"] as? String == "ok")
 
             // Re-handshaking under a different id used to add a second
             // `connections` entry for this one socket. Only the newer key is in
             // the reverse map, so closing the socket would strand the older one
             // and leave a profile that is gone reporting as connected.
-            try await task.send(.string(handshakePayload(token: token, profileId: "WORK-PROFILE")))
-            try await Task.sleep(for: .milliseconds(250))
+            let again = TestExtension(token: await bridge.authToken, port: port, profileId: "WORK-PROFILE")
+            try await task.send(.string(again.helloFrame()))
 
-            let profiles = await bridge.status().profiles.map(\.id)
-            #expect(profiles == ["default"])
+            // Frames on a connection are handled in order, so a request answered
+            // after the second hello proves the hello has been dealt with.
+            let pending = Task { try await bridge.send(action: "tabs_query", timeout: 10) }
+            let request = try await receiveObject(on: task)
+            let id = try #require(request["id"] as? String)
+            try await task.send(.string(#"{"id":"\#(id)","success":true,"data":"ok"}"#))
+            _ = try await pending.value
+
+            #expect(await bridge.status().profiles.map(\.id) == ["default"])
         }
     }
 
     @Test func aFloodOfSilentSocketsCannotEvictOneMidHandshake() async throws {
-        try await withStartedBridge(port: 8331) { bridge, port in
+        try await withStartedBridge { bridge, port in
             // Eight is the cap, so these fill it without authenticating.
             let squatters = try (0..<8).map { _ in try #require(RawSocket.dial(port: port)) }
             // The upgrade answer means the bridge has admitted the socket, so all
@@ -158,34 +104,36 @@ struct HandshakeHygieneTests {
             let ninth = try #require(RawSocket.dial(port: port))
             #expect(ninth.reply() == .closed, "the ninth mid-handshake socket is refused")
 
-            let token = await bridge.authToken
-            let reply = try authenticate(token: token, on: squatters[0])
+            let reply = try await authenticate(bridge, on: squatters[0])
             #expect(reply["auth"] as? String == "ok", "and the oldest is still there to finish")
             #expect(await bridge.status().profiles.map(\.id) == ["default"])
         }
     }
 
     @Test func aRejectedOldBuildDoesNotRelabelAConnectedProfile() async throws {
-        try await withStartedBridge(port: 8351) { bridge, port in
-            let task = makeTask(port: port)
+        try await withStartedBridge { bridge, port in
+            let task = webSocketTask(port: port)
             defer { task.cancel() }
             task.resume()
+            try await authenticate(bridge, on: task)
 
+            // A build from before the challenge exchange puts the token in its first
+            // frame. It cannot finish this handshake, but it is told why.
+            // Deliberately not a real release: the rejection turns on the protocol
+            // number, and a shipped version here reads as though it is refused.
             let token = await bridge.authToken
-            try await authenticate(token: token, profileId: "default", on: task)
-
-            // A mismatched build used to overwrite the one shared pair of
-            // version fields, so `status` described the healthy profile above
-            // using the numbers of the build it had just turned away.
-            let stale = makeTask(port: port)
+            let stale = webSocketTask(port: port)
             defer { stale.cancel() }
             stale.resume()
-            let mismatch = #"{"auth":"\#(token)","extensionVersion":"99.0.0","protocolVersion":2}"#
-            try await stale.send(.string(mismatch))
-            try await Task.sleep(for: .milliseconds(250))
+            try await stale.send(.string(#"{"auth":"\#(token)","extensionVersion":"99.0.0","protocolVersion":1}"#))
+            let reply = try await receiveObject(on: stale)
+            #expect(reply["error"] as? String == "protocol_version_mismatch")
 
+            // A mismatched build used to overwrite the one shared pair of version
+            // fields, so `status` described the healthy profile above using the
+            // numbers of the build it had just turned away.
             let status = await bridge.status()
-            #expect(status.extensionVersion == "0.3.2")
+            #expect(status.extensionVersion == "0.4.0")
             #expect(status.extensionProtocolVersion == MCPSafariProduct.bridgeProtocolVersion)
             // The refusal is still reported, just not as the live profile's own.
             #expect(status.lastError?.code == "protocol_version_mismatch")
@@ -194,18 +142,19 @@ struct HandshakeHygieneTests {
     }
 
     @Test func cancellingABroadcastIsNotReportedAsABrowserFailure() async throws {
-        try await withStartedBridge(port: 8361) { bridge, port in
-            let task = makeTask(port: port)
+        try await withStartedBridge { bridge, port in
+            let task = webSocketTask(port: port)
             defer { task.cancel() }
             task.resume()
-            try await authenticate(token: await bridge.authToken, profileId: "default", on: task)
+            try await authenticate(bridge, on: task)
 
             // Nothing answers, so the broadcast is still waiting when it is
             // cancelled. Each child turns its own CancellationError into an
             // `.unreachable` outcome, so without a cancellation check the call
             // returns normally and blames Safari for the caller's own decision.
             let broadcast = Task { try await bridge.broadcast(action: "tabs_context") }
-            try await Task.sleep(for: .milliseconds(200))
+            // The request reaching the extension is the sign it is waiting.
+            _ = try await receiveObject(on: task)
             broadcast.cancel()
 
             await #expect(throws: CancellationError.self) { try await broadcast.value }
@@ -216,18 +165,17 @@ struct HandshakeHygieneTests {
         // Refusing the newest only works if silent sockets age out, otherwise a
         // handful of them would hold every slot and the refusal would land on
         // the extension instead.
-        try await withStartedBridge(port: 8341, handshakeDeadline: .milliseconds(200)) { bridge, port in
+        try await withStartedBridge(handshakeDeadline: .milliseconds(200)) { bridge, port in
             let squatters = try (0..<8).map { _ in try #require(RawSocket.dial(port: port)) }
             for socket in squatters { #expect(socket.reply() == .upgraded) }
             // Each is hung up on once its deadline passes.
             for socket in squatters { #expect(socket.reply() == .closed) }
 
-            let arriving = makeTask(port: port)
+            let arriving = webSocketTask(port: port)
             defer { arriving.cancel() }
             arriving.resume()
 
-            let token = await bridge.authToken
-            let reply = try await authenticate(token: token, profileId: "default", on: arriving)
+            let reply = try await authenticate(bridge, on: arriving)
             #expect(reply["auth"] as? String == "ok")
         }
     }
@@ -236,6 +184,7 @@ struct HandshakeHygieneTests {
     /// the deadline that ships only needs to cover a slow machine. Ten seconds let
     /// one silent socket hold a slot far longer than anything legitimate needs.
     @Test func theShippedDeadlineDropsASilentSocketWithinSeconds() async throws {
+        let tokenRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
         let bridge = try WebSocketBridge(
@@ -252,8 +201,8 @@ struct HandshakeHygieneTests {
     }
 
     @Test func aFirstFrameThatIsNotAHandshakeClosesTheSocket() async throws {
-        try await withStartedBridge(port: 0) { bridge, port in
-            let task = makeTask(port: port)
+        try await withStartedBridge { bridge, port in
+            let task = webSocketTask(port: port)
             defer { task.cancel() }
             task.resume()
 
@@ -267,16 +216,16 @@ struct HandshakeHygieneTests {
         }
     }
 
-    @Test func anOversizedFirstFrameIsClosedEvenWithTheRightToken() async throws {
-        try await withStartedBridge(port: 0) { bridge, port in
-            let task = makeTask(port: port)
+    @Test func anOversizedFirstFrameIsClosedEvenWhenItIsAValidHello() async throws {
+        try await withStartedBridge { bridge, port in
+            let task = webSocketTask(port: port)
             defer { task.cancel() }
             task.resume()
 
             // Valid in every other respect, so only its size can be what is refused.
-            let padding = String(repeating: "x", count: BridgeHandshake.maxFrameBytes * 2)
-            let frame = #"{"auth":"\#(await bridge.authToken)","protocolVersion":\#(MCPSafariProduct.bridgeProtocolVersion),"padding":"\#(padding)"}"#
-            try await task.send(.string(frame))
+            var extensionSide = TestExtension(token: await bridge.authToken, port: port)
+            extensionSide.extensionVersion = String(repeating: "x", count: BridgeHandshake.maxFrameBytes * 2)
+            try await task.send(.string(extensionSide.helloFrame()))
 
             #expect(await serverHungUp(on: task))
             #expect(await bridge.status().profiles.isEmpty)
@@ -284,29 +233,36 @@ struct HandshakeHygieneTests {
     }
 
     @Test func aFrameAtTheLimitIsStillDecoded() throws {
-        let token = "token"
-        let prefix = #"{"auth":"\#(token)","padding":""#
-        let suffix = #""}"#
-        let padding = String(repeating: "x", count: BridgeHandshake.maxFrameBytes - prefix.utf8.count - suffix.utf8.count)
-        let atLimit = Data((prefix + padding + suffix).utf8)
+        var extensionSide = TestExtension(token: "token", port: 8089)
+        // Pad the version string until the whole frame is exactly the limit.
+        let bare = try extensionSide.helloFrame().utf8.count
+        extensionSide.extensionVersion = String(
+            repeating: "x",
+            count: extensionSide.extensionVersion.utf8.count + BridgeHandshake.maxFrameBytes - bare
+        )
+        let atLimit = Data(try extensionSide.helloFrame().utf8)
         #expect(atLimit.count == BridgeHandshake.maxFrameBytes)
-        #expect(BridgeHandshake.decision(for: atLimit, expectedToken: token) != nil)
-        #expect(BridgeHandshake.decision(for: atLimit + Data(" ".utf8), expectedToken: token) == nil)
+
+        guard case .challenge? = BridgeHandshake.begin(with: atLimit, token: "token", port: 8089) else {
+            Issue.record("a frame at the limit should be decoded")
+            return
+        }
+        #expect(BridgeHandshake.begin(with: atLimit + Data(" ".utf8), token: "token", port: 8089) == nil)
     }
 
     @Test func anUnauthenticatedSocketCannotAnswerAPendingRequest() async throws {
-        try await withStartedBridge(port: 0) { bridge, port in
-            let extensionSocket = makeTask(port: port)
+        try await withStartedBridge { bridge, port in
+            let extensionSocket = webSocketTask(port: port)
             defer { extensionSocket.cancel() }
             extensionSocket.resume()
-            try await authenticate(token: await bridge.authToken, profileId: "default", on: extensionSocket)
+            try await authenticate(bridge, on: extensionSocket)
 
             let pending = Task { try await bridge.send(action: "tabs_query", timeout: 10) }
             let request = try await receiveObject(on: extensionSocket)
             let id = try #require(request["id"] as? String)
 
             // A local process that has not got the token, answering for the extension.
-            let impostor = makeTask(port: port)
+            let impostor = webSocketTask(port: port)
             defer { impostor.cancel() }
             impostor.resume()
             try await impostor.send(.string(#"{"id":"\#(id)","success":true,"data":"forged"}"#))

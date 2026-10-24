@@ -1,6 +1,7 @@
 // Actual stdio MCP server + authenticated loopback extension fixture; no Safari UI.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHmac, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -8,11 +9,15 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { backgroundScriptSource } from "../../Tests/helpers/extension-sources.mjs";
 import { createContext, runInContext } from "node:vm";
 
 const binary = process.env.MCPSAFARI_TEST_BINARY
     ?? fileURLToPath(new URL("../../MCPServer/.build/debug/MCPSafari", import.meta.url));
-const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1XkAAAAASUVORK5CYII=";
+/// The bridge protocol both sides speak. `Diagnostics.swift` and `background-config.js`
+/// declare it too; the handshake below only works if all three agree.
+const BRIDGE_PROTOCOL_VERSION = 2;
+const png ="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1XkAAAAASUVORK5CYII=";
 
 /// Every action the server asked the extension to perform during this run.
 const sentActions = new Set();
@@ -148,14 +153,33 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     const connect = async (profileId, respond) => {
         const socket = new WebSocket(`ws://127.0.0.1:${port}`);
         sockets.push(socket);
+        // The extension's half of the challenge-response handshake. The token is the
+        // key to both proofs and is never sent; the fixture checks the server's proof
+        // before it sends its own, as the extension does.
+        const clientNonce = randomBytes(32).toString("base64url");
+        let serverNonce;
+        const proof = (role, first, second) => createHmac("sha256", token)
+            .update(`mcpsafari-v${BRIDGE_PROTOCOL_VERSION}-${role}|${port}|${first}|${second}`)
+            .digest("base64url");
         const authenticated = new Promise((resolve, reject) => {
             socket.addEventListener("error", () => reject(new Error("WebSocket failed")));
-            socket.addEventListener("open", () => socket.send(JSON.stringify({ auth: token, protocolVersion: 1, profileId })));
+            socket.addEventListener("open", () => socket.send(JSON.stringify({
+                hello: { clientNonce, extensionVersion: "9.9.9", protocolVersion: BRIDGE_PROTOCOL_VERSION, profileId },
+            })));
             socket.addEventListener("message", ({ data }) => {
                 const message = JSON.parse(data);
+                if (message.challenge) {
+                    serverNonce = message.challenge.serverNonce;
+                    if (message.challenge.serverProof !== proof("server", clientNonce, serverNonce)) {
+                        reject(new Error("The server's proof was wrong"));
+                        return;
+                    }
+                    socket.send(JSON.stringify({ auth: { clientProof: proof("client", serverNonce, clientNonce) } }));
+                    return;
+                }
                 if (message.auth) {
                     if (message.auth === "ok") resolve();
-                    else reject(new Error("Authentication failed"));
+                    else reject(new Error(`Authentication failed: ${message.error}`));
                     return;
                 }
                 socket.send(JSON.stringify({ id: message.id, ...respond(message) }));
@@ -271,42 +295,54 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.ok(sentActions.size >= 15, `expected the tools above to exercise the bridge, saw ${sentActions.size} actions`);
 });
 
+/// Starts the real server on any free port and waits until its bridge is listening.
+/// The port it bound is how the token file is found.
+async function startServer(t, name) {
+    const server = spawn(binary, ["--port", "0"], { stdio: ["pipe", "pipe", "pipe"] });
+    const exited = new Promise((resolve) => server.once("exit", (code, by) => resolve({ code, by })));
+    const lines = createInterface({ input: server.stdout });
+    let stderr = "";
+    server.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000); });
+    t.after(() => { lines.close(); server.kill("SIGKILL"); });
+
+    const answers = new Map();
+    lines.on("line", (line) => { const message = JSON.parse(line); answers.set(message.id, message); });
+    let nextId = 1;
+    const ask = async (method, params = {}) => {
+        const id = nextId++;
+        server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+        for (let attempt = 0; attempt < 100 && !answers.has(id); attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        assert.ok(answers.has(id), `no answer to ${method}: ${stderr}`);
+        return answers.get(id).result;
+    };
+    await ask("initialize", {
+        protocolVersion: "2025-11-25", capabilities: {},
+        clientInfo: { name, version: "1.0" },
+    });
+    // Status is how the port is learned, and asking also proves it came up.
+    let status;
+    for (let attempt = 0; attempt < 50; attempt++) {
+        status = (await ask("tools/call", { name: "status", arguments: {} })).structuredContent.status;
+        if (status.listener === "listening") break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.equal(status.listener, "listening", `the bridge never came up: ${stderr}`);
+
+    const directory = join(homedir(), "Library/Application Support/MCPSafari/tokens");
+    const port = status.port;
+    return {
+        server, exited, ask, port,
+        tokenFile: join(directory, String(port)),
+        ownerFile: join(directory, `${port}.pid`),
+    };
+}
+
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
     test(`${signal} removes the server's token files before it exits`, { timeout: 30000 }, async (t) => {
-        const server = spawn(binary, ["--port", "0"], { stdio: ["pipe", "pipe", "pipe"] });
-        const exited = new Promise((resolve) => server.once("exit", (code, by) => resolve({ code, by })));
-        const lines = createInterface({ input: server.stdout });
-        let stderr = "";
-        server.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000); });
-        t.after(() => { lines.close(); server.kill("SIGKILL"); });
+        const { server, exited, tokenFile, ownerFile } = await startServer(t, "signal-test");
 
-        // Status is how the port is learned, and asking also proves it came up.
-        const answers = new Map();
-        lines.on("line", (line) => { const message = JSON.parse(line); answers.set(message.id, message); });
-        const ask = async (id, method, params = {}) => {
-            server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-            for (let attempt = 0; attempt < 100 && !answers.has(id); attempt++) {
-                await new Promise((resolve) => setTimeout(resolve, 50));
-            }
-            assert.ok(answers.has(id), `no answer to ${method}: ${stderr}`);
-            return answers.get(id).result;
-        };
-        await ask(1, "initialize", {
-            protocolVersion: "2025-11-25", capabilities: {},
-            clientInfo: { name: "signal-test", version: "1.0" },
-        });
-        let port;
-        for (let attempt = 0; attempt < 50 && !port; attempt++) {
-            const result = await ask(100 + attempt, "tools/call", { name: "status", arguments: {} });
-            const status = result.structuredContent.status;
-            if (status.listener === "listening") port = status.port;
-            else await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        assert.ok(port, `the bridge never came up: ${stderr}`);
-
-        const directory = join(homedir(), "Library/Application Support/MCPSafari/tokens");
-        const tokenFile = join(directory, String(port));
-        const ownerFile = join(directory, `${port}.pid`);
         assert.ok(await readFile(tokenFile, "utf8").catch(() => null), "the token is published while it runs");
         assert.equal(await readFile(ownerFile, "utf8"), String(server.pid), "and records which process owns it");
 
@@ -320,3 +356,62 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
         assert.equal(await readFile(ownerFile, "utf8").catch(() => null), null, "and so is its owner record");
     });
 }
+
+// The two halves of the handshake are written in different languages, so each side's
+// own tests can only show it agrees with its own reading of the protocol. This runs
+// the extension's real background code, with its WebCrypto, against the real server.
+test("the extension's own handshake code authenticates against the server", { timeout: 30000 }, async (t) => {
+    const { ask, port, tokenFile } = await startServer(t, "interop-test");
+    const token = await readFile(tokenFile, "utf8");
+
+    const listeners = [];
+    const noop = () => {};
+    const context = createContext({
+        atob, btoa, crypto: globalThis.crypto, TextEncoder, URL, Error, Date, Promise,
+        clearTimeout, setTimeout,
+        console: { error: noop, log: noop, warn: noop },
+        WebSocket,
+        browser: {
+            alarms: { create: noop, onAlarm: { addListener: noop } },
+            runtime: {
+                getManifest: () => ({ version: "9.9.9" }),
+                onMessage: { addListener: (listener) => listeners.push(listener) },
+                sendNativeMessage: async () => ({ tokens: { [port]: token } }),
+            },
+            storage: {
+                local: { get: async () => ({}), set: noop },
+                session: { get: async () => ({}), set: noop, remove: async () => {} },
+            },
+            tabs: {
+                get: async () => { throw new Error("not found"); },
+                onUpdated: { addListener: noop, removeListener: noop },
+                onRemoved: { addListener: noop },
+            },
+        },
+    });
+    runInContext(backgroundScriptSource(), context);
+    // Answer requests without a browser behind them.
+    runInContext(
+        `handleRequest = async (request) => ({ id: request.id, success: true, data: JSON.stringify([{ id: 7, url: "https://example.com/", title: "T" }]) })`,
+        context
+    );
+    // Forget the connections as well as closing them, or the close schedules a
+    // reconnect and the timer keeps this process alive after the test is over.
+    t.after(() => runInContext("for (const conn of connections.values()) conn.ws?.close(); connections.clear()", context));
+
+    // The server's port is not in the extension's scan range, so add it the way the popup does.
+    listeners[0]({ type: "addPort", port: String(port) }, {}, noop);
+    for (let attempt = 0; attempt < 100; attempt++) {
+        if (runInContext(`connections.get(${port})?.state`, context) === "connected") break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(runInContext(`connections.get(${port})?.state`, context), "connected");
+
+    const status = (await ask("tools/call", { name: "status", arguments: {} })).structuredContent.status;
+    assert.deepEqual(status.profiles.map(({ id }) => id), ["default"]);
+    assert.equal(status.extensionVersion, "9.9.9");
+    assert.equal(status.extensionProtocolVersion, BRIDGE_PROTOCOL_VERSION);
+
+    const tabs = (await ask("tools/call", { name: "tabs_context", arguments: {} })).structuredContent;
+    assert.equal(tabs.tabs[0].id, "p0t7", "a request made it to the extension and back");
+});

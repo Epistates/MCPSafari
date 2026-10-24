@@ -1,5 +1,7 @@
+import CryptoKit
 import Darwin
 import Foundation
+import Logging
 @testable import MCPSafari
 
 /// Polls until `condition` holds or `timeout` passes, and returns whether it held.
@@ -18,6 +20,60 @@ func eventually(
         try? await Task.sleep(for: .milliseconds(10))
     }
     return await condition()
+}
+
+/// Runs `body` against a started bridge and stops it afterwards, with its token
+/// files in a directory of its own. `port` 0 takes any free port, which keeps
+/// tests from colliding; the port it bound is passed to `body`.
+func withStartedBridge(
+    port: UInt16 = 0,
+    handshakeDeadline: Duration = .seconds(30),
+    _ body: (WebSocketBridge, UInt16) async throws -> Void
+) async throws {
+    let tokenRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tokenRoot) }
+    let bridge = try WebSocketBridge(
+        port: port,
+        logger: Logger(label: "BridgeTests"),
+        tokenRoot: tokenRoot,
+        handshakeDeadline: handshakeDeadline
+    )
+    await bridge.start()
+    let boundPort = await bridge.port
+    do {
+        try await body(bridge, boundPort)
+    } catch {
+        await bridge.stop()
+        throw error
+    }
+    await bridge.stop()
+}
+
+func webSocketTask(port: UInt16) -> URLSessionWebSocketTask {
+    URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+}
+
+/// Waits for the server to hang up on this socket, reading past anything it says
+/// first. Gives up after `timeout`, because a read that never fails would
+/// otherwise stall the whole suite on exactly the bug the test is looking for.
+func serverHungUp(on task: URLSessionWebSocketTask, timeout: Duration = .seconds(5)) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            while true {
+                do { _ = try await task.receive() } catch { return true }
+            }
+        }
+        group.addTask {
+            try? await Task.sleep(for: timeout)
+            return false
+        }
+        let first = await group.next() ?? false
+        // A pending `receive` is ended by cancelling the task, not the Swift task.
+        if !first { task.cancel() }
+        group.cancelAll()
+        return first
+    }
 }
 
 /// What a bridge call fails with as the MCP client would see it, or nil if the call
@@ -105,13 +161,20 @@ final class RawSocket {
         return count == 0 || errno != EAGAIN ? .closed : .silent
     }
 
-    /// Sends one masked text frame, as a client must. Payloads here are small.
+    /// Sends one masked text frame, as a client must. Payloads here are small: the
+    /// two-byte length form covers anything under 64 KiB.
     @discardableResult
     func sendText(_ text: String) -> Bool {
         let payload = Array(text.utf8)
-        precondition(payload.count < 126, "RawSocket frames are short ones")
+        precondition(payload.count < 65536, "RawSocket frames are short ones")
         let mask: [UInt8] = [0x37, 0xFA, 0x21, 0x3D]
-        var frame: [UInt8] = [0x81, 0x80 | UInt8(payload.count)] + mask
+        var frame: [UInt8] = [0x81]
+        if payload.count < 126 {
+            frame.append(0x80 | UInt8(payload.count))
+        } else {
+            frame += [0x80 | 126, UInt8(payload.count >> 8), UInt8(payload.count & 0xFF)]
+        }
+        frame += mask
         for (index, byte) in payload.enumerated() { frame.append(byte ^ mask[index % 4]) }
         return Darwin.write(descriptor, frame, frame.count) == frame.count
     }
@@ -136,4 +199,140 @@ final class RawSocket {
         guard let socket = RawSocket(port: port), socket.sendUpgrade(port: port, origin: origin) else { return nil }
         return socket
     }
+}
+
+// MARK: - The extension's side of the handshake
+
+/// Something that carries text frames to and from the bridge.
+protocol FrameTransport {
+    func sendFrame(_ text: String) async throws
+    func receiveFrame() async throws -> String
+}
+
+enum FrameTransportError: Error {
+    case closed
+    case notText
+}
+
+extension URLSessionWebSocketTask: FrameTransport {
+    func sendFrame(_ text: String) async throws { try await send(.string(text)) }
+
+    func receiveFrame() async throws -> String {
+        guard case let .string(text) = try await receive() else { throw FrameTransportError.notText }
+        return text
+    }
+}
+
+extension RawSocket: FrameTransport {
+    func sendFrame(_ text: String) async throws {
+        guard sendText(text) else { throw FrameTransportError.closed }
+    }
+
+    func receiveFrame() async throws -> String {
+        guard let text = readText() else { throw FrameTransportError.closed }
+        return text
+    }
+}
+
+/// The extension's half of the handshake, written independently of
+/// `BridgeHandshake`: its HMACs come straight from CryptoKit over the documented
+/// message text, so a mistake in the server's proof code cannot be reproduced here
+/// and hide itself. The known-answer vectors in the tests pin both to the same bytes.
+struct TestExtension {
+    var token: String
+    var port: UInt16
+    var profileId: String? = "default"
+    var extensionVersion = "0.4.0"
+    var protocolVersion = MCPSafariProduct.bridgeProtocolVersion
+    var clientNonce = BridgeHandshake.makeNonce()
+
+    // MARK: Proofs
+
+    static func mac(_ token: String, _ message: String) -> String {
+        let code = HMAC<SHA256>.authenticationCode(
+            for: Data(message.utf8),
+            using: SymmetricKey(data: Data(token.utf8))
+        )
+        return Data(code).base64URLEncodedString()
+    }
+
+    static func serverProof(token: String, port: UInt16, clientNonce: String, serverNonce: String) -> String {
+        mac(token, "mcpsafari-v\(MCPSafariProduct.bridgeProtocolVersion)-server|\(port)|\(clientNonce)|\(serverNonce)")
+    }
+
+    static func clientProof(token: String, port: UInt16, clientNonce: String, serverNonce: String) -> String {
+        mac(token, "mcpsafari-v\(MCPSafariProduct.bridgeProtocolVersion)-client|\(port)|\(serverNonce)|\(clientNonce)")
+    }
+
+    // MARK: Frames
+
+    func helloFrame() throws -> String {
+        var hello: [String: Any] = [
+            "clientNonce": clientNonce,
+            "extensionVersion": extensionVersion,
+            "protocolVersion": protocolVersion,
+        ]
+        if let profileId { hello["profileId"] = profileId }
+        return try Self.json(["hello": hello])
+    }
+
+    static func proofFrame(_ proof: String) throws -> String {
+        try json(["auth": ["clientProof": proof]])
+    }
+
+    static func json(_ object: [String: Any]) throws -> String {
+        String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+    }
+
+    static func parse(_ text: String) throws -> [String: Any] {
+        guard let object = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        else { throw FrameTransportError.notText }
+        return object
+    }
+
+    // MARK: Exchanges
+
+    /// Sends the hello and returns the challenge the server answers with, or
+    /// whatever else it answered with instead.
+    func sayHello(over transport: some FrameTransport) async throws -> [String: Any] {
+        try await transport.sendFrame(helloFrame())
+        return try Self.parse(try await transport.receiveFrame())
+    }
+
+    /// The server's proof as it appears in `challenge`, checked against the token
+    /// this client holds. False when the server's answer was not a challenge at all.
+    func serverIsGenuine(_ challengeFrame: [String: Any]) -> Bool {
+        guard let challenge = challengeFrame["challenge"] as? [String: Any],
+              let serverNonce = challenge["serverNonce"] as? String,
+              let proof = challenge["serverProof"] as? String
+        else { return false }
+        return proof == Self.serverProof(token: token, port: port, clientNonce: clientNonce, serverNonce: serverNonce)
+    }
+
+    /// Runs the whole exchange against a real server and returns its last frame.
+    /// `proofToken` is the key the client proof is made with, which differs from
+    /// `token` when a test plays an extension holding a stale token.
+    func handshake(
+        over transport: some FrameTransport,
+        proofToken: String? = nil
+    ) async throws -> [String: Any] {
+        let challengeFrame = try await sayHello(over: transport)
+        guard let challenge = challengeFrame["challenge"] as? [String: Any],
+              let serverNonce = challenge["serverNonce"] as? String
+        else { return challengeFrame }
+        guard serverIsGenuine(challengeFrame) else { throw HandshakeFailure.serverNotGenuine }
+
+        let proof = Self.clientProof(
+            token: proofToken ?? token,
+            port: port,
+            clientNonce: clientNonce,
+            serverNonce: serverNonce
+        )
+        try await transport.sendFrame(Self.proofFrame(proof))
+        return try Self.parse(try await transport.receiveFrame())
+    }
+}
+
+enum HandshakeFailure: Error {
+    case serverNotGenuine
 }

@@ -56,7 +56,7 @@ A Swift executable using the official [modelcontextprotocol/swift-sdk](https://g
 
 - `main.swift` — Entry point, parses CLI flags, starts the server
 - `SafariMCPServer.swift` — The actor itself: tool dispatch, profile routing, and the tool handlers
-- `WebSocketBridge.swift` — WebSocket server with request/response correlation (actor). Most of this actor is one state machine running from listener to connection to handshake to authenticated send, and it stays in one file for that reason: the steps share mutable bookkeeping and are far easier to follow together. What sits beside it is the part that holds no state: `BridgeHandshake.swift` (what the extension sends on connecting, and how a frame is judged a valid handshake), `BridgeStatus.swift` (the `Codable` shapes `status` and `doctor` report), `BridgeListenerAttempt.swift` (which listener states settle a bind attempt, and the deadline for one that never does), and `BridgeError.swift` (every failure and the message it gives the MCP client)
+- `WebSocketBridge.swift` — WebSocket server with request/response correlation (actor). Most of this actor is one state machine running from listener to connection to handshake to authenticated send, and it stays in one file for that reason: the steps share mutable bookkeeping and are far easier to follow together. What sits beside it is the part that holds no state: `BridgeHandshake.swift` (the challenge-response exchange: the two proofs, and how a frame is judged the next valid step), `BridgeStatus.swift` (the `Codable` shapes `status` and `doctor` report), `BridgeListenerAttempt.swift` (which listener states settle a bind attempt, and the deadline for one that never does), and `BridgeError.swift` (every failure and the message it gives the MCP client)
 - `BridgeMessage.swift` — Wire protocol types and `AnyCodable` serialization
 - `Diagnostics.swift` — CLI flag parsing and the `doctor` checks
 - `TabHandle.swift` / `FileAttachment.swift` — Profile-qualified tab handles, and loading local files for upload
@@ -79,7 +79,7 @@ A Manifest V3 Safari Web Extension with:
 - The background, split across nine files that the manifest loads in order. These are classic scripts sharing one global, so a function in any of them may call a function in any other without imports. Order matters only at load time: a statement that runs while the page is loading can see only what the files before it declared, which is why `background.js` is last. The background is deliberately **not** declared `"type": "module"`, because that would give each file its own scope and break every cross-file reference:
   - `background-config.js` — ports, timeouts, and the deadline helper the others measure against
   - `background-state.js` — connection, profile and tab state, and the website-access checks that read it
-  - `background-bridge.js` — the WebSocket client: connecting, reconnecting, reporting each port
+  - `background-bridge.js` — the WebSocket client: connecting, its half of the handshake, reconnecting, reporting each port
   - `background-router.js` — `handleRequest`, one bridge request in and one response out
   - `background-tabs.js` — tab and window tools, and the native-input handlers that foreground a tab
   - `background-navigation.js` — `navigate`, and waiting for the load it starts

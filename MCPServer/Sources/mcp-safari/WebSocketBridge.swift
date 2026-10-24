@@ -34,6 +34,9 @@ actor WebSocketBridge {
     /// Kept as a list rather than a single slot for the same reason as `connections`:
     /// a second profile dialing in must not cancel the first one mid-handshake.
     private var authenticatingConnections: [BridgeConnection] = []
+    /// Challenges sent and not yet answered, by connection. A connection in
+    /// `authenticatingConnections` without an entry here is still waiting to say hello.
+    private var pendingHandshakes: [UInt64: PendingHandshake] = [:]
     /// Sockets that arrived after the listener was ready but before its token was on
     /// disk. They are not started, so the peer's upgrade waits in the kernel, until
     /// `start()` either goes live and admits them or fails and drops them. Refusing
@@ -502,6 +505,7 @@ actor WebSocketBridge {
             pending.socket.cancel()
         }
         authenticatingConnections.removeAll()
+        pendingHandshakes.removeAll()
         for connection in connections.values {
             connection.socket.stateUpdateHandler = nil
             connection.socket.cancel()
@@ -693,6 +697,7 @@ actor WebSocketBridge {
 
     private func removeAuthenticating(_ conn: BridgeConnection) {
         authenticatingConnections.removeAll { $0.id == conn.id }
+        pendingHandshakes.removeValue(forKey: conn.id)
     }
 
     private func handleListenerState(_ state: NWListener.State, listener source: NWListener) {
@@ -865,43 +870,9 @@ actor WebSocketBridge {
         // a second one re-registered the same socket under a new profile id and
         // left the first `connections` entry pointing at it forever, so
         // `isConnected` stayed true for a profile that was gone. It also let a
-        // later handshake overwrite `lastError` through `handshakeDecision`.
-        let authenticated = profileIDsByConnection[conn.id] != nil
-        if !authenticated, let decision = handshakeDecision(for: data) {
-            switch decision {
-            case .accept(let metadata):
-                authenticate(conn, metadata: metadata)
-            case .rejectToken:
-                logger.warning("Auth token mismatch — closing connection")
-                // Say why before closing. A silent close is indistinguishable from
-                // a crash, so an extension holding the token of a previous server
-                // run could not tell it needed to read the new one, and stayed
-                // locked out until its next keepalive (#156).
-                removeAuthenticating(conn)
-                sendAuthResponse([
-                    "auth": "error",
-                    "error": "token_mismatch",
-                ], to: conn, closeAfterSending: true)
-            case .rejectProtocol(_, let received):
-                logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
-                // Free the slot now. `closeAfterSending` only cancels from the
-                // send completion, which never arrives if the peer vanishes
-                // first, and there are only a few slots to go round.
-                removeAuthenticating(conn)
-                sendAuthResponse([
-                    "auth": "error",
-                    "error": "protocol_version_mismatch",
-                    "extensionProtocolVersion": received,
-                    "serverProtocolVersion": MCPSafariProduct.bridgeProtocolVersion,
-                ], to: conn, closeAfterSending: true)
-            }
-            return
-        }
-
-        guard authenticated else {
-            logger.warning("Closing unauthenticated WebSocket connection that sent non-auth traffic")
-            conn.socket.cancel()
-            removeAuthenticating(conn)
+        // later handshake overwrite `lastError`.
+        guard profileIDsByConnection[conn.id] != nil else {
+            handleHandshakeFrame(data, from: conn)
             return
         }
 
@@ -925,16 +896,79 @@ actor WebSocketBridge {
         }
     }
 
-    func handshakeDecision(for data: Data) -> HandshakeDecision? {
-        let decision = BridgeHandshake.decision(for: data, expectedToken: authToken)
-        // Held separately from any connected profile's metadata. This used to
-        // overwrite the shared version fields, so an old build rejected in a
-        // second profile relabelled a healthy first one with its version.
-        if case .rejectProtocol(let rejectedVersion, let protocolVersion) = decision {
-            rejectedExtension = ExtensionMetadata(version: rejectedVersion, protocolVersion: protocolVersion)
-            lastError = .protocolMismatch(extensionProtocolVersion: protocolVersion)
+    /// One frame from a connection that has not finished its handshake. Which step
+    /// it is follows from whether a challenge is outstanding; what each step
+    /// accepts is decided in `BridgeHandshake`, and anything it does not recognise
+    /// as the next frame closes the connection.
+    private func handleHandshakeFrame(_ data: Data, from conn: BridgeConnection) {
+        if let pending = pendingHandshakes[conn.id] {
+            switch BridgeHandshake.finish(with: data, pending: pending, token: authToken, port: port) {
+            case .accept(let metadata)?:
+                pendingHandshakes.removeValue(forKey: conn.id)
+                authenticate(conn, metadata: metadata)
+            case .rejectToken?:
+                rejectToken(conn)
+            case nil:
+                closeUnauthenticated(conn)
+            }
+            return
         }
-        return decision
+
+        switch BridgeHandshake.begin(with: data, token: authToken, port: port) {
+        case .challenge(let pending)?:
+            pendingHandshakes[conn.id] = pending
+            sendAuthResponse(
+                BridgeHandshake.challengeFrame(for: pending, token: authToken, port: port),
+                to: conn
+            )
+        case .rejectToken?:
+            rejectToken(conn)
+        case .rejectProtocol(let rejectedVersion, let received, let tokenVerified)?:
+            logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
+            // Held separately from any connected profile's metadata. This used to
+            // overwrite the shared version fields, so an old build rejected in a
+            // second profile relabelled a healthy first one with its version. And
+            // only a peer that proved it holds the token may write it at all: this
+            // is what `status` and `doctor` tell the user, and anything on the
+            // machine can send a frame.
+            if tokenVerified { recordProtocolMismatch(extensionVersion: rejectedVersion, protocolVersion: received) }
+            // Free the slot now. `closeAfterSending` only cancels from the
+            // send completion, which never arrives if the peer vanishes
+            // first, and there are only a few slots to go round.
+            removeAuthenticating(conn)
+            sendAuthResponse([
+                "auth": "error",
+                "error": "protocol_version_mismatch",
+                "extensionProtocolVersion": received,
+                "serverProtocolVersion": MCPSafariProduct.bridgeProtocolVersion,
+            ], to: conn, closeAfterSending: true)
+        case nil:
+            closeUnauthenticated(conn)
+        }
+    }
+
+    func recordProtocolMismatch(extensionVersion: String?, protocolVersion: Int) {
+        rejectedExtension = ExtensionMetadata(version: extensionVersion, protocolVersion: protocolVersion)
+        lastError = .protocolMismatch(extensionProtocolVersion: protocolVersion)
+    }
+
+    private func rejectToken(_ conn: BridgeConnection) {
+        logger.warning("Auth token mismatch — closing connection")
+        // Say why before closing. A silent close is indistinguishable from
+        // a crash, so an extension holding the token of a previous server
+        // run could not tell it needed to read the new one, and stayed
+        // locked out until its next keepalive (#156).
+        removeAuthenticating(conn)
+        sendAuthResponse([
+            "auth": "error",
+            "error": "token_mismatch",
+        ], to: conn, closeAfterSending: true)
+    }
+
+    private func closeUnauthenticated(_ conn: BridgeConnection) {
+        logger.warning("Closing unauthenticated WebSocket connection that sent something other than the next handshake frame")
+        conn.socket.cancel()
+        removeAuthenticating(conn)
     }
 
     private func authenticate(_ conn: BridgeConnection, metadata: ExtensionMetadata) {

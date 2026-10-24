@@ -103,7 +103,7 @@ let usageText = """
 
 enum MCPSafariProduct {
     static let version = "0.3.2"
-    static let bridgeProtocolVersion = 1
+    static let bridgeProtocolVersion = 2
     static let extensionBundleIdentifier = "com.epistates.MCPSafari.Extension"
 }
 
