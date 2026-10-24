@@ -113,6 +113,70 @@ struct TokenDirectoryTests {
         #expect(try String(contentsOf: nextToken, encoding: .utf8) == "different-owner")
     }
 
+    /// The token file stays exactly what the native handler parses, which is the
+    /// whole file as the token, so who owns it is recorded in a file beside it. The
+    /// handler only takes names that are a bare port number, and `<port>.pid` is not.
+    @Test func theOwnerIsRecordedBesideTheTokenWithoutChangingIt() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoots: [root])
+        await bridge.start()
+        let port = await bridge.port
+        let token = root.appendingPathComponent("tokens/\(port)")
+        let owner = root.appendingPathComponent("tokens/\(port).pid")
+
+        let authToken = await bridge.authToken
+        #expect(try String(contentsOf: token, encoding: .utf8) == authToken)
+        #expect(UUID(uuidString: authToken) != nil)
+        #expect(try String(contentsOf: owner, encoding: .utf8) == String(getpid()))
+        #expect(UInt16(owner.lastPathComponent) == nil, "the handler must not mistake it for a port")
+        let permissions = try FileManager.default.attributesOfItem(atPath: owner.path)[.posixPermissions] as? NSNumber
+        #expect(permissions?.intValue == 0o600)
+
+        await bridge.stop()
+        #expect(!FileManager.default.fileExists(atPath: owner.path))
+    }
+
+    /// Killed outright, a server never gets to remove its token, and the extension
+    /// then dials a port nothing serves.
+    @Test func startingSweepsTokensWhoseOwnerIsGoneAndNothingElse() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("tokens", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let finished = Process()
+        finished.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try finished.run()
+        finished.waitUntilExit()
+        let deadPID = finished.processIdentifier
+
+        func plant(_ port: Int, owner: String?) throws {
+            try "token-\(port)".write(to: directory.appendingPathComponent("\(port)"), atomically: true, encoding: .utf8)
+            if let owner {
+                try owner.write(to: directory.appendingPathComponent("\(port).pid"), atomically: true, encoding: .utf8)
+            }
+        }
+        try plant(9001, owner: String(deadPID))
+        try plant(9002, owner: String(getppid()))
+        try plant(9003, owner: nil)
+        try plant(9004, owner: "not a pid")
+        try plant(9005, owner: "1")
+
+        let bridge = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoots: [root])
+        await bridge.start()
+        defer { Task { await bridge.stop() } }
+
+        func exists(_ name: String) -> Bool {
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path)
+        }
+        #expect(!exists("9001") && !exists("9001.pid"), "a dead owner's token goes")
+        #expect(exists("9002") && exists("9002.pid"), "a live owner's token stays")
+        #expect(exists("9003"), "a token with no owner record is not provably stale")
+        #expect(exists("9004") && exists("9004.pid"), "an unreadable owner record proves nothing")
+        #expect(exists("9005") && exists("9005.pid"), "pid 1 is alive, and is never signalled to find out")
+    }
+
     private func makeDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

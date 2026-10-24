@@ -272,3 +272,53 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.deepEqual(unroutable, [], `the extension has no handler for: ${unroutable.join(", ")}`);
     assert.ok(sentActions.size >= 15, `expected the tools above to exercise the bridge, saw ${sentActions.size} actions`);
 });
+
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+    test(`${signal} removes the server's token files before it exits`, { timeout: 30000 }, async (t) => {
+        const server = spawn(binary, ["--port", "0"], { stdio: ["pipe", "pipe", "pipe"] });
+        const exited = new Promise((resolve) => server.once("exit", (code, by) => resolve({ code, by })));
+        const lines = createInterface({ input: server.stdout });
+        let stderr = "";
+        server.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000); });
+        t.after(() => { lines.close(); server.kill("SIGKILL"); });
+
+        // Status is how the port is learned, and asking also proves it came up.
+        const answers = new Map();
+        lines.on("line", (line) => { const message = JSON.parse(line); answers.set(message.id, message); });
+        const ask = async (id, method, params = {}) => {
+            server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+            for (let attempt = 0; attempt < 100 && !answers.has(id); attempt++) {
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            assert.ok(answers.has(id), `no answer to ${method}: ${stderr}`);
+            return answers.get(id).result;
+        };
+        await ask(1, "initialize", {
+            protocolVersion: "2025-11-25", capabilities: {},
+            clientInfo: { name: "signal-test", version: "1.0" },
+        });
+        let port;
+        for (let attempt = 0; attempt < 50 && !port; attempt++) {
+            const result = await ask(100 + attempt, "tools/call", { name: "status", arguments: {} });
+            const status = result.structuredContent.status;
+            if (status.listener === "listening") port = status.port;
+            else await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        assert.ok(port, `the bridge never came up: ${stderr}`);
+
+        const directory = join(homedir(), "Library/Application Support/MCPSafari/tokens");
+        const tokenFile = join(directory, String(port));
+        const ownerFile = join(directory, `${port}.pid`);
+        assert.ok(await readFile(tokenFile, "utf8").catch(() => null), "the token is published while it runs");
+        assert.equal(await readFile(ownerFile, "utf8"), String(server.pid), "and records which process owns it");
+
+        server.kill(signal);
+        const { code, by } = await bounded(exited, `exit on ${signal}`, 5000);
+        // A handled signal is a normal exit with the conventional status. Dying of the
+        // signal itself would mean nothing handled it, and no cleanup ran.
+        assert.equal(by, null, `killed by ${by} instead of exiting`);
+        assert.equal(code, 128 + { SIGTERM: 15, SIGINT: 2, SIGHUP: 1 }[signal]);
+        assert.equal(await readFile(tokenFile, "utf8").catch(() => null), null, "the token file is gone");
+        assert.equal(await readFile(ownerFile, "utf8").catch(() => null), null, "and so is its owner record");
+    });
+}

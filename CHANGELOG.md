@@ -67,6 +67,7 @@
 - The sandbox grants are narrower. The extension's read exception covers `~/Library/Application Support/MCPSafari/tokens/` instead of the whole `MCPSafari` folder, and `com.apple.security.files.user-selected.read-only` is dropped from both the app and the extension, since neither opens a file panel. The two `.entitlements` files are now the only source: the app target names its file explicitly and the `ENABLE_*` build settings that used to synthesise a second copy are gone, so a local build and the release signing carry the same entitlements.
 
 ### Security
+- Token files no longer outlive the server that wrote them. The server removed its tokens only when its stdio loop ended, so SIGTERM, SIGINT, SIGHUP or a crash left a live-looking token on disk for a port nothing served, or that another program had since taken. The server now handles those three signals by stopping the bridge before it exits, and ignores SIGPIPE. Each token file also has a `<port>.pid` file beside it naming its owner, and a starting server deletes the tokens whose owner is no longer running. The token file's own contents are unchanged.
 - The extension dials the bridge at `127.0.0.1` rather than `localhost`. The server binds the IPv4 loopback address only, but the name `localhost` can resolve to `::1` first, where a different local user could be listening and would receive the handshake, token included.
 
 ## [0.3.2] - 2026-09-14

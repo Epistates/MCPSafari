@@ -54,6 +54,12 @@ actor SafariMCPServer {
         await bridge.stop()
     }
 
+    /// Takes the bridge down and removes its token files. For a signal, which ends the
+    /// process without letting `start()` return.
+    func shutdown() async {
+        await bridge.stop()
+    }
+
     // MARK: - Tool Registration
 
     private func registerToolHandlers() async {

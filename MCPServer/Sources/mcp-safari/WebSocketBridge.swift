@@ -292,6 +292,18 @@ actor WebSocketBridge {
             .appendingPathComponent(String(port), isDirectory: false)
     }
 
+    /// Who owns the token file for `port`, kept beside it as `<port>.pid`.
+    ///
+    /// A separate file because the token file's format is not this server's alone to
+    /// change: the native handler reads the whole file as the token, and takes only
+    /// files whose names are a bare port number, so a name with a suffix is ignored
+    /// by it and by the extension. The pid is what lets a later server tell a token
+    /// left behind by a process that died from one a live server is using.
+    private func ownerFile(for port: UInt16, under root: URL) -> URL {
+        root.appendingPathComponent("tokens", isDirectory: true)
+            .appendingPathComponent("\(port).pid", isDirectory: false)
+    }
+
     private func writeToken(for port: UInt16, under root: URL) throws {
         let fileManager = FileManager.default
         let tokenDirectory = root.appendingPathComponent("tokens", isDirectory: true)
@@ -299,6 +311,12 @@ actor WebSocketBridge {
         try fileManager.createDirectory(at: tokenDirectory, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenDirectory.path)
+
+        // The owner goes first, so a token never exists on disk without a record of
+        // whose it is.
+        let ownerFilePath = ownerFile(for: port, under: root).path
+        try String(getpid()).write(toFile: ownerFilePath, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ownerFilePath)
 
         let tokenFilePath = tokenFile(for: port, under: root).path
         try authToken.write(toFile: tokenFilePath, atomically: true, encoding: .utf8)
@@ -316,6 +334,7 @@ actor WebSocketBridge {
         // Whoever called this has superseded a retry that was still waiting.
         rebindTask?.cancel()
         rebindTask = nil
+        removeStaleTokenFiles()
         let generation = lifecycleGeneration
         // `lastError` is left alone until a bind succeeds, so a caller who arrives
         // while a retry is mid-sweep still sees why the last attempt failed.
@@ -445,7 +464,43 @@ actor WebSocketBridge {
             if (try? String(contentsOf: url, encoding: .utf8)) == authToken {
                 try? FileManager.default.removeItem(at: url)
             }
+            let owner = ownerFile(for: port, under: root)
+            if (try? String(contentsOf: owner, encoding: .utf8)) == String(getpid()) {
+                try? FileManager.default.removeItem(at: owner)
+            }
         }
+    }
+
+    /// Deletes per-port tokens whose owning process is gone.
+    ///
+    /// A server that is killed outright, or crashes, never gets to remove its token,
+    /// and the extension then keeps dialling a port nothing listens on (or, worse,
+    /// one a different program has since taken). Only a token with an owner record
+    /// is touched: a missing record could mean an older server that is still
+    /// running, and nothing proves it is dead.
+    private func removeStaleTokenFiles() {
+        let fileManager = FileManager.default
+        for root in tokenRoots {
+            let directory = root.appendingPathComponent("tokens", isDirectory: true)
+            guard let names = try? fileManager.contentsOfDirectory(atPath: directory.path) else { continue }
+            for name in names where name.hasSuffix(".pid") {
+                guard let port = UInt16(name.dropLast(".pid".count)) else { continue }
+                let owner = ownerFile(for: port, under: root)
+                guard let text = try? String(contentsOf: owner, encoding: .utf8),
+                      let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      pid > 1, pid != getpid(), !Self.isProcessAlive(pid)
+                else { continue }
+                logger.info("Removing the token for port \(port): its server (pid \(pid)) is gone")
+                try? fileManager.removeItem(at: tokenFile(for: port, under: root))
+                try? fileManager.removeItem(at: owner)
+            }
+        }
+    }
+
+    /// `kill` with signal 0 checks that a process exists without sending anything.
+    /// Not permitted still means it exists, under another user.
+    private static func isProcessAlive(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     /// Releases a listener this bridge is finished with.
