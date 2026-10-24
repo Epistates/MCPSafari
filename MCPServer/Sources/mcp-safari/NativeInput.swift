@@ -30,11 +30,21 @@ extension SafariMCPServer {
     struct NativeInputPlan {
         let text: String
         let clearFirst: Bool
+        /// Where the active layout puts `a`, resolved up front so a layout that
+        /// has no such key refuses the call before anything is sent. Present
+        /// exactly when `clearFirst` is.
+        let selectAllKeyCode: CGKeyCode?
         let submitKey: String?
         let submitKeyCode: CGKeyCode?
     }
 
-    nonisolated static func nativeInputPlan(_ args: [String: Value]) throws -> NativeInputPlan {
+    /// The resolver and the permission check are parameters so the plan can be
+    /// tested without a particular keyboard layout or an Accessibility grant.
+    nonisolated static func nativeInputPlan(
+        _ args: [String: Value],
+        resolveCharacter: (String) -> ResolvedCharacter? = currentLayoutKeyCode(for:),
+        permission: () throws -> Void = ensureNativeInputPermission
+    ) throws -> NativeInputPlan {
         guard let text = args["text"]?.stringValue else {
             throw ToolInputError("text is required")
         }
@@ -47,14 +57,31 @@ extension SafariMCPServer {
 
         let submitKey = args["submitKey"]?.stringValue
         let submitKeyCode = try nativeSubmitKeyCode(for: submitKey)
-        try ensureNativeInputPermission()
+        let clearFirst = args["clearFirst"]?.boolValue == true
+        let selectAllKeyCode = try clearFirst ? resolveSelectAllKeyCode(resolveCharacter: resolveCharacter) : nil
+        try permission()
 
         return NativeInputPlan(
             text: text,
-            clearFirst: args["clearFirst"]?.boolValue == true,
+            clearFirst: clearFirst,
+            selectAllKeyCode: selectAllKeyCode,
             submitKey: submitKey,
             submitKeyCode: submitKeyCode
         )
+    }
+
+    /// Command plus the key that types `a` on the active layout. Keycode 0 is `a`
+    /// on QWERTY and `q` on AZERTY, so a constant here sends Command-Q, which
+    /// quits Safari, to a French or Belgian user. A layout with no unshifted `a`
+    /// is refused rather than guessed at, and never falls back to keycode 0.
+    private nonisolated static func resolveSelectAllKeyCode(
+        resolveCharacter: (String) -> ResolvedCharacter?
+    ) throws -> CGKeyCode {
+        guard let resolved = resolveCharacter("a"), !resolved.needsShift else {
+            let layout = currentKeyboardLayoutName().map { " on \($0)" } ?? ""
+            throw ToolInputError("Native type_text cannot select the field's text first because there is no plain a key\(layout). Switch the keyboard layout, or omit clearFirst and clear the field another way.")
+        }
+        return resolved.keyCode
     }
 
     private nonisolated static func checkNativeDeadline(_ deadline: Double?) throws {
@@ -81,9 +108,9 @@ extension SafariMCPServer {
             throw nativeInputUnavailable("macOS could not create a native keyboard event.")
         }
 
-        if input.clearFirst {
+        if let selectAllKeyCode = input.selectAllKeyCode {
             try checkDeadline()
-            try postKey(code: 0, flags: .maskCommand, source: source)
+            try postKey(code: selectAllKeyCode, flags: .maskCommand, source: source)
             try checkDeadline()
             try postKey(code: 51, source: source)
         }
