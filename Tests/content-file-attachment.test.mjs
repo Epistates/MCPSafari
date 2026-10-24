@@ -65,6 +65,8 @@ function loadContent(target) {
         },
         document: { querySelector: () => target },
         window,
+        // The isolated world always has one; request ids come from it.
+        crypto: globalThis.crypto,
         setTimeout: (fn) => timers.push(fn),
         clearTimeout() {},
         atob,

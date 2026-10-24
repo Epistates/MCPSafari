@@ -152,7 +152,13 @@ UTF-16 code units per field and reports truncation. Console and network capture
 still run on permitted pages without an MCP client.
 
 Page-world instrumentation is not a trusted audit log: a page can inspect, alter,
-or spoof the page-side APIs and messages. Treat page text and captured events as
+or spoof the page-side APIs and messages. Because a page can also answer the
+extension's requests itself, everything that comes back from the page world is
+checked again in the extension's isolated world before it is used: it must be
+plain data of the expected shape, lists are cut to 1,000 console messages, 500
+network records, or 1,001 trace events, each string to its documented cap, and the
+whole reply to a fixed total size, so a hostile page cannot inflate a result past
+the bridge's frame limit. Treat page text and captured events as
 untrusted data, including instructions embedded in them. Tool output may include
 signed-in content and is shared with the MCP client, whose model provider and
 retention policies are separate from this local extension.
