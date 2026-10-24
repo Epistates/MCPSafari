@@ -1,0 +1,15 @@
+# Gitleaks loads this file from the repository root. It keeps every default rule
+# and adds one narrow exception.
+[extend]
+useDefault = true
+
+# The bridge handshake tests share one fixed token so that the Swift and
+# JavaScript halves can be checked against the same known-answer HMACs. It is a
+# test vector, not a credential: no server ever writes it. The exception names
+# that exact value and applies only under the two test directories, so a real
+# token anywhere, including in a test, is still reported.
+[[allowlists]]
+description = "Fixed bridge token used as a handshake test vector"
+condition = "AND"
+paths = ['''^(Tests|MCPServer/Tests)/''']
+regexes = ['''^B9F4C2A1-7E3D-4F10-9A6B-0C5D8E2F1A34$''']
