@@ -320,6 +320,14 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("click", { selector: "#submit", waitForText: "Done", waitTimeout: "5" }, /waitTimeout must be a number/);
     await refuse("navigate", { url: "https://example.com/", trace: true, traceDuration: "long" }, /traceDuration must be a number/);
     await refuse("type_text", { selector: "input", text: "x", trace: true, eventTypes: [""] }, /eventTypes must be an array/);
+    // The bridge token is a file the same account can read, so a file tool that
+    // took any caller-named path would hand it to a page. It is refused as a
+    // file to attach and as a file: URL to open, before the extension is asked.
+    const tokenPath = join(homedir(), "Library/Application Support/MCPSafari/tokens", String(port));
+    await refuse("upload_file", { selector: "input", filePath: tokenPath }, /bridge token/);
+    await refuse("drop_file", { selector: "body", filePaths: [tokenPath] }, /bridge token/);
+    await refuse("navigate", { url: `file://${tokenPath}` }, /bridge token/);
+    await refuse("tabs_create", { url: `file://${tokenPath}` }, /bridge token/);
     // A batch is validated as a whole before its first step runs: a bad URL in
     // step 3 must not leave steps 1 and 2 already performed.
     await refuse("run_steps", {

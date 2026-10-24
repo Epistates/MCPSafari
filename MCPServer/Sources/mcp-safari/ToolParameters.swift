@@ -337,13 +337,24 @@ extension SafariMCPServer {
     /// are `javascript:` URLs to Safari whatever `URL(string:)` thinks. Judging
     /// the same normalized string, and sending it, means the scheme that was
     /// checked is the scheme that runs.
-    nonisolated static func validatedNavigationURL(_ url: String) throws -> String {
+    ///
+    /// A `file:` URL is also refused when it resolves into the directories the
+    /// bridge token lives in. Safari would render the token as text, and
+    /// `read_page` would hand it to the caller, or to whatever a page script
+    /// could then do with a valid token.
+    nonisolated static func validatedNavigationURL(
+        _ url: String,
+        protectedRoots: [String] = ProtectedPaths.defaultRoots
+    ) throws -> String {
         let normalized = browserNormalizedURL(url)
         guard let scheme = urlScheme(of: normalized),
               allowedURLSchemes.contains(scheme.lowercased()),
-              URL(string: normalized) != nil
+              let parsed = URL(string: normalized)
         else {
             throw ToolInputError("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")
+        }
+        if scheme.lowercased() == "file", ProtectedPaths.isProtected(parsed.path, roots: protectedRoots) {
+            throw ToolInputError("Refusing to open \(parsed.path): it is in a directory where MCPSafari keeps its bridge token")
         }
         return normalized
     }
