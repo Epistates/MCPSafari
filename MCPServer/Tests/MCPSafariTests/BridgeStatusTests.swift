@@ -52,6 +52,25 @@ struct BridgeStatusTests {
         )
     }
 
+    /// Timing cannot be asserted reliably in a unit test, so this pins the answers
+    /// the byte-wise comparison has to give; the loop itself is what removes the
+    /// early exit.
+    @Test func tokensMatchOnlyWhenEveryByteDoes() {
+        let token = "B9F4C2A1-7E3D-4F10-9A6B-0C5D8E2F1A34"
+        #expect(BridgeHandshake.tokensMatch(token, token))
+        #expect(!BridgeHandshake.tokensMatch("", token))
+        #expect(!BridgeHandshake.tokensMatch(token, ""))
+        #expect(BridgeHandshake.tokensMatch("", ""))
+        #expect(!BridgeHandshake.tokensMatch(String(token.dropLast()), token))
+        #expect(!BridgeHandshake.tokensMatch(token + "0", token))
+        // A difference in the first byte, in the last, and in the middle.
+        #expect(!BridgeHandshake.tokensMatch("C" + token.dropFirst(), token))
+        #expect(!BridgeHandshake.tokensMatch(token.dropLast() + "5", token))
+        #expect(!BridgeHandshake.tokensMatch(token.replacingOccurrences(of: "-9A6B-", with: "-9A6C-"), token))
+        // Same character count, different byte count.
+        #expect(!BridgeHandshake.tokensMatch(String(repeating: "é", count: token.count), token))
+    }
+
     @Test func statusWorksWithoutAnExtensionConnection() async throws {
         let bridge = try WebSocketBridge(
             port: 8128,

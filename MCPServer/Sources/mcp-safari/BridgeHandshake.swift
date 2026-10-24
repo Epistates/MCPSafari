@@ -62,6 +62,20 @@ enum BridgeHandshake {
         return bounded.isEmpty ? WebSocketBridge.defaultProfileID : bounded
     }
 
+    /// Compares two tokens without stopping at the first byte that differs.
+    ///
+    /// `String ==` returns as soon as it finds a difference, so how long a wrong
+    /// guess takes tells the guesser how much of it was right. The length is
+    /// compared first and openly: it is not secret, since every token is a UUID.
+    static func tokensMatch(_ presented: String, _ expected: String) -> Bool {
+        let presented = Array(presented.utf8)
+        let expected = Array(expected.utf8)
+        guard presented.count == expected.count else { return false }
+        var difference: UInt8 = 0
+        for index in presented.indices { difference |= presented[index] ^ expected[index] }
+        return difference == 0
+    }
+
     /// The largest first frame a connection may send before it has authenticated.
     /// A real handshake is a couple of hundred bytes. The listener's own message
     /// limit is 32 MiB, because it has to admit tool responses and cannot vary per
@@ -74,7 +88,7 @@ enum BridgeHandshake {
     static func decision(for data: Data, expectedToken: String) -> HandshakeDecision? {
         guard data.count <= maxFrameBytes else { return nil }
         guard let message = try? JSONDecoder().decode(Message.self, from: data) else { return nil }
-        guard message.auth == expectedToken else { return .rejectToken }
+        guard tokensMatch(message.auth, expectedToken) else { return .rejectToken }
         if let protocolVersion = message.protocolVersion,
            protocolVersion != MCPSafariProduct.bridgeProtocolVersion {
             return .rejectProtocol(
