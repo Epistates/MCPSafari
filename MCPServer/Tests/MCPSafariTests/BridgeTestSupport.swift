@@ -132,8 +132,8 @@ final class RawSocket {
 
     deinit { Darwin.close(descriptor) }
 
-    @discardableResult
-    func sendUpgrade(port: UInt16, origin: String? = nil) -> Bool {
+    /// The bytes of a WebSocket upgrade request, with an `Origin` header if given.
+    static func upgradeRequest(port: UInt16, origin: String? = nil) -> [UInt8] {
         let key = Data((0..<16).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
         var lines = [
             "GET / HTTP/1.1",
@@ -144,7 +144,12 @@ final class RawSocket {
             "Sec-WebSocket-Version: 13",
         ]
         if let origin { lines.append("Origin: \(origin)") }
-        let request = Array((lines.joined(separator: "\r\n") + "\r\n\r\n").utf8)
+        return Array((lines.joined(separator: "\r\n") + "\r\n\r\n").utf8)
+    }
+
+    @discardableResult
+    func sendUpgrade(port: UInt16, origin: String? = nil) -> Bool {
+        let request = Self.upgradeRequest(port: port, origin: origin)
         return Darwin.write(descriptor, request, request.count) == request.count
     }
 

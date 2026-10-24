@@ -117,6 +117,21 @@ enum BridgeHandshake {
     /// decode as much JSON as it cared to send.
     static let maxFrameBytes = 4 * 1024
 
+    // MARK: Origin
+
+    /// The scheme Safari gives an extension page's `Origin`. The host after it is a
+    /// per-profile UUID that changes when the extension is reinstalled, so the
+    /// scheme is all there is to check.
+    private static let extensionOriginPrefix = "safari-web-extension://"
+
+    /// Whether an upgrade request carrying this `Origin` may proceed. A request with
+    /// no `Origin` never reaches here, since that is a client with no browser
+    /// behind it. One that has the header and it is not an extension's, including
+    /// `null` and an empty value, is a web page.
+    static func isAllowedOrigin(_ origin: String) -> Bool {
+        origin.lowercased().hasPrefix(extensionOriginPrefix)
+    }
+
     // MARK: Nonces and proofs
 
     /// A nonce is 32 random bytes, base64url without padding, which is always this long.

@@ -69,17 +69,9 @@ actor WebSocketBridge {
     private var rejectedExtension: ExtensionMetadata?
     private let networkQueue = DispatchQueue(label: "mcp-safari.websocket", qos: .userInitiated)
 
-    /// Authentication token that the extension must send as its first message.
+    /// The secret the extension and the bridge prove to each other that they share.
+    /// It is the key to the handshake's HMACs and is never sent.
     let authToken: String
-
-    /// The `Origin` the most recent handshake arrived with, or nil if it sent
-    /// none. Nothing turns on this yet; it exists so that what Safari sends can
-    /// be read off a real run instead of guessed at. See #121.
-    private(set) var lastHandshakeOrigin: String?
-
-    private func recordHandshakeOrigin(_ origin: String?) {
-        lastHandshakeOrigin = origin
-    }
 
     /// Stands in for a profile that reached the native handler with no
     /// `SFExtensionProfileKey`. Must match `SafariWebExtensionHandler.defaultProfileID`.
@@ -224,18 +216,22 @@ actor WebSocketBridge {
         wsOptions.autoReplyPing = true
         wsOptions.maximumMessageSize = Self.maxMessageBytes
 
-        // Records the Origin each handshake arrives with and refuses nothing on
-        // it. Browsers do not apply same-origin to WebSockets, so a page on any
-        // site can open one against a loopback port; the token is what stops it
-        // getting further. Checking Origin would be defence in depth, but what
-        // Safari's own extension sends here has never been observed, and
-        // enforcing a guess would break every install at once. Logging it means
-        // the next real-Safari run answers that, and #121 can then enforce it.
+        // Turns away a browser page. Browsers do not apply same-origin to
+        // WebSockets, so a page on any site can open one against a loopback port, and
+        // each such socket would otherwise sit in one of the few handshake slots until
+        // its deadline. Safari sends `Origin: safari-web-extension://<per-profile
+        // UUID>` for the extension, measured on a real run (#121); a client with no
+        // browser behind it sends none. Anything else is a page, and the token is
+        // still what authenticates, so this only keeps pages from crowding out the
+        // real extension.
         let logger = logger
-        wsOptions.setClientRequestHandler(networkQueue) { [weak self] _, headers in
-            let origin = headers.first { $0.name.lowercased() == "origin" }?.value
-            logger.notice("WebSocket handshake origin: \(origin ?? "<none sent>")")
-            Task { await self?.recordHandshakeOrigin(origin) }
+        wsOptions.setClientRequestHandler(networkQueue) { _, headers in
+            let origins = headers.filter { $0.name.lowercased() == "origin" }.map(\.value)
+            if let refused = origins.first(where: { !BridgeHandshake.isAllowedOrigin($0) }) {
+                // The header is the peer's own text, so it is escaped before it is logged.
+                logger.warning("Refusing a WebSocket upgrade from origin \(String(reflecting: String(refused.prefix(120))))")
+                return NWProtocolWebSocket.Response(status: .reject, subprotocol: nil)
+            }
             return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
         }
 

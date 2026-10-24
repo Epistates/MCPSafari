@@ -141,31 +141,6 @@ struct BridgeLifecycleTests {
         await bridge.stop()
     }
 
-    /// Whether a loopback WebSocket server can see the browser's `Origin` at all
-    /// decides whether #121 is implementable, and it is: the header reaches
-    /// `setClientRequestHandler`, which also gets to refuse the handshake.
-    /// Nothing is refused on it yet, because what Safari sends is still unknown.
-    @Test func theHandshakeOriginIsVisibleToTheServer() async throws {
-        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tokenRoot) }
-
-        let bridge = try WebSocketBridge(
-            port: 8371,
-            logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoot: tokenRoot
-        )
-        await bridge.start()
-        defer { Task { await bridge.stop() } }
-        let port = await bridge.port
-        #expect(await bridge.lastHandshakeOrigin == nil)
-
-        let origin = "safari-web-extension://0E4C1B2A-TEST"
-        let socket = try #require(RawSocket.dial(port: port, origin: origin))
-        #expect(socket.reply() == .upgraded, "the handshake is accepted, not refused")
-
-        #expect(await eventually { await bridge.lastHandshakeOrigin == origin })
-    }
-
     /// The listener is ready a little before its token is on disk, and a socket
     /// accepted in that gap used to be cancelled before the upgrade, which the
     /// extension saw as a bridge that hung up on it for no reason (#156). This
