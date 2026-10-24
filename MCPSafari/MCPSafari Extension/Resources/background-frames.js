@@ -16,20 +16,24 @@ function frameOfUid(value) {
     return match ? Number(match[1]) : null;
 }
 
+// The top frame is still worth reading when the page's frames cannot be
+// listed, so the call degrades to it. `enumerated` is what keeps that from
+// being silent: a caller that builds a whole-page answer has to say it only
+// saw the top frame, the same way it says so for a frame that will not answer.
 async function listFrames(tabId) {
     try {
         const frames = await browser.webNavigation.getAllFrames({ tabId });
-        if (frames && frames.length > 0) return frames;
+        if (frames && frames.length > 0) return { frames, enumerated: true };
     } catch (err) {
         console.warn("[MCPSafari] Frame enumeration failed:", err);
     }
-    return [{ frameId: 0, parentFrameId: -1, url: "" }];
+    return { frames: [{ frameId: 0, parentFrameId: -1, url: "" }], enumerated: false };
 }
 
 // A frame whose document refuses the content script (a sandboxed or already
 // unloaded one) must not fail the whole call, so misses are dropped.
 async function collectFromFrames(tabId, message) {
-    const frames = await listFrames(tabId);
+    const { frames } = await listFrames(tabId);
     const collected = [];
     for (const frame of frames) {
         try {
@@ -57,7 +61,7 @@ const FRAME_MISS_CODES = new Set(["target_not_found", "wait_timeout", "permissio
 // order and the first that resolves the target wins. The top frame is tried
 // first, which keeps single-frame pages behaving exactly as before.
 async function sendToFirstMatchingFrame(tabId, message) {
-    const frames = await listFrames(tabId);
+    const { frames } = await listFrames(tabId);
     // Asked of every frame at once rather than in turn. A `wait` whose selector
     // never appears costs its entire timeout in each frame otherwise, so a page
     // with a few iframes runs past the server's bridge timeout and the agent
@@ -101,9 +105,14 @@ async function waitInAnyFrame(tabId, message, frames) {
 // each result on the <iframe> that hosts it, so an agent sees the page the way
 // a person does instead of a top frame with holes in it.
 async function snapshotAcrossFrames(tabId, params) {
-    const frames = await listFrames(tabId);
+    const { frames, enumerated } = await listFrames(tabId);
     const trees = new Map();
     const unreachable = [];
+    // Not a frame, so there is no id or origin to give. It takes the same list
+    // because the caller's question is the same: is this tree the whole page?
+    if (!enumerated) {
+        unreachable.push({ frameId: null, origin: null, reason: "frame_enumeration_failed" });
+    }
     for (const frame of frames) {
         try {
             const tree = await sendToContentScript(

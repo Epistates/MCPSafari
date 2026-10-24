@@ -158,6 +158,8 @@ No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is
 
 A frame that will not answer at all is named in `unreachableFrames` on the root of the snapshot, one entry per frame with its `frameId` and `origin` (`null` for `about:` and sandboxed frames, which have no origin to grant). The key is absent when every frame answered. The usual cause is website access: **Always Allow on This Website** covers the top-level page only, so a page with third-party frames reads as top-frame-only until the broad grant is given. Treat a non-empty list as a partial page, since the tree is otherwise indistinguishable from a complete one.
 
+If Safari cannot list the page's frames at all, the snapshot still reads the top frame and says so with one entry in the same list, `{"frameId": null, "origin": null, "reason": "frame_enumeration_failed"}`. `find` has no envelope to carry that note, so on such a page it searches the top frame only.
+
 Three limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `screenshot` refuses a `uid` or `selector` inside an iframe for the same reason. `read_console` and `read_network` report the top frame only.
 
 ### Website access
