@@ -119,6 +119,12 @@
 
     const MAX_TREE_DEPTH = 30;
     const MAX_SNAPSHOT_NODES = 2000;
+    // One cap for the strings a node carries, its text and its name alike.
+    const MAX_TEXT_CHARS = 500;
+
+    function truncateText(text) {
+        return text.length <= MAX_TEXT_CHARS ? text : `${text.substring(0, MAX_TEXT_CHARS - 3)}...`;
+    }
 
     function takeSnapshot(params = {}) {
         const root = document.body || document.documentElement;
@@ -189,7 +195,9 @@
 
         // Leaf nodes report their whole text content. Nodes that also have
         // element children report their own direct text nodes, so mixed
-        // content such as <button><span>9</span>All</button> keeps "All".
+        // content such as <button><span>9</span>All</button> keeps "All". That
+        // is only the element's own words: the children carry the rest, and for
+        // a link, button or heading the whole label in reading order is `name`.
         const rawText = children.length === 0
             ? renderedTextRoot(element).textContent
             : ownTextContent(element);
@@ -197,11 +205,7 @@
         // would otherwise leak here what the `value` redaction above withheld.
         if (rawText && !(tag === "textarea" && isSensitiveInput(element))) {
             const text = rawText.trim();
-            if (text && text.length <= 500) {
-                node.text = text;
-            } else if (text) {
-                node.text = text.substring(0, 497) + "...";
-            }
+            if (text) node.text = truncateText(text);
         }
 
         if (children.length > 0) node.children = children;
@@ -440,7 +444,83 @@
         // Placeholder for inputs
         if (element.placeholder) return element.placeholder;
 
+        // Name from content (WAI-ARIA). Without it a link such as
+        // `Human <b>Brain</b> Organoids` has no name, and the tree shows only
+        // its own text nodes ("Human  Organoids") with "Brain" as a separate
+        // child, so the label reads out of order or, when every word sits in a
+        // child, not at all.
+        if (NAME_FROM_CONTENT_ROLES.has(getRole(element))) {
+            const text = contentName(element);
+            if (text) return text;
+        }
+
         return null;
+    }
+
+    // Roles whose name is the text they contain, per the ARIA name-from-content
+    // list, limited to the ones a page uses as controls and landmarks of text.
+    // Rows and cells are left out on purpose: a table row named by its whole
+    // row would repeat every cell's text on every row of the tree.
+    const NAME_FROM_CONTENT_ROLES = new Set([
+        "link", "button", "tab", "menuitem", "menuitemcheckbox", "menuitemradio",
+        "option", "treeitem", "heading", "switch", "checkbox", "radio", "tooltip",
+    ]);
+
+    // ARIA lets an embedded control contribute its value to the name around it.
+    // Here it contributes nothing: the snapshot withholds the value of a
+    // password or card field, and a name is the one other place it could leak.
+    const NAME_SKIPPED_TAGS = new Set(["input", "textarea", "select"]);
+
+    // The children a user sees under an element: its open shadow root in place
+    // of its light children, and a slot's assigned nodes (text included) in
+    // place of the slot's own.
+    function renderedChildNodes(element) {
+        if (element.shadowRoot) return Array.from(element.shadowRoot.childNodes);
+        if (typeof element.assignedNodes === "function") {
+            return element.assignedNodes({ flatten: true });
+        }
+        return Array.from(element.childNodes);
+    }
+
+    // The ARIA text alternative of an element's content, in document order.
+    // This walks the nodes rather than reading innerText so that it follows
+    // the same rules as the rest of the snapshot: whatever isVisible drops
+    // (aria-hidden, display:none) contributes nothing, and form controls are
+    // skipped by tag. An icon `<svg aria-hidden>` beside a label therefore
+    // does not pollute the name. It stays cheap because it stops once it has
+    // more than a name can hold.
+    function contentName(element) {
+        const parts = [];
+        let length = 0;
+        const add = (part) => {
+            parts.push(part);
+            length += part.length;
+        };
+        const walk = (node, depth) => {
+            // Padding spaces collapse when the parts are joined, so allow
+            // headroom before declaring the name long enough.
+            if (length > MAX_TEXT_CHARS * 2 || depth > MAX_TREE_DEPTH) return;
+            if (node.nodeType === Node.TEXT_NODE) {
+                add(node.textContent);
+                return;
+            }
+            if (node.nodeType !== Node.ELEMENT_NODE) return;
+            if (!isVisible(node)) return;
+            if (NAME_SKIPPED_TAGS.has(node.tagName.toLowerCase())) return;
+            // A nested element that names itself (an icon with aria-label, an
+            // image with alt) is read by that name rather than by its insides.
+            const label = node.getAttribute("aria-label") || node.alt;
+            // Block-level children are separate runs of text, so `<div>A</div>
+            // <div>B</div>` reads "A B" and not "AB". Inline ones stay joined.
+            const display = window.getComputedStyle(node).display;
+            const separate = display !== "inline" && display !== "contents";
+            if (separate) add(" ");
+            if (label) add(label);
+            else for (const child of renderedChildNodes(node)) walk(child, depth + 1);
+            if (separate) add(" ");
+        };
+        for (const child of renderedChildNodes(element)) walk(child, 0);
+        return truncateText(parts.join("").replace(/\s+/g, " ").trim());
     }
 
 
