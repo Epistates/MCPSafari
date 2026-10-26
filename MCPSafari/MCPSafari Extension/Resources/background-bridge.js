@@ -260,16 +260,39 @@ function reconnectKnownPorts() {
     }
 }
 
+// Every port with a token gets a connection, whichever port it is. A server
+// writes a token for the port it actually bound, so this finds one that fell back
+// past the default, one started on another `--port`, and one given a wider
+// `--port-range`, with nothing here to set. Lowest port first so that, past the
+// cap, which ports are left out does not change from one read to the next.
 function ensurePortsForKnownTokens() {
-    for (const [port, token] of authTokensByPort) {
+    let skipped = 0;
+    for (const port of [...authTokensByPort.keys()].sort((a, b) => a - b)) {
+        const token = authTokensByPort.get(port);
         if (staleTokensByPort.get(port) === token) continue;
         staleTokensByPort.delete(port);
-        if (isAutoScanPort(port) || manualPorts.has(port)) {
-            if (!connections.has(port)) {
-                ensurePort(port, manualPorts.has(port));
-                connectToPort(port);
-            }
+        if (connections.has(port)) continue;
+        const manual = manualPorts.has(port);
+        if (!manual && discoveredPortCount() >= MAX_DISCOVERED_PORTS) {
+            skipped++;
+            continue;
         }
+        ensurePort(port, manual);
+        connectToPort(port);
+    }
+    if (skipped > 0) {
+        console.warn(`[MCPSafari] ${skipped} token file(s) left unused: the limit is ${MAX_DISCOVERED_PORTS} discovered ports`);
+    }
+}
+
+// A server removes its token file when it stops, so a port without one has nothing
+// left to dial. Ports added by hand stay. So does a socket that is still
+// authenticated: it needs no token to keep working, and it goes by itself, and is
+// pruned on the next read, when its server closes it.
+function pruneRemovedTokenPorts() {
+    for (const [port, conn] of [...connections]) {
+        if (conn.manual || conn.state === "connected" || authTokensByPort.has(port)) continue;
+        disconnectPort(port);
     }
 }
 
@@ -300,11 +323,13 @@ function visibleConnectionStatuses() {
         // Only surface connections worth showing:
         // - Currently connected or attempting an authenticated connection
         // - Manually added by the user
-        // - Auto-scan ports with a known token or previous connection
+        // - Discovered through a token that is still there. One whose token is
+        //   gone is a server that stopped, and showing it would only be a row
+        //   that cannot be reconnected.
         const isVisible = conn.state === "connected"
             || conn.state === "connecting"
             || conn.manual
-            || (isAutoScanPort(port) && (authTokensByPort.has(port) || conn.lastConnected > 0));
+            || authTokensByPort.has(port);
         if (!isVisible) continue;
         ports.push({ port, state: conn.state, manual: conn.manual });
     }

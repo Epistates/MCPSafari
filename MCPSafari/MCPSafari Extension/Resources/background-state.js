@@ -3,9 +3,11 @@
 // Connection, profile and tab state, and the website-access checks that read it.
 
 // ─── Multi-Connection State ──────────────────────────────────────────
-// All ports in the scan range (8089-8098) are initialized at startup.
-// The extension tries to connect to each — servers that exist get connected,
-// absent ports stay disconnected and are cleaned up after AUTO_CLEANUP_MS.
+// Ports are discovered from the token files the servers write, one per port they
+// bound, so there is no range to scan and none to keep in step with the server's
+// `--port-range`. A port that has a token gets a connection; one whose token is
+// gone loses it (see `pruneRemovedTokenPorts`), and one that never answers is
+// given up on after AUTO_GIVE_UP_ATTEMPTS or AUTO_CLEANUP_MS.
 // Manually added ports are persisted in storage.local across restarts.
 
 /** @type {Map<number, {ws: WebSocket|null, state: string, attempts: number, manual: boolean, lastConnected: number}>} */
@@ -225,7 +227,12 @@ function ensurePort(port, manual = false) {
     return connections.get(port);
 }
 
-function isAutoScanPort(port) {
-    return port >= DEFAULT_PORT && port < DEFAULT_PORT + AUTO_SCAN_RANGE;
+/** How many connections exist only because a token file named their port. */
+function discoveredPortCount() {
+    let count = 0;
+    for (const conn of connections.values()) {
+        if (!conn.manual) count++;
+    }
+    return count;
 }
 

@@ -185,12 +185,11 @@ if (typeof browser.alarms !== "undefined") {
                 // threshold below ended up disagreeing with `scheduleReconnect`.
                 reconnectKnownPorts();
 
-                // Clean up auto-scan ports that have never connected or have been
+                // Clean up discovered ports that have never connected or have been
                 // disconnected for longer than AUTO_CLEANUP_MS
                 const now = Date.now();
                 for (const [port, conn] of connections) {
                     if (conn.manual) continue;
-                    if (!isAutoScanPort(port)) continue;
                     if (conn.state === "connected") continue;
                     if (conn.lastConnected === 0 && conn.attempts >= AUTO_GIVE_UP_ATTEMPTS) {
                         // Never connected — remove after a few failed attempts
@@ -223,9 +222,15 @@ async function loadAuthTokens() {
         if (response && typeof response.profile === "string" && response.profile) {
             profileId = response.profile;
         }
-        if (response && response.tokens) {
+        // The handler answers `no_token_files` when the directory holds no valid
+        // token, which is every server having stopped. That is an answer, not a
+        // failure: ignoring it left the last servers' ports in the map for good.
+        const tokens = response && response.tokens
+            ? response.tokens
+            : response && response.error === "no_token_files" ? {} : null;
+        if (tokens) {
             authTokensByPort.clear();
-            for (const [port, token] of Object.entries(response.tokens)) {
+            for (const [port, token] of Object.entries(tokens)) {
                 const parsedPort = parseInt(port, 10);
                 if (parsedPort >= 1024 && parsedPort <= 65535 && token) {
                     authTokensByPort.set(parsedPort, token);
@@ -234,6 +239,7 @@ async function loadAuthTokens() {
             for (const port of staleTokensByPort.keys()) {
                 if (!authTokensByPort.has(port)) staleTokensByPort.delete(port);
             }
+            pruneRemovedTokenPorts();
             ensurePortsForKnownTokens();
             console.log(`[MCPSafari] Loaded ${authTokensByPort.size} auth token(s)`);
         } else {

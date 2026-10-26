@@ -53,22 +53,23 @@ case .version:
     print("mcp-safari \(MCPSafariProduct.version)")
     exit(0)
 
-case .doctor(let port, let json):
-    let report = Doctor.inspect(port: port, registration: Doctor.extensionRegistration())
+case .doctor(let port, let portCount, let json):
+    let report = Doctor.inspect(port: port, portCount: portCount, registration: Doctor.extensionRegistration())
     let output = json ? try Doctor.json(report) : Doctor.humanReadable(report)
     print(output)
     exit(report.exitCode)
 
-case .serve(let port, let logLevel):
+case .serve(let port, let portCount, let logLevel):
     // Log to stderr so stdout is reserved for MCP stdio transport
     var logger = Logger(label: "mcp-safari") { label in
         StreamLogHandler.standardError(label: label)
     }
     logger.logLevel = logLevel
 
-    logger.info("Starting Safari MCP server on WebSocket port \(port)")
+    let lastPort = WebSocketBridge.lastPort(from: port, count: portCount)
+    logger.info("Starting Safari MCP server on WebSocket port \(port), trying up to \(lastPort)")
 
-    let server = try SafariMCPServer(port: port, logger: logger)
+    let server = try SafariMCPServer(port: port, portCount: portCount, logger: logger)
     let signalSources = installShutdownHandlers(for: server, logger: logger)
     try await server.start()
     // The sources are only referenced here, and Swift may release a value after its

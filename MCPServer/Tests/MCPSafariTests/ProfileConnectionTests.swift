@@ -13,8 +13,8 @@ struct ProfileConnectionTests {
 
     // MARK: - Harness
 
-    /// Ports here sit above the extension's auto-scan range (8089-8098) so a running
-    /// Safari never dials them, and the token files `start()` writes are removed after.
+    /// The token files `start()` writes go to a directory of this test's own, so a
+    /// running Safari never reads them, and they are removed after.
     private func withStartedBridge(
         port: UInt16,
         _ body: (WebSocketBridge, UInt16) async throws -> Void

@@ -59,6 +59,8 @@ actor WebSocketBridge {
     private let logger: Logger
     private let tokenRoot: URL
     private let requestedPort: UInt16
+    /// The highest port a bind sweep tries. A sweep that would run past 65535 stops there.
+    private let lastPort: UInt16
     private(set) var port: UInt16
     private var listenerStatus = ListenerStatus.stopped
     private var lastError: Failure?
@@ -194,6 +196,7 @@ actor WebSocketBridge {
             serverVersion: MCPSafariProduct.version,
             protocolVersion: MCPSafariProduct.bridgeProtocolVersion,
             requestedPort: requestedPort,
+            lastPort: lastPort,
             port: port,
             listener: listenerStatus,
             bridge: connectionStatus,
@@ -206,7 +209,22 @@ actor WebSocketBridge {
         )
     }
 
-    private static let maxPortRetries: UInt16 = 10
+    /// How many consecutive ports the bridge tries, starting at the requested one.
+    ///
+    /// The extension does not mirror this number: it dials every port that has a
+    /// token file, and only a server that bound a port writes one. So any count
+    /// here is found, with nothing to keep in step on the extension's side. The
+    /// ceiling matches the number of discovered ports the extension will manage
+    /// (`MAX_DISCOVERED_PORTS` in `background-config.js`), so a range this server
+    /// can use is never wider than what the extension will dial.
+    static let defaultPortCount: UInt16 = 10
+    static let maxPortCount: UInt16 = 64
+
+    /// The last port of a sweep of `count` ports from `first`, held at 65535 so a
+    /// range near the top of the port space shortens instead of wrapping.
+    static func lastPort(from first: UInt16, count: UInt16) -> UInt16 {
+        UInt16(min(UInt32(UInt16.max), UInt32(first) + UInt32(max(count, 1)) - 1))
+    }
 
     private func makeWebSocketParameters(for port: NWEndpoint.Port) -> NWParameters {
         let params = NWParameters(tls: nil)
@@ -241,6 +259,7 @@ actor WebSocketBridge {
 
     init(
         port: UInt16 = 8089,
+        portCount: UInt16 = WebSocketBridge.defaultPortCount,
         logger: Logger,
         tokenRoot: URL = WebSocketBridge.applicationSupportDirectoryURL,
         handshakeDeadline: Duration = .seconds(2),
@@ -251,6 +270,7 @@ actor WebSocketBridge {
         self.beforeTokenPublication = beforeTokenPublication
         self.tokenRoot = tokenRoot
         self.requestedPort = port
+        self.lastPort = Self.lastPort(from: port, count: portCount)
         self.port = port
         self.logger = logger
         self.handshakeDeadline = handshakeDeadline
@@ -314,12 +334,7 @@ actor WebSocketBridge {
         // while a retry is mid-sweep still sees why the last attempt failed.
         listenerStatus = .binding
         // Try the requested port, then successive ports if in use
-        let lastPort = min(
-            UInt32(UInt16.max),
-            UInt32(requestedPort) + UInt32(Self.maxPortRetries) - 1
-        )
-
-        for tryPortValue in UInt32(requestedPort)...lastPort {
+        for tryPortValue in UInt32(requestedPort)...UInt32(lastPort) {
             let tryPort = UInt16(tryPortValue)
             guard let nwPort = NWEndpoint.Port(rawValue: tryPort) else { continue }
 
@@ -391,11 +406,12 @@ actor WebSocketBridge {
             }
         }
 
-        logger.error("Could not bind to any port in range \(requestedPort)-\(lastPort)")
+        let scanned = requestedPort == lastPort ? "\(requestedPort)" : "\(requestedPort)-\(lastPort)"
+        logger.error("Could not bind to any port in \(scanned)")
         failStart(Failure(
             code: "bridge_bind_failed",
-            message: "No free port in \(requestedPort)-\(lastPort) for the extension bridge.",
-            recovery: "Quit whatever is holding those ports, or start the server with --port on a free one. The server keeps retrying."
+            message: "No free port in \(scanned) for the extension bridge.",
+            recovery: "Quit whatever is holding those ports, start the server with --port on a free one, or try more ports with --port-range. The server keeps retrying."
         ))
     }
 
