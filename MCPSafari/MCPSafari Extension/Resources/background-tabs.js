@@ -391,11 +391,7 @@ async function restoreSessionState() {
     // granted until a call had touched its site again.
     await loadGrantedOrigins();
 
-    // Initialize all ports in the auto-scan range.
-    // connectAll() will attempt each — servers that exist get connected,
-    // absent ports fail silently and are cleaned up by the alarm.
-    for (let offset = 0; offset < AUTO_SCAN_RANGE; offset++) {
-        ensurePort(DEFAULT_PORT + offset);
-    }
+    // No ports are created here beyond the ones added by hand. The others come
+    // from `ensurePortsForKnownTokens`, one for each token a server has written.
 }
 

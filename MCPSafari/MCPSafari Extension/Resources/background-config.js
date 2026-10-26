@@ -10,14 +10,19 @@
  * and sends BridgeResponse messages back.
  */
 
-const DEFAULT_PORT = 8089;
 const BRIDGE_PROTOCOL_VERSION = 2;
 const EXTENSION_VERSION = browser.runtime.getManifest().version;
-const AUTO_SCAN_RANGE = 10; // Ports 8089-8098 are auto-managed
+// The most ports dialled on the strength of a token file alone. There is no port
+// range to configure here: a server writes a token file for the port it bound,
+// wherever that is, and the extension dials every port that has one. This only
+// bounds the connection objects a token directory full of files can create. It
+// matches the most ports one server will try (`--port-range`), so any range the
+// server accepts is found. Ports added in the popup are not counted.
+const MAX_DISCOVERED_PORTS = 64;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 5000;
 const AUTO_CLEANUP_MS = 120_000;
-// How many failed attempts an auto-scanned port that has never answered gets
+// How many failed attempts a discovered port that has never answered gets
 // before it is left alone. One home for it: the two places that read it had
 // drifted to `>= 3` and `> 3`, so whether a port survived its fourth failure
 // depended on which one happened to look first.
