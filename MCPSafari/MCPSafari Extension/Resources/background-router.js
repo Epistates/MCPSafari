@@ -84,11 +84,41 @@ const CONTENT_PROXIES = new Map([
     ["handle_dialog", (params) => ({ action: "handle_dialog", params })],
 ]);
 
+// Interactions that can start a page load, each with the test for whether this
+// call can. They answer only once a load they start has finished
+// (`dispatchAndSettle`). They are the ones that dispatch the events a page
+// navigates on: a click follows a link or submits a form, a key press can
+// activate a control or submit one, and changing a field or select commonly
+// submits or routes straight away (`onchange`). Typing navigates only when it
+// ends in a key, so a plain `type_text` does not pay the wait.
+//
+// Not here: `hover`, `scroll` and `drag` do not follow links, and `upload_file`
+// and `drop_file` start no load of their own. A navigation any of those cause
+// anyway is still survived by a `wait` sent afterwards (`waitAcrossNavigations`).
+// A click that opens a new tab, `target="_blank"`, does not navigate this one,
+// so it answers at the end of the watch window with the new tab left to
+// `tabs_context`.
+const LOAD_STARTING_ACTIONS = new Map([
+    ["click", () => true],
+    ["press_key", () => true],
+    ["type_text", (params) => Boolean(params.submitKey)],
+    ["form_input", () => true],
+    ["select_option", () => true],
+]);
+
 async function routeAction(action, params) {
     const handler = BACKGROUND_HANDLERS.get(action);
     if (handler) return handler(params);
 
-    if (CONTENT_ACTIONS.has(action)) return dispatchToContent(action, params);
+    if (action === "wait") {
+        return waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
+    }
+    if (CONTENT_ACTIONS.has(action)) {
+        const startsLoad = LOAD_STARTING_ACTIONS.get(action);
+        return startsLoad && startsLoad(params)
+            ? dispatchAndSettle(action, params)
+            : dispatchToContent(action, params);
+    }
 
     const proxy = CONTENT_PROXIES.get(action);
     if (proxy) return sendToContentScript(params.tabId, proxy(params));
