@@ -268,6 +268,14 @@ When targeting by `text`, interactive elements (buttons, links, inputs) are rank
 
 Most interaction tools support `includeSnapshot: true`, which returns the updated accessibility tree after the action — useful for verifying the result without a separate `snapshot` call.
 
+### Interactions that load a page
+
+`click`, `press_key`, `form_input`, `select_option`, and `type_text` with a `submitKey` can start a page load: a link, a form submit, a select that routes on change. After one of them is dispatched the extension watches the tab for 400 milliseconds, and if a navigation starts it answers only once the new page has loaded, so the next read, `includeSnapshot`, and any post-action wait run against the new page. The result then ends with a line such as `Page navigated to https://example.com/article (Title)`, with credentials in the URL redacted, and the title replaced by a notice when MCPSafari has not been granted that site. A navigation that has not finished after 15 seconds is reported with `; it was still loading`. Where the page changed only its address without loading, as single-page apps do, the call settles half a second after the address changes and reports it the same way.
+
+An interaction that starts no navigation pays the 400 millisecond watch and answers as before. A navigation the page starts later than that, from a timer or after a request, is not waited for. A `click` on a link that opens a new tab (`target="_blank"`) does not navigate the tab you clicked in, so it answers after the watch with no note; call `tabs_context` to find the new tab. Native `press_key` and `type_text` are sent from the server rather than through the page, so they are not watched, though a `wait` sent afterwards is safe (below).
+
+`wait` survives a navigation that starts while it is pending, including one the page started itself. The extension notices the tab begin to load, waits for the load, and runs the wait again in the new page with the time that remains, instead of leaving the request to time out inside the page that was replaced. If the time runs out first, it fails with the retryable `wait_timeout` and says the page navigated while waiting.
+
 ### Post-action waits
 
 `navigate` and interaction tools support `waitForSelector`, `waitForText`, and `waitTimeout` to wait after a successful action before returning. When combined with `includeSnapshot: true`, the snapshot is captured after the wait. These options, and the trace options below, are checked before the action is sent, so a malformed one is refused without anything having happened and the corrected call is safe to send again. `waitTimeout` defaults to 10 seconds and is capped at 300.
