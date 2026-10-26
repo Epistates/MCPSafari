@@ -58,7 +58,9 @@ function loadBackground() {
         Promise,
         URL,
         Error,
-        setTimeout: (callback, ms) => { if ((ms || 0) <= 200) queueMicrotask(callback); return 0; },
+        // Short timers run at once, which includes the window a click watches
+        // for the load it might start; the long ones never fire.
+        setTimeout: (callback, ms) => { if ((ms || 0) <= 500) queueMicrotask(callback); return 0; },
         WebSocket: FakeWebSocket,
     });
     vm.runInContext(source, context);
