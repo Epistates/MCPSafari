@@ -86,14 +86,22 @@
     const XHROpen = XMLHttpRequest.prototype.open;
     const XHRSend = XMLHttpRequest.prototype.send;
 
+    // Observing a request must never be the reason it fails. Whatever the page
+    // passes in, the native call is made with it unchanged and decides whether
+    // that is an error; the capture is best effort and quietly gives up.
     XMLHttpRequest.prototype.open = function (method, url, ...args) {
-        this.__mcpMeta = {
-            method: method.toUpperCase(),
-            url: String(url).slice(0, 2048),
-            truncated: String(url).length > 2048,
-            type: "xhr",
-            startTime: null,
-        };
+        try {
+            const target = String(url);
+            this.__mcpMeta = {
+                method: String(method).toUpperCase(),
+                url: target.slice(0, 2048),
+                truncated: target.length > 2048,
+                type: "xhr",
+                startTime: null,
+            };
+        } catch (_) {
+            this.__mcpMeta = null;
+        }
         return XHROpen.call(this, method, url, ...args);
     };
 
@@ -126,14 +134,28 @@
 
     const originalFetch = window.fetch;
 
-    window.fetch = async function (input, init = {}) {
-        const method = (init.method || "GET").toUpperCase();
-        const url =
-            typeof input === "string"
-                ? input
-                : input instanceof Request
-                  ? input.url
-                  : String(input);
+    // The method comes from the init when it names one and otherwise from the
+    // Request, which carries its own: `fetch(new Request(url, { method: "POST" }))`
+    // has no init at all and is not a GET.
+    function describeFetch(input, init) {
+        try {
+            const options = init ?? {};
+            const isRequest = typeof Request === "function" && input instanceof Request;
+            const method = options.method || (isRequest ? input.method : null) || "GET";
+            return {
+                method: String(method).toUpperCase(),
+                url: isRequest ? input.url : String(input),
+            };
+        } catch (_) {
+            return { method: "GET", url: "" };
+        }
+    }
+
+    // `init` is passed on exactly as received: the native call treats `null` and
+    // `undefined` alike and reports a bad argument itself, so a default
+    // parameter or a dereference here could only add failures it would not have.
+    window.fetch = async function (input, init) {
+        const { method, url } = describeFetch(input, init);
         const startTime = Date.now();
 
         try {

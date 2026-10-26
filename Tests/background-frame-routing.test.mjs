@@ -40,7 +40,12 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
             onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },
-        webNavigation: { getAllFrames: async () => frames },
+        webNavigation: {
+            getAllFrames: async () => {
+                if (frames instanceof Error) throw frames;
+                return frames;
+            },
+        },
         windows: { update: async () => {} },
     };
 
@@ -188,6 +193,33 @@ test("a frame with an unreadable url is still reported", async () => {
     assert.equal(tree.unreachableFrames.length, 1);
     assert.equal(tree.unreachableFrames[0].frameId, 7);
     assert.equal(tree.unreachableFrames[0].origin, null);
+});
+
+test("a frame list that cannot be read is reported rather than collapsing to the top frame silently", async () => {
+    const { call, sent } = loadBackground({
+        frames: new Error("webNavigation unavailable"),
+        respond: () => ok(topTree()),
+    });
+
+    const tree = await call('dispatchToContent("snapshot", { tabId: 1 })');
+
+    // The top frame is still read, so the caller gets something useful...
+    assert.deepEqual(sent.map((s) => s.frameId), [0]);
+    assert.equal(tree.children[0].uid, "f0e6");
+    // ...but a tree that looks whole while any iframe is missing is the
+    // failure the unreachable list exists for.
+    assert.deepEqual(
+        [...tree.unreachableFrames].map((f) => ({ ...f })),
+        [{ frameId: null, origin: null, reason: "frame_enumeration_failed" }]
+    );
+});
+
+test("an empty frame list is treated as a failed enumeration", async () => {
+    const { call } = loadBackground({ frames: [], respond: () => ok(topTree()) });
+
+    const tree = await call('dispatchToContent("snapshot", { tabId: 1 })');
+
+    assert.equal(tree.unreachableFrames[0].reason, "frame_enumeration_failed");
 });
 
 test("find fans out and returns matches from every frame", async () => {

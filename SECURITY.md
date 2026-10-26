@@ -102,13 +102,32 @@ Tokens are written only under `~/Library/Application Support/MCPSafari/`. Earlie
 
 ### Snapshot redaction
 
-`snapshot` reports that a sensitive field has a value without reporting the value itself. Password inputs, and inputs whose `autocomplete` marks them as a password, one-time code, or payment card field, come back as `"value": "[redacted]"`. Other field values are reported verbatim. This redaction does not cover every place a page may display a secret, or other outputs such as screenshots, HTML, and JavaScript results.
+`snapshot` reports that a sensitive field has a value without reporting the value itself. An `<input>` or `<textarea>` comes back as `"value": "[redacted]"` when any of these holds:
+
+- Its type is `password`, in any letter case.
+- Its `autocomplete` carries `current-password`, `new-password`, `one-time-code`, `cc-number`, `cc-csc`, `cc-exp`, `cc-exp-month`, or `cc-exp-year`, alone or among other tokens such as `section-x cc-csc`.
+- It was a password field at any point while the page has been open. A show-password toggle flips the field to `type="text"`, so the extension watches `type` changes from page load and remembers the field.
+- Its `name`, `id`, `aria-label`, `inputmode`, or `autocomplete` names a secret: a word such as `pass`, `pwd`, `pin`, `otp`, `cvv`, `cvc`, `ssn`, `secret`, `token`, or `2fa`, or a longer run containing `password`, `passcode`, `secret`, `token`, or `one-time`. Whole words are matched for the short ones, so `shipping` and `passenger` stay readable. Checkboxes, radio buttons, and buttons are exempt from this name test because their value is a fixed label rather than something typed.
+
+A sensitive `<textarea>` also loses its default text from the snapshot, which would otherwise repeat what the value redaction withholds.
+
+The name test is a heuristic, so a secret under a name nobody has thought of is reported verbatim, and a field that was toggled out of password type inside a shadow root before the first snapshot reached that root is caught only by its name. Other field values are reported verbatim. This redaction does not cover every place a page may display a secret, or other outputs such as screenshots, HTML, and JavaScript results.
+
+### Tabs on sites you have not granted
+
+Safari's tabs API returns a URL and title for every open tab, including tabs on sites you never granted the extension, and the `tabs` permission is what allows that. `tabs_context`, `tabs_create`, `select_tab`, and `navigate` therefore describe a tab (its URL and its title) only when its site is known to be granted. The tab otherwise stays in the listing with its handle, window, and state and reports `"access": "not_granted"`, so an agent can still address it and is told what to ask you for.
+
+"Known" means a call has already run on a page of that site. It is not read from `permissions.contains`, which on Safari answers for what the manifest requests rather than what you granted, and it is not probed, because probing a site Safari has not decided on raises its permission dialog. Once a tool call has succeeded on a site, that is remembered across Safari restarts, in the extension's local storage, as a list of origins capped at 500 (the one confirmed longest ago is dropped first). An origin is forgotten the moment a call to it is refused. The consequences are that a site you granted but nothing has touched yet reads as `not_granted` until something does, and that a site you revoke in Safari Settings keeps showing its URL and title in `tabs_context` until the next call to it is refused. The extension still receives the URL and title from Safari. This controls what it reports, and what Safari discloses to the extension is Safari's to decide.
 
 ### Tab URL redaction
 
-A tab's URL is reported by `tabs_context`, `tabs_create`, `select_tab`, and `navigate`, and an OAuth callback or a presigned download carries its credential in the query or fragment. Those values come back as `[redacted]`: bearer and session parameters by name (`token`, `access_token`, `session`, `jwt`, `signature`, `X-Amz-Signature`, and the rest), plus `code` when `state` sits alongside it, since `code` on its own is more often a SKU than an OAuth code.
+A URL is reported by `tabs_context`, `tabs_create`, `select_tab`, and `navigate`, and also appears in `read_network` records, trace events, and the `href` of links in a `snapshot`. An OAuth callback or a presigned download carries its credential in the query or fragment, and a URL can carry one in its userinfo. All of those places use one redaction, applied in the extension before a result leaves it:
 
-Matching is on the whole parameter name, so a name that describes a secret rather than carrying one stays readable: `token_type=bearer` and `password_hint` are reported as they are. Two limits follow from that. The list is maintained by hand, so a credential under a name nobody has thought of is reported verbatim, and only the query and fragment are considered, so a secret in the path is not redacted.
+- A query or fragment value comes back as `[redacted]` when its parameter name contains a secret word: `token`, `secret`, `key`, `sig`, `signature`, `password`, `passwd`, `pwd`, `passcode`, `auth`, `authorization`, `session`, `sid`, `jwt`, `otp`, `ticket`, `verifier`, or `credential`. Names are split into words on separators and camelCase and percent-decoded first, so `auth_token`, `oauth_verifier`, `csrf_token`, `accessToken`, `X-Goog-Signature`, `#access-token=`, and `%74oken` are all covered. A name run together as one word is covered when it ends in `token`, `secret`, `password`, `signature`, `apikey`, or `sessionid`.
+- `code` is redacted when `state` sits alongside it, since `code` on its own is more often a SKU than an OAuth code.
+- Userinfo is replaced: `https://user:pw@host/` is reported as `https://[redacted]@host/`.
+
+A name whose last word only describes a secret stays readable, so `token_type=bearer`, `password_hint`, and `token_expires` are reported as they are, as is a name that merely contains a secret word as part of another, such as `design` or `monkey`. Two limits remain. The rule is a heuristic, so a credential under a name with none of those words is reported verbatim, and only the query, fragment, and userinfo are considered, so a secret in the path is not redacted. Page text, HTML, and console messages are not URL-redacted.
 
 ### Permissions
 
@@ -139,7 +158,13 @@ UTF-16 code units per field and reports truncation. Console and network capture
 still run on permitted pages without an MCP client.
 
 Page-world instrumentation is not a trusted audit log: a page can inspect, alter,
-or spoof the page-side APIs and messages. Treat page text and captured events as
+or spoof the page-side APIs and messages. Because a page can also answer the
+extension's requests itself, everything that comes back from the page world is
+checked again in the extension's isolated world before it is used: it must be
+plain data of the expected shape, lists are cut to 1,000 console messages, 500
+network records, or 1,001 trace events, each string to its documented cap, and the
+whole reply to a fixed total size, so a hostile page cannot inflate a result past
+the bridge's frame limit. Treat page text and captured events as
 untrusted data, including instructions embedded in them. Tool output may include
 signed-in content and is shared with the MCP client, whose model provider and
 retention policies are separate from this local extension.

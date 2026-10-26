@@ -58,6 +58,19 @@ function permissionRequiredError(origin, pending) {
     return error;
 }
 
+// The tab `select_tab` pinned is gone. Not retryable as it stands: repeating the
+// call finds the same absence, and the caller has to choose a tab again.
+function tabClosedError(tabId) {
+    const error = new Error(
+        `The tab pinned with select_tab (id ${tabId}) no longer exists, so this call was not run. `
+        + `Call tabs_context to list the open tabs, then select_tab again.`
+    );
+    error.code = "tab_closed";
+    error.retryable = false;
+    error.recoveryAction = "call_tabs_context";
+    return error;
+}
+
 // The origin is what Safari grants by, so it is the unit anything asking the
 // user to grant something has to speak in. Also the part of a URL with no
 // secrets in it, which is why unreachable frames are named this way.
@@ -126,14 +139,56 @@ async function ensureTabAccess(tabId) {
             PERMISSION_PROBE_TIMEOUT_MS
         );
         tabAccessProbes.set(tabId, { at: Date.now(), error: null });
+        rememberOriginAccess(origin, true);
     } catch (err) {
         const refusal = permissionRequiredError(origin, err instanceof DeadlineExceeded);
         tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
+        rememberOriginAccess(origin, false);
         throw refusal;
     }
 }
 
-function failureResponse(id, error) {
+/**
+ * Origins a probe has found reachable. This is the only thing that can say a
+ * tab's site is granted without raising Safari's dialog, which is what a tab
+ * listing needs: it describes many tabs at once, and probing each would open a
+ * dialog per undecided site. Anything not in here is treated as not granted.
+ *
+ * `permissions.contains` is no help (see the note in background-config.js), and
+ * the tabs API returns a URL and title for every tab whether or not its site
+ * was granted, so neither of those can tell the two apart.
+ *
+ * Learned by `ensureTabAccess` and dropped the moment it is refused. Kept in
+ * local storage, so it survives a suspended background page and a Safari
+ * restart, and bounded: insertion order is recency of confirmation, oldest
+ * first, and the oldest is evicted past MAX_GRANTED_ORIGINS. A site the user
+ * revokes in Safari Settings stays in here until a call to it is refused.
+ *
+ * @type {Set<string>}
+ */
+const grantedOrigins = new Set();
+const MAX_GRANTED_ORIGINS = 500;
+
+function rememberOriginAccess(origin, granted) {
+    if (!origin) return;
+    if (!granted) {
+        if (grantedOrigins.delete(origin)) persistGrantedOrigins();
+        return;
+    }
+    // Re-adding moves it to the recent end. Only a change in what is stored is
+    // written: a probe lands on most calls, and its order alone is not worth a
+    // storage write.
+    const known = grantedOrigins.delete(origin);
+    grantedOrigins.add(origin);
+    let evicted = false;
+    while (grantedOrigins.size > MAX_GRANTED_ORIGINS) {
+        grantedOrigins.delete(grantedOrigins.values().next().value);
+        evicted = true;
+    }
+    if (!known || evicted) persistGrantedOrigins();
+}
+
+function failureResponse(id, error, resolvedTabId = null) {
     return {
         id,
         success: false,
@@ -144,6 +199,7 @@ function failureResponse(id, error) {
         recoveryAction: typeof error.recoveryAction === "string"
             ? error.recoveryAction
             : "inspect_error",
+        resolvedTabId,
     };
 }
 

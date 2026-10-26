@@ -90,7 +90,12 @@ function backgroundHarness(initialTokens, { profile, nativeResponse, randomBytes
             },
         }),
         browser,
-        clearTimeout() {},
+        // Startup now runs a deadline of its own, which clears itself. Honouring
+        // that keeps `timers` holding only what `failLatestSocket` means to fire.
+        clearTimeout: (callback) => {
+            const index = timers.indexOf(callback);
+            if (index !== -1) timers.splice(index, 1);
+        },
         console: {
             error: (...args) => logged.push(args.join(" ")),
             log() {},
@@ -98,7 +103,7 @@ function backgroundHarness(initialTokens, { profile, nativeResponse, randomBytes
         },
         Date,
         Promise,
-        setTimeout: (callback) => timers.push(callback),
+        setTimeout: (callback) => { timers.push(callback); return callback; },
         WebSocket: FakeWebSocket,
     });
     vm.runInContext(backgroundSource, context);

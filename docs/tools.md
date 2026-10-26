@@ -16,7 +16,7 @@ This reference describes `main`, which may include tools and options not yet in 
 
 | Tool | Description |
 |-|-|
-| `tabs_context` | List open tabs across every connected Safari profile, with handles, URLs, and titles |
+| `tabs_context` | List open tabs across every connected Safari profile, with handles, state, and for sites MCPSafari has reached, URLs and titles (see [Website access](#website-access)) |
 | `tabs_create` | Open a new tab, optionally with a URL |
 | `close_tab` | Close a tab by handle |
 | `select_tab` | Pin a tab, and its Safari profile, as the default context for future calls |
@@ -54,7 +54,7 @@ This reference describes `main`, which may include tools and options not yet in 
 
 By default, interaction tools send synthetic DOM events. These reach page event handlers, but they do not trigger browser shortcuts, clipboard actions, or CSS `:hover`. Text entry uses setters and editing events that update application state.
 
-Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the page needs real macOS input. Safari must already be in front, and the app running the server needs Accessibility permission. Native input takes over your keyboard and mouse, so tool descriptions and errors tell agents to ask you before bringing Safari to the front. If you want agents to do that on their own, say so in your agent instructions. Native `type_text` types one character at a time and is not paste, so it is for short input: text over 1,000 characters is refused with `invalid_input`, and `type_text` without `native` is the tool for anything longer. Safari's focus is checked before typing, every 16 characters, and after the last one; if it is lost partway, the call stops and the error says how many characters were delivered. A cancelled call stops typing too, and native typing does not hold up other tool calls while it runs.
+Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the page needs real macOS input. Safari must already be in front, and the app running the server needs Accessibility permission. Native input takes over your keyboard and mouse, so tool descriptions and errors tell agents to ask you before bringing Safari to the front. If you want agents to do that on their own, say so in your agent instructions. Native input checks that the page itself holds focus first, and fails with the retryable `native_input_focus_failed` if Safari's address bar, find bar, or another window does, since the keys or pointer would go there instead. Native `type_text` types one character at a time and is not paste, so it is for short input: text over 1,000 characters is refused with `invalid_input`, and `type_text` without `native` is the tool for anything longer. Safari's focus is checked before typing, every 16 characters, and after the last one; if it is lost partway, the call stops and the error says how many characters were delivered. A cancelled call stops typing too, and native typing does not hold up other tool calls while it runs.
 
 Native `press_key` refuses shortcuts that quit, close, hide, or leave Safari, or that lock, log out, or empty the Trash, with `invalid_input` and nothing sent. A real key event cannot be told apart from yours, so there is no page to contain it. A combination is refused when it holds Command plus Q, W, H, M, Tab, or Space; Control plus Space; Command and Option plus Escape; or Command and Shift plus Delete or Backspace. Extra modifiers do not get around it, so Command+Shift+Q and Control+Command+Q are refused too. Use `close_tab` to close a tab, or omit `native` to send the key to the page only. Native hover and drag move your real pointer; screen coordinates assume 100% page zoom. Before the first pointer event, the server finds the topmost window at each target point, including the Dock and the menu bar, and refuses with `native_input_focus_lost` and nothing sent unless it belongs to Safari, so a window of another app over the page cannot receive the click. `click` uses synthetic events and has no native mode. Running JavaScript does not make an event trusted.
 
@@ -158,6 +158,8 @@ No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is
 
 A frame that will not answer at all is named in `unreachableFrames` on the root of the snapshot, one entry per frame with its `frameId` and `origin` (`null` for `about:` and sandboxed frames, which have no origin to grant). The key is absent when every frame answered. The usual cause is website access: **Always Allow on This Website** covers the top-level page only, so a page with third-party frames reads as top-frame-only until the broad grant is given. Treat a non-empty list as a partial page, since the tree is otherwise indistinguishable from a complete one.
 
+If Safari cannot list the page's frames at all, the snapshot still reads the top frame and says so with one entry in the same list, `{"frameId": null, "origin": null, "reason": "frame_enumeration_failed"}`. `find` has no envelope to carry that note, so on such a page it searches the top frame only.
+
 Three limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `screenshot` refuses a `uid` or `selector` inside an iframe for the same reason. `read_console` and `read_network` report the top frame only.
 
 ### Website access
@@ -170,6 +172,16 @@ So a tool that needs a page it has not been granted fails with `permission_requi
 - Access was refused, or was never asked for on this origin. Tell the user to grant it from the MCPSafari button in Safari's toolbar, or in Safari Settings > Extensions > MCPSafari Extension.
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
+
+Safari reports a URL and title for every tab, granted or not, which would otherwise let an agent read your browsing history. `tabs_context` therefore describes only tabs on sites MCPSafari has reached. Every other tab still appears with its handle, window, position, and state, so it stays usable, but carries no `url` or `title`, and reports `"access": "not_granted"` with an `accessHint` saying the user can grant the site from the MCPSafari button in Safari's toolbar. Tabs it can describe report `"access": "granted"`. `tabs_create` and `navigate` withhold the page title the same way, and `tabs_create` reports its `access` too.
+
+A site counts as reached once a call has run on a page there. MCPSafari does not check ahead, because asking Safari about a site it has not been granted is what raises the permission dialog, and a listing would raise one per site. So right after the user grants a site, its tabs still read as `not_granted` until a call reads one of them, such as `snapshot` on that tab, and the next `tabs_context` shows them.
+
+Granted status is remembered across Safari restarts once a tool call has succeeded on that site, for up to 500 sites. A site revoked in Safari Settings keeps showing its URL and title in `tabs_context` until the next call to it is refused, which also forgets it.
+
+Every tool that reads or acts on a page is gated this way, including `navigate` with `back` or `forward` (which runs a script in the page) and `resize_window`. A few operations are browser chrome and need no access to any page, so they work on an ungranted tab: `tabs_context`, `tabs_create`, `close_tab`, `select_tab`, and `navigate` with `goto` or `reload`. That is deliberate. Going to a new URL is how a caller gets off a page it cannot use, and selecting a tab only records which tab later calls mean.
+
+`select_tab` on a tab whose site is not granted succeeds. It pins the tab and brings it forward, and its result reports `"access": "not_granted"` with the same `accessHint` instead of a URL and title. The first call that reads the page then fails with `permission_required`, naming the site to grant.
 
 ### Results
 
@@ -263,6 +275,8 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 ### Page traces
 
 Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Use `eventTypes` for an exact-match allowlist such as `["dom.mutation", "network.fetch"]`; omit it to capture all URL/history, console, fetch/XHR, and DOM mutation events during the action window.
+
+Attribute mutation events carry the attribute's old and new value, cut to 512 characters with `truncated: true`. They never carry the `value` or `checked` attribute, because frameworks mirror what a user types into `value`, nor any attribute of a field the snapshot would redact, such as a password or one-time-code input. Those events say `valueOmitted: true` instead.
 
 ### Bounded action batches
 

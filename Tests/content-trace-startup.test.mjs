@@ -30,6 +30,8 @@ function loadContent() {
             },
         },
         document: {},
+        // The isolated world always has one; request ids come from it.
+        crypto: globalThis.crypto,
         setTimeout: (fn) => timers.push({ fn }) - 1,
         clearTimeout: (id) => { if (timers[id]) timers[id].fn = null; },
         window,

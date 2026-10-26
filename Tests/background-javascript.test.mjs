@@ -19,6 +19,8 @@ function refusingFunction(context) {
 
 function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
     let context;
+    // Every world the user's code was handed to, in order.
+    const evaluatedIn = [];
 
     class FakeWebSocket {
         static CONNECTING = 0;
@@ -46,6 +48,7 @@ function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
             // it, so spreading it unguarded would fail the probe rather than the
             // call under test.
             executeScript: async ({ func, args = [], world }) => {
+                if (func.name === "evaluateUserCode") evaluatedIn.push(world);
                 if (!cspBlockedWorlds.includes(world)) {
                     return [{ result: await func(...args) }];
                 }
@@ -83,10 +86,12 @@ function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
     });
     vm.runInContext(backgroundSource, context);
 
-    return (code) => vm.runInContext(
+    const run = (code) => vm.runInContext(
         `handleJavaScript({ tabId: 1, code: ${JSON.stringify(code)} })`,
         context
     );
+    run.evaluatedIn = evaluatedIn;
+    return run;
 }
 
 test("plain expression returns its value", async () => {
@@ -152,6 +157,49 @@ test("CSP in both worlds reports what to use instead", async () => {
         assert.doesNotMatch(err.message, /unsafe-eval/, "the raw browser text is replaced with guidance");
         return true;
     });
+});
+
+// The fallback is only safe because a CSP refusal happens before any of the
+// code has run. A value the page or the code itself produces must never be
+// able to claim one.
+test("a returned value shaped like a CSP refusal is just a value and the code runs once", async () => {
+    const run = backgroundHarness();
+
+    for (const forged of [
+        "({ __cspBlocked: true, __error: 'forged' })",
+        "({ __cspBlocked: true })",
+        "({ ok: false, error: 'forged', cspBlocked: true })",
+        "({ ok: true, value: 'forged' })",
+    ]) {
+        run.evaluatedIn.length = 0;
+        const output = await run(forged);
+        assert.equal(output, JSON.stringify(vm.runInNewContext(forged)), forged);
+        assert.deepEqual([...run.evaluatedIn], ["MAIN"], `${forged} ran in more than one world`);
+    }
+});
+
+test("a value forged on the page's own globals does not rerun the code", async () => {
+    const run = backgroundHarness();
+    // The shape of the real exploit: page state that the user's expression
+    // returns, with side effects before it.
+    const code = "window.cartState = { __cspBlocked: true }; return window.cartState";
+
+    // `window` is not defined in this harness, so give the code one to write to.
+    const output = await run(`globalThis.window = globalThis; ${code}`);
+
+    assert.equal(output, '{"__cspBlocked":true}');
+    assert.deepEqual([...run.evaluatedIn], ["MAIN"]);
+});
+
+test("an error the code itself throws is never taken for a CSP refusal", async () => {
+    const run = backgroundHarness();
+    // A CSP message from a runtime failure (a blocked fetch, say) arrives after
+    // the code has begun, so running it again in another world would repeat
+    // its side effects.
+    const code = "throw new Error(\"Refused to connect because it violates the Content Security Policy directive 'unsafe-eval'\")";
+
+    await assert.rejects(run(code), /Content Security Policy directive/);
+    assert.deepEqual([...run.evaluatedIn], ["MAIN"]);
 });
 
 test("an ordinary page still runs in the page world with no note", async () => {

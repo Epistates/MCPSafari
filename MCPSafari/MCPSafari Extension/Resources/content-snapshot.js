@@ -122,6 +122,7 @@
 
     function takeSnapshot(params = {}) {
         const root = document.body || document.documentElement;
+        for (const shadowRoot of allRoots()) watchForPasswordFields(shadowRoot);
         const requested = Number(params.maxNodes);
         const budget = { remaining: requested > 0 ? requested : MAX_SNAPSHOT_NODES, cut: false };
         const tree = buildTree(root, 0, budget);
@@ -192,7 +193,9 @@
         const rawText = children.length === 0
             ? renderedTextRoot(element).textContent
             : ownTextContent(element);
-        if (rawText) {
+        // A textarea's text content is its default value, so a sensitive one
+        // would otherwise leak here what the `value` redaction above withheld.
+        if (rawText && !(tag === "textarea" && isSensitiveInput(element))) {
             const text = rawText.trim();
             if (text && text.length <= 500) {
                 node.text = text;
@@ -267,9 +270,13 @@
         return implicitRoles[tag] || null;
     }
 
-    // Inputs whose contents must never reach a snapshot. Covers the explicit
-    // password type plus the autocomplete tokens browsers use for secrets.
-    const REDACTED = "[redacted]";
+    // Fields whose contents must never reach a snapshot. The rule below is a
+    // pure function of a field's attributes, and trace-interceptor.js keeps a
+    // copy of it because that file runs in the page's world and cannot read
+    // this one. Tests/sensitive-field-rule.test.mjs fails if the two drift
+    // apart, so change both together.
+    //
+    // BEGIN sensitive-field-rule
     const SENSITIVE_AUTOCOMPLETE = new Set([
         "current-password",
         "new-password",
@@ -280,18 +287,94 @@
         "cc-exp-month",
         "cc-exp-year",
     ]);
+    // A name or label is only a hint, so short words must match whole (`pin`
+    // is a secret, `shipping` is not) and long ones may sit inside a longer
+    // run (`newpassword`, `confirmPassword`).
+    const SECRET_HINT_WORDS = new Set(["pass", "pwd", "pin", "otp", "cvv", "cvc", "cvn", "ssn", "secret", "token", "2fa"]);
+    const SECRET_HINT_FRAGMENTS = ["password", "passwd", "passcode", "passphrase", "pincode", "secret", "token", "onetime"];
+    // Types that carry a label or a fixed value rather than something typed.
+    const NON_SECRET_TYPES = new Set(["button", "submit", "reset", "image", "checkbox", "radio", "file", "range", "color"]);
+
+    function hintLooksSecret(hint) {
+        const words = String(hint)
+            .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+            .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter(Boolean);
+        const joined = words.join("");
+        return words.some((word) => SECRET_HINT_WORDS.has(word))
+            || SECRET_HINT_FRAGMENTS.some((fragment) => joined.includes(fragment));
+    }
+
+    function isSensitiveField({ tag, type, autocomplete, hints }) {
+        if (tag !== "input" && tag !== "textarea") return false;
+        const kind = String(type || "").toLowerCase();
+        if (kind === "password") return true;
+        if (String(autocomplete || "").toLowerCase().split(/\s+/).some((token) => SENSITIVE_AUTOCOMPLETE.has(token))) {
+            return true;
+        }
+        if (tag === "input" && NON_SECRET_TYPES.has(kind)) return false;
+        return hints.some((hint) => hint && hintLooksSecret(hint));
+    }
+    // END sensitive-field-rule
+
+    const REDACTED = "[redacted]";
+
+    // A show-password toggle flips the field to type=text, after which the type
+    // alone no longer says it was a password. The page's own scripts do the
+    // flipping, so the only way to know is to have been watching: every field
+    // seen as a password stays in this set for the life of the page.
+    //
+    // Limits, both on purpose. A toggle that happened inside a shadow root
+    // before the first snapshot was not watched, and the name and autocomplete
+    // hints are what catch that field. And the set is per content script, so a
+    // re-injection starts it empty.
+    const everPassword = new WeakSet();
+    const watchedRoots = new WeakSet();
+    const isPasswordType = (element) => String(element.type || "").toLowerCase() === "password";
+
+    const typeObserver = typeof MutationObserver === "function"
+        ? new MutationObserver((records) => {
+            for (const record of records) {
+                const target = record.target;
+                if (String(record.oldValue || "").toLowerCase() === "password" || isPasswordType(target)) {
+                    everPassword.add(target);
+                }
+            }
+        })
+        : null;
+
+    // Covers the document from the first snapshot's point of view, and each
+    // open shadow root as the snapshot reaches it, since an observer on the
+    // document does not see into those.
+    function watchForPasswordFields(root) {
+        if (!typeObserver || watchedRoots.has(root)) return;
+        watchedRoots.add(root);
+        typeObserver.observe(root, { subtree: true, attributes: true, attributeFilter: ["type"], attributeOldValue: true });
+        for (const field of root.querySelectorAll("input")) {
+            if (isPasswordType(field)) everPassword.add(field);
+        }
+    }
+
+    watchForPasswordFields(document);
 
     function isSensitiveInput(element) {
         const tag = element.tagName ? element.tagName.toLowerCase() : "";
-        if (tag !== "input") return false;
-        if ((element.type || "").toLowerCase() === "password") return true;
-
-        const autocomplete = element.getAttribute("autocomplete");
-        if (!autocomplete) return false;
-        return autocomplete
-            .toLowerCase()
-            .split(/\s+/)
-            .some((token) => SENSITIVE_AUTOCOMPLETE.has(token));
+        if (tag !== "input" && tag !== "textarea") return false;
+        if (everPassword.has(element)) return true;
+        return isSensitiveField({
+            tag,
+            type: element.type,
+            autocomplete: element.getAttribute("autocomplete"),
+            hints: [
+                element.getAttribute("name"),
+                element.id,
+                element.getAttribute("aria-label"),
+                element.getAttribute("inputmode"),
+                element.getAttribute("autocomplete"),
+            ],
+        });
     }
 
     function getInputRole(element) {

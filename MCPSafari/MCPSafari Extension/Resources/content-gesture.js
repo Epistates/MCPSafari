@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("gesture")) return;
     mcp.loaded.add("gesture");
-    const { aimPoint, assertReachable, firesKeypress, keyCode, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { aimPoint, assertPageFocused, assertReachable, firesKeypress, keyCode, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Scroll ──────────────────────────────────────────────────────
 
@@ -247,6 +247,9 @@
     // outerWidth-innerWidth difference sits on the left of the content area.
     // Assumes 100% page zoom.
     function nativePointerPoints(params) {
+        // The points are screen coordinates, so a Safari window that is not the
+        // one in front would have them land on another application.
+        assertPageFocused("native mouse events");
         const toScreen = (cssX, cssY) => ({
             x: window.screenX + (window.outerWidth - window.innerWidth) + cssX,
             y: window.screenY + (window.outerHeight - window.innerHeight) + cssY,
@@ -318,12 +321,14 @@
 
     // A native key reaches whatever Safari has focused; when the chrome (e.g.
     // the address bar) holds focus the page never sees it. Pull focus into
-    // the document unless the page already has it.
+    // the document unless the page already has it, and say so if that did
+    // not work rather than reporting a page ready that is not.
     function prepareNativeKey() {
         if (!document.hasFocus() && document.body) {
             document.body.setAttribute("tabindex", "-1");
             document.body.focus({ preventScroll: true });
         }
+        assertPageFocused("native key events");
         return "Page ready for native key";
     }
 
