@@ -18,29 +18,46 @@ on:
 permissions:
   contents: read
 
+# Two releases of the same ref must not interleave, and a release in flight must
+# never be cancelled halfway through notarizing or publishing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   REQUIRE_SIGNING: ${{ github.ref_type == 'tag' || inputs.validate_distribution }}
   RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
 
 jobs:
-  build:
-    name: Build (${{ matrix.arch }})
+  # Everything that can be checked without a secret is checked here, and the
+  # jobs that hold secrets wait for it. Without this a pushed tag would sign,
+  # notarize and publish a commit that no test had ever seen.
+  verify:
+    name: Verify source
     runs-on: macos-26
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            swift_target: arm64-apple-macosx
-          - arch: x86_64
-            swift_target: x86_64-apple-macosx
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The commit this run was triggered for, so a tag moved while the
+          # run is in flight cannot make the jobs build different sources.
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      # A tag can be pushed on any branch by anyone who can push tags. Only a
+      # commit that has already been through review on main may be released.
+      - name: Require the tagged commit to be on main
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not an ancestor of origin/main. Releases are cut from commits that have been merged to main."
+            exit 1
+          fi
 
       - name: Require real Safari qualification before publishing
         if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -48,7 +65,12 @@ jobs:
 
       - name: Validate release version and changelog
         if: env.REQUIRE_SIGNING == 'true'
-        run: python3 .github/scripts/prepare_release.py notes "$RELEASE_VERSION" /tmp/release-notes.md
+        run: python3 .github/scripts/prepare_release.py notes "$RELEASE_VERSION" "$RUNNER_TEMP/release-notes.md"
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
 
       - name: Select Xcode 26.6
         run: |
@@ -68,14 +90,103 @@ jobs:
             exit 1
           }
 
+      - name: Test MCP Server
+        run: |
+          cd MCPServer
+          swift test --force-resolved-versions
+
+      - name: Test extension scripts
+        run: node --test Tests/*.mjs
+
+      - name: Test MCP tool result contracts
+        run: node --test .github/scripts/test_mcp_results.mjs
+
+      - name: Test release preparation
+        run: python3 .github/scripts/test_prepare_release.py
+
+      - name: Test SwiftPM OSV audit
+        run: python3 .github/scripts/test_audit_swiftpm_osv.py
+
+      - name: Audit pinned dependencies against OSV
+        run: python3 .github/scripts/audit_swiftpm_osv.py MCPServer/Package.resolved
+
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: macos-26
+    needs: verify
+    timeout-minutes: 60
+    # The Apple credentials live in the release environment, whose protection
+    # rules (required reviewers, tags only) are what stand between them and a
+    # workflow run from an arbitrary branch. A plain dry run signs nothing, so
+    # it asks for no environment and is not held for approval. This repeats the
+    # REQUIRE_SIGNING expression because the env context is not available here.
+    environment: ${{ (github.ref_type == 'tag' || inputs.validate_distribution) && 'release' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            swift_target: arm64-apple-macosx
+          - arch: x86_64
+            swift_target: x86_64-apple-macosx
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select Xcode 26.6
+        run: |
+          set -euo pipefail
+
+          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app /Applications/Xcode.app; do
+            if [ -d "$app/Contents/Developer" ]; then
+              sudo xcode-select -s "$app/Contents/Developer"
+              break
+            fi
+          done
+
+          xcodebuild -version
+          swift --version
+          swift --version | grep -q "Apple Swift version 6.3" || {
+            echo "::error::Swift 6.3 is required to build MCPServer"
+            exit 1
+          }
+
+      # ── Build (unsigned) ────────────────────────────────────────
+      #
+      # Both products are built before the signing certificate exists on the
+      # runner. A build can run code from its dependencies (SwiftPM plugins) and
+      # from the project (run script phases), and none of that should be able to
+      # reach the Developer ID key. Signing is a separate, later step.
+
+      - name: Build MCPSafari CLI
+        run: |
+          cd MCPServer
+          swift build --force-resolved-versions -c release --arch ${{ matrix.arch }}
+
+      - name: Build Safari Extension
+        run: |
+          cd MCPSafari
+          xcodebuild -project MCPSafari.xcodeproj \
+            -scheme "MCPSafari" \
+            -configuration Release \
+            -arch ${{ matrix.arch }} \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
       # ── Code Signing ────────────────────────────────────────────
 
       # A tag is a real release and must fail closed. Homebrew 5.0.0 rejects casks
       # that do not pass Gatekeeper, so an ad-hoc fallback here does not degrade
       # gracefully: it publishes a green release whose cask is broken for every
-      # user. The lenient path exists for workflow_dispatch dry runs only.
+      # user. The lenient path exists for workflow_dispatch dry runs only, and
+      # those never import the certificate at all.
       - name: Import Apple Code Signing Certificate
-        continue-on-error: ${{ github.ref_type != 'tag' && !inputs.validate_distribution }}
+        if: env.REQUIRE_SIGNING == 'true'
         # Pinned by commit: this one is handed the signing certificate, so a moved
         # tag would be handed it too. The trailing comment is load-bearing, it is
         # what lets Dependabot propose the next version.
@@ -85,62 +196,33 @@ jobs:
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Verify Certificate
+        if: env.REQUIRE_SIGNING == 'true'
         run: |
           if security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
-            echo "APPLE_CERT_IMPORTED=true" >> "$GITHUB_ENV"
             echo "✓ Developer ID certificate found"
-          elif [ "$REQUIRE_SIGNING" = "true" ]; then
+          else
             echo "::error::No Developer ID certificate available. A tagged release or strict distribution check must be signed and notarized, so this is a hard failure rather than an ad-hoc fallback. Check APPLE_CERTIFICATE_BASE64 and APPLE_CERTIFICATE_PASSWORD, which expire."
             exit 1
-          else
-            echo "APPLE_CERT_IMPORTED=false" >> "$GITHUB_ENV"
-            echo "⚠ No Developer ID certificate, ad-hoc signing this dry run"
           fi
-
-      # ── Build MCP Server (Swift CLI) ────────────────────────────
-
-      - name: Build MCPSafari CLI
-        run: |
-          cd MCPServer
-          swift build --force-resolved-versions -c release --arch ${{ matrix.arch }}
 
       - name: Sign CLI binary
-        run: |
-          BINARY="MCPServer/.build/release/MCPSafari"
-          if [ "$APPLE_CERT_IMPORTED" = "true" ]; then
-            codesign --force --verify --verbose \
-              --timestamp --options runtime \
-              --sign "${{ secrets.APPLE_DEVELOPER_ID }}" \
-              "$BINARY"
-            echo "✓ CLI signed with Developer ID"
-          else
-            codesign -s - --force "$BINARY"
-            echo "⚠ CLI ad-hoc signed"
-          fi
-
-      # ── Build Safari Extension (Xcode) ──────────────────────────
-
-      - name: Build Safari Extension
+        if: env.REQUIRE_SIGNING == 'true'
         env:
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID }}
-          SIGNING_TEAM: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          signing=(CODE_SIGNING_ALLOWED=NO)
-          if [ "$APPLE_CERT_IMPORTED" = "true" ]; then
-            signing=("CODE_SIGN_IDENTITY=$SIGNING_IDENTITY" "DEVELOPMENT_TEAM=$SIGNING_TEAM" CODE_SIGN_STYLE=Manual)
-          fi
-          cd MCPSafari
-          xcodebuild -project MCPSafari.xcodeproj \
-            -scheme "MCPSafari" \
-            -configuration Release \
-            -arch ${{ matrix.arch }} \
-            -derivedDataPath build \
-            "${signing[@]}" \
-            build
+          set -euo pipefail
+          codesign --force --verify --verbose \
+            --timestamp --options runtime \
+            --sign "$SIGNING_IDENTITY" \
+            "MCPServer/.build/release/MCPSafari"
+          echo "✓ CLI signed with Developer ID"
 
-      - name: Sign and notarize app
-        if: env.APPLE_CERT_IMPORTED == 'true'
+      - name: Sign app
+        if: env.REQUIRE_SIGNING == 'true'
+        env:
+          SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID }}
         run: |
+          set -euo pipefail
           APP_PATH="MCPSafari/build/Build/Products/Release/MCPSafari.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "::error::xcodebuild reported success but produced no MCPSafari.app. Releasing without it would ship a cask with no app in it."
@@ -151,29 +233,67 @@ jobs:
           APPEX_PATH="$APP_PATH/Contents/PlugIns/MCPSafari Extension.appex"
           codesign --force --verify --verbose \
             --timestamp --options runtime \
-            --sign "${{ secrets.APPLE_DEVELOPER_ID }}" \
+            --sign "$SIGNING_IDENTITY" \
             --entitlements "MCPSafari/MCPSafari Extension/MCPSafari Extension.entitlements" \
             "$APPEX_PATH"
 
           # Sign the host app
           codesign --force --verify --verbose \
             --timestamp --options runtime \
-            --sign "${{ secrets.APPLE_DEVELOPER_ID }}" \
+            --sign "$SIGNING_IDENTITY" \
             --entitlements "MCPSafari/MCPSafari/MCPSafari.entitlements" \
             "$APP_PATH"
 
-          # Create ZIP for notarization
+      # Everything below signs with what is already in the keychain or talks to
+      # Apple with an Apple ID, so the key has no further use on this runner.
+      # Runs on failure too: the action's own cleanup is not relied on alone.
+      - name: Remove signing keychain
+        if: always() && env.REQUIRE_SIGNING == 'true'
+        run: security delete-keychain signing_temp.keychain-db || true
+
+      - name: Ad-hoc sign CLI binary (dry run)
+        if: env.REQUIRE_SIGNING != 'true'
+        run: |
+          codesign -s - --force "MCPServer/.build/release/MCPSafari"
+          echo "⚠ CLI ad-hoc signed"
+
+      - name: Notarize app
+        if: env.REQUIRE_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP_PATH="MCPSafari/build/Build/Products/Release/MCPSafari.app"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "MCPSafari-notarize.zip"
 
-          # Notarize
+          # notarytool can exit 0 for a submission Apple rejected, so the exit
+          # status is not what decides this: the reported status is.
+          submit_exit=0
           xcrun notarytool submit "MCPSafari-notarize.zip" \
-            --apple-id "${{ secrets.APPLE_ID }}" \
-            --password "${{ secrets.APPLE_ID_PASSWORD }}" \
-            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-            --wait \
-            --timeout 30m
+            --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait --timeout 30m --output-format json > notary-app-result.json || submit_exit=$?
+          cat notary-app-result.json
 
-          # Staple
+          result="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("status", ""), r.get("id", ""))' notary-app-result.json || true)"
+          status="${result%% *}"
+          submission_id="${result#* }"
+          if [ "$status" != "Accepted" ]; then
+            echo "::error::App notarization was not accepted (status: ${status:-unknown}, notarytool exit: $submit_exit)"
+            if [ -n "$submission_id" ]; then
+              xcrun notarytool log "$submission_id" \
+                --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" || true
+            fi
+            exit 1
+          fi
+
+      - name: Staple app
+        if: env.REQUIRE_SIGNING == 'true'
+        run: |
+          set -euo pipefail
+          APP_PATH="MCPSafari/build/Build/Products/Release/MCPSafari.app"
           xcrun stapler staple "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
           codesign --verify --deep --strict "$APP_PATH"
@@ -204,6 +324,72 @@ jobs:
           echo "Artifacts:"
           ls -lh artifacts/
 
+      # The checks above ran on the bundle in the build tree. This one runs on
+      # what a user would download: the app extracted from the shipped tarball,
+      # so a packaging step that dropped the ticket, the signature or an
+      # architecture is caught here and not by a user.
+      - name: Verify packaged app
+        if: env.REQUIRE_SIGNING == 'true'
+        env:
+          EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          work="$(mktemp -d)"
+          tar -xzf "artifacts/MCPSafari-Extension-${ARCH}.tar.gz" -C "$work"
+          app="$work/MCPSafari.app"
+          appex="$app/Contents/PlugIns/MCPSafari Extension.appex"
+
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose "$app"
+
+          # Compares what is actually sealed into a bundle with what the repo
+          # says it should have. A signature that is merely valid would also
+          # accept a debugger entitlement picked up from a build setting.
+          check_bundle() {
+            local bundle="$1" committed="$2" name details team executable
+            name="$(basename "$bundle")"
+
+            details="$(codesign -dv --verbose=4 "$bundle" 2>&1)"
+            team="$(sed -n 's/^TeamIdentifier=//p' <<<"$details")"
+            [ "$team" = "$EXPECTED_TEAM_ID" ] || fail "$name is signed by team '${team:-none}', expected '$EXPECTED_TEAM_ID'"
+            grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime' <<<"$details" || fail "$name was signed without the hardened runtime"
+
+            executable="$bundle/Contents/MacOS/$(plutil -extract CFBundleExecutable raw -o - "$bundle/Contents/Info.plist")"
+            [ "$(lipo -archs "$executable")" = "$ARCH" ] || fail "$name executable is '$(lipo -archs "$executable")', expected '$ARCH'"
+
+            codesign -d --entitlements :- "$bundle" > "$work/signed.plist" 2>/dev/null
+            python3 - "$work/signed.plist" "$committed" "$name" <<'PY'
+          import plistlib
+          import sys
+
+          signed_path, committed_path, name = sys.argv[1:4]
+          with open(signed_path, "rb") as f:
+              signed = plistlib.load(f)
+          with open(committed_path, "rb") as f:
+              committed = plistlib.load(f)
+
+          forbidden = {
+              "com.apple.security.get-task-allow",
+              "com.apple.security.cs.disable-library-validation",
+              "com.apple.security.cs.allow-jit",
+              "com.apple.security.cs.allow-unsigned-executable-memory",
+          }
+          present = sorted(forbidden & signed.keys())
+          if present:
+              sys.exit(f"::error::{name} is signed with forbidden entitlements: {present}")
+          if signed != committed:
+              sys.exit(f"::error::{name} entitlements differ from the committed file: signed {signed}, committed {committed}")
+          PY
+          }
+
+          check_bundle "$app" "MCPSafari/MCPSafari/MCPSafari.entitlements"
+          check_bundle "$appex" "MCPSafari/MCPSafari Extension/MCPSafari Extension.entitlements"
+          echo "✓ Packaged app verified"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -219,6 +405,9 @@ jobs:
     runs-on: macos-26
     needs: build
     timeout-minutes: 45
+    # Only ever runs when signing is required, so it always holds the Apple ID
+    # credentials and always asks for the environment that guards them.
+    environment: release
     permissions:
       contents: write
       # Both are needed to mint a provenance attestation: the OIDC token
@@ -231,6 +420,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Download all artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

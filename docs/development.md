@@ -32,7 +32,17 @@ The binary is `MCPServer/.build/release/MCPSafari`.
 
 ## CI
 
-[ci.yml](../.github/workflows/ci.yml) builds and tests the Swift server, runs the Node extension tests, checks the MCP handshake, and builds the Safari extension. Its path filters skip Markdown-only changes. Security scans have [separate workflows](../.github/workflows).
+[ci.yml](../.github/workflows/ci.yml) builds and tests the Swift server, runs the Node extension tests, type-checks the extension scripts, checks the MCP handshake, and builds the Safari extension. Its path filters skip Markdown-only changes. Security scans have [separate workflows](../.github/workflows).
+
+The type check exists because the extension scripts share globals across files with no imports, so a misspelled name is a `ReferenceError` that only surfaces when that code path runs. It fails on undeclared names and calls with too many arguments, and ignores the remaining type-shape diagnostics, which plain JavaScript produces in bulk. To run it locally:
+
+```sh
+npx --yes -p typescript@7.0.2 tsc -p tsconfig.json
+```
+
+Expect diagnostics about property shapes; only `TS2304`, `TS2552` and `TS2554` fail CI. Keep the version here in step with the one in `ci.yml`. A new global that Safari provides, as `browser` is, is declared in `extension-globals.d.ts`.
+
+Pull request runs for CI and the security scans are cancelled when a newer push supersedes them. Runs on `main`, scheduled runs and releases never are.
 
 ## Architecture
 
@@ -113,10 +123,16 @@ Use a statement such as `Verified on macOS <exact version> / Safari <exact versi
 Safari version or a simulated profile test is not evidence of a real Safari pass.
 
 Tagged releases require matching versions in the CLI, extension manifest, Xcode
-project, and a nonempty versioned changelog entry. The release workflow publishes
-that entry, checks the complete artifact set, verifies signatures, notarizes the
-app and standalone CLI binaries, and creates relative-path checksums. Manual
-workflow dispatch builds artifacts for inspection and does not publish a release.
+project, and a nonempty versioned changelog entry. Before any secret is used, the
+release workflow checks that the tagged commit is an ancestor of `main` and runs
+the Swift, extension, contract and release-preparation tests and the dependency
+audit. It then builds both products unsigned, and only after that imports the
+signing certificate. It publishes the changelog entry, checks the complete
+artifact set, verifies signatures, notarizes the app and standalone CLI binaries,
+re-verifies the app extracted from each shipped archive (signature, stapled
+ticket, Gatekeeper, team, hardened runtime, architecture and entitlements), and
+creates relative-path checksums. Manual workflow dispatch builds artifacts for
+inspection and does not publish a release.
 Actual Developer ID signing and Apple service acceptance must still be verified
 in the release environment; local script tests cannot establish either.
 
@@ -125,7 +141,8 @@ with `validate_distribution: true` and the version recorded in the source and
 changelog. This requires valid Developer ID credentials, notarizes the app and all
 CLI binaries (including the universal binary), and uploads `validated-distribution`
 artifacts. The publication step only runs on a tag push. The default manual run
-remains a build-only dry run that permits missing signing credentials.
+remains a build-only dry run: it never imports the signing certificate, never asks
+for the `release` environment, and produces an ad-hoc signed CLI and an unsigned app.
 
 ### Recording release qualification
 
@@ -146,3 +163,13 @@ python3 .github/scripts/prepare_release.py qualify v0.4.0
 Manual distribution validation remains available while browser qualification is
 pending and cannot publish. This is workflow enforcement, not repository access
 control: administrators able to change workflows can change this gate.
+
+### Repository settings
+
+The release workflow assumes three settings that live in GitHub, not in the repository. Without them the checks above are advisory, because anyone who can push a branch can edit a workflow.
+
+- **A `release` environment** (Settings, Environments) that holds the signing secrets: `APPLE_CERTIFICATE_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_DEVELOPER_ID`, `APPLE_TEAM_ID`, `APPLE_ID` and `APPLE_ID_PASSWORD`. Remove any repository-level copies, since those stay readable to every run. Turn on required reviewers, and under deployment branches and tags allow only the tag pattern `v*`. The workflow requests this environment only when a run must be signed (a tag push, or a dispatch with `validate_distribution`); a plain dry run asks for nothing. Each signing job (one per architecture, plus the release job) is approved separately. To run `validate_distribution` before tagging, also allow `main` and dispatch from there.
+- **A tag ruleset** (Settings, Rules) for `v*` that restricts creation, update and deletion to the maintainers. A tag is what triggers signing and publishing, and a moved tag would change what an approved release contains.
+- **Immutable releases** (Settings, General, Releases), so a published release's assets and tag cannot be altered or replaced after the fact.
+
+The tag-on-`main` check reads `origin/main` without credentials, which works while the repository is public.

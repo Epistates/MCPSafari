@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "lib": ["es2022", "dom"],
+    "types": []
+  },
+  "include": [
+    "extension-globals.d.ts",
+    "MCPSafari/MCPSafari Extension/Resources/*.js"
+  ]
+}

@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request makes the earlier run moot. Pushes to main are
+# never cancelled, so every commit on main keeps its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: Build & Test
@@ -29,6 +35,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned rather than taken from whatever the runner image ships, so a
+      # runner image update cannot change the Node the extension tests run on.
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
 
       - name: Select Xcode 26.6
         run: |
@@ -60,6 +75,28 @@ jobs:
 
       - name: Test extension scripts
         run: node --test Tests/*.mjs
+
+      # The extension scripts are untyped and share globals across files, so a
+      # misspelled cross-file name is a ReferenceError at runtime that no test
+      # may reach. Only undeclared names (TS2304, TS2552) and wrong argument
+      # counts (TS2554) fail the build: the remaining diagnostics are type-shape
+      # complaints about plain JavaScript that are not worth fixing yet.
+      - name: Type-check extension scripts
+        run: |
+          set -uo pipefail
+          status=0
+          npx --yes -p typescript@7.0.2 tsc -p tsconfig.json --pretty false > "$RUNNER_TEMP/tsc.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/tsc.log"
+          # A crash or a bad config prints no file-level diagnostics, so
+          # without this a broken checker would look like a clean one.
+          if [ "$status" -ne 0 ] && ! grep -q 'error TS' "$RUNNER_TEMP/tsc.log"; then
+            echo "::error::tsc did not run to completion"
+            exit 1
+          fi
+          if grep -E ': error TS(2304|2552|2554):|^error TS' "$RUNNER_TEMP/tsc.log"; then
+            echo "::error::Extension scripts use an undeclared name or pass the wrong number of arguments"
+            exit 1
+          fi
 
       - name: Test MCP tool result contracts
         run: node --test .github/scripts/test_mcp_results.mjs
