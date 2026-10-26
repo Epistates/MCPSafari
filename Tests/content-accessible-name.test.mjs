@@ -261,10 +261,14 @@ test("a field's value inside a link never reaches the name", async () => {
         field("text", secret, { name: "otp" }),
         el("textarea", { props: { value: secret } }, [text(secret)]),
     ]);
-    const tree = await snapshotOf(el("body", {}, [link]));
+    const call = loadContent(el("body", {}, [link]));
 
-    assert.equal(tree.children[0].name, "Sign in as");
-    assert.ok(!tree.children[0].name.includes(secret));
+    // find reports the name even when the tree omits one equal to the text.
+    const { data } = await call("find", { selector: "a" });
+    assert.equal(data[0].name, "Sign in as");
+
+    const tree = (await call("snapshot", {})).data;
+    assert.ok(!(tree.children[0].name || "").includes(secret));
 });
 
 test("a heading with inline markup is named by its whole text", async () => {
@@ -362,4 +366,85 @@ test("hover by the full visible title acts on the link", async () => {
 
     assert.equal(response.error, null);
     assert.ok(link.events.length > 0);
+});
+
+test("a title does not replace the content of a link", async () => {
+    const link = el("a", { props: { title: "Read the full story" } }, [text("Read more")]);
+    const call = loadContent(el("body", {}, [link]));
+
+    const { data } = await call("find", { selector: "a" });
+
+    assert.equal(data[0].name, "Read more");
+});
+
+test("a link with no content is named by its title", async () => {
+    const link = el("a", { props: { title: "Home" } }, [el("svg", { attributes: { "aria-hidden": "true" } })]);
+    const call = loadContent(el("body", {}, [link]));
+
+    const { data } = await call("find", { selector: "a" });
+
+    assert.equal(data[0].name, "Home");
+});
+
+test("the inline-markup link keeps its content name when it also has a title", async () => {
+    const link = titleLink();
+    link.title = "Open abstract";
+    const tree = await snapshotOf(el("body", {}, [link]));
+
+    assert.equal(tree.children[0].name, TITLE);
+});
+
+test("a title still names an element that is not named by its content", async () => {
+    const note = el("p", { props: { title: "Tooltip" } }, [text("Body")]);
+    const call = loadContent(el("body", {}, [note]));
+
+    const { data } = await call("find", { selector: "p" });
+
+    assert.equal(data[0].name, "Tooltip");
+});
+
+test("a name that only repeats the node's text is left out of the tree", async () => {
+    const tree = await snapshotOf(el("body", {}, [
+        el("a", {}, [text("Home")]),
+        el("button", {}, [text("  Save\n   draft ")]),
+        el("h1", {}, [text("Welcome")]),
+    ]));
+
+    for (const node of tree.children) {
+        assert.equal(node.name, undefined, `${node.tag} repeated its text as a name`);
+    }
+    assert.equal(tree.children[0].text, "Home");
+    assert.equal(tree.children[1].text, "Save\n   draft");
+});
+
+test("a name that differs from the node's text stays in the tree", async () => {
+    const tree = await snapshotOf(el("body", {}, [
+        el("button", { attributes: { "aria-label": "Open Trash" } }, [text("Trash")]),
+        el("a", {}, [el("img", { props: { alt: "Acme home" } })]),
+        titleLink(),
+    ]));
+
+    assert.equal(tree.children[0].name, "Open Trash");
+    assert.equal(tree.children[1].name, "Acme home");
+    assert.equal(tree.children[2].name, TITLE);
+});
+
+test("find still reports the name of a node whose tree entry omits it", async () => {
+    const link = el("a", {}, [text("Home")]);
+    const call = loadContent(el("body", {}, [link]));
+
+    const tree = (await call("snapshot", {})).data;
+    const { data } = await call("find", { selector: "a" });
+
+    assert.equal(tree.children[0].name, undefined);
+    assert.equal(data[0].name, "Home");
+});
+
+test("click and hover by a name the tree omits still act on the element", async () => {
+    const link = el("a", {}, [text("Home")]);
+    const call = loadContent(el("body", {}, [link]));
+
+    assert.equal((await call("click", { text: "Home" })).error, null);
+    assert.equal((await call("hover", { text: "Home" })).error, null);
+    assert.ok(link.events.includes("click"));
 });

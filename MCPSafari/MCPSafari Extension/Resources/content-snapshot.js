@@ -154,8 +154,6 @@
 
         const node = { uid, tag, role };
 
-        if (name) node.name = name;
-
         // Value for inputs. Secrets report their presence, not their contents,
         // so a snapshot of a filled login or payment form is safe to hand to a model.
         if (element.value !== undefined && element.value !== "") {
@@ -203,10 +201,18 @@
             : ownTextContent(element);
         // A textarea's text content is its default value, so a sensitive one
         // would otherwise leak here what the `value` redaction above withheld.
+        let text = "";
         if (rawText && !(tag === "textarea" && isSensitiveInput(element))) {
-            const text = rawText.trim();
+            text = rawText.trim();
             if (text) node.text = truncateText(text);
         }
+
+        // A name that only repeats the node's text adds nothing, and content
+        // fallback gives one to every link, button and heading. Keep it when it
+        // says something the text does not: inline markup, an aria-label, an
+        // alt, a label from elsewhere. find and click read the name from the
+        // page, not from the tree, so omitting it here loses no way to match.
+        if (name && name !== truncateText(text.replace(/\s+/g, " "))) node.name = name;
 
         if (children.length > 0) node.children = children;
 
@@ -438,8 +444,12 @@
         // Alt text for images
         if (element.alt) return element.alt;
 
-        // Title attribute
-        if (element.title) return element.title;
+        // Title attribute. A role named by its content only falls back to it
+        // below: title is a tooltip, so `<a title="Read the full story">Read
+        // more</a>` is "Read more" and the title is what is left when the
+        // content says nothing.
+        const fromContent = NAME_FROM_CONTENT_ROLES.has(getRole(element));
+        if (element.title && !fromContent) return element.title;
 
         // Placeholder for inputs
         if (element.placeholder) return element.placeholder;
@@ -449,9 +459,10 @@
         // its own text nodes ("Human  Organoids") with "Brain" as a separate
         // child, so the label reads out of order or, when every word sits in a
         // child, not at all.
-        if (NAME_FROM_CONTENT_ROLES.has(getRole(element))) {
+        if (fromContent) {
             const text = contentName(element);
             if (text) return text;
+            if (element.title) return element.title;
         }
 
         return null;
