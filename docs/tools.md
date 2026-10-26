@@ -10,7 +10,7 @@ This reference describes `main`, which may include tools and options not yet in 
 
 | Tool | Description |
 |-|-|
-| `status` | Report listener, authenticated bridge, version, token health, and connected Safari profiles without requiring a Safari connection |
+| `status` | Report listener, the port it bound and the range it was allowed to try (`requestedPort` through `lastPort`), authenticated bridge, version, token health, and connected Safari profiles without requiring a Safari connection |
 
 ### Tab management
 

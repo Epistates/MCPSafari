@@ -77,7 +77,7 @@ In those files, an `internal` member is one the handlers call; everything else i
 A Manifest V3 Safari Web Extension with:
 
 - The background, split across nine files that the manifest loads in order. These are classic scripts sharing one global, so a function in any of them may call a function in any other without imports. Order matters only at load time: a statement that runs while the page is loading can see only what the files before it declared, which is why `background.js` is last. The background is deliberately **not** declared `"type": "module"`, because that would give each file its own scope and break every cross-file reference:
-  - `background-config.js` — ports, timeouts, and the deadline helper the others measure against
+  - `background-config.js` — the cap on discovered ports, timeouts, and the deadline helper the others measure against
   - `background-state.js` — connection, profile and tab state, and the website-access checks that read it
   - `background-bridge.js` — the WebSocket client: connecting, its half of the handshake, reconnecting, reporting each port
   - `background-router.js` — `handleRequest`, one bridge request in and one response out

@@ -139,20 +139,28 @@ Any client that supports the MCP stdio transport can connect. Point it at `mcp-s
 
 ### Multiple MCP clients
 
-Each MCP client starts its own server. The server finds a free port if 8089 is in use, and the extension discovers servers in the 8089–8098 range. These connections share Safari tabs and browser state.
+Each MCP client starts its own server. A server takes `8089` if it is free and otherwise the next free port, and the extension connects to each one wherever it landed. These connections share Safari tabs and browser state.
 
-For ports outside the default range, set the port in the client configuration and add it in the extension popup:
+### Ports
+
+A server tries `8089` and then the ports after it, ten in all by default: `8089` and the next nine, up to `8098`. `--port` moves where it starts and `--port-range` changes how many ports it tries, from 1 to 64:
 
 ```json
 {
   "mcpServers": {
     "mcp-safari": {
       "command": "mcp-safari",
-      "args": ["--port", "9090"]
+      "args": ["--port", "9090", "--port-range", "20"]
     }
   }
 }
 ```
+
+A client that can set environment variables but not arguments can use `MCP_SAFARI_PORT_RANGE=20` instead. The flag wins when both are set. A value outside 1 to 64, or a range that would run past port 65535, stops the server with a message saying which.
+
+Nothing needs to be set in the extension, and there is no matching setting to keep in step. Each server writes a token file for the port it actually bound, and the extension connects to every port that has one. Any `--port` and `--port-range` are therefore found without further setup, and a port drops out of the popup when its server stops and removes its token. The extension manages up to 64 such ports at a time. Ports added by hand in the popup are kept until you remove them and do not count toward that limit.
+
+`status` reports the range as `requestedPort` through `lastPort`, and `mcp-safari doctor` looks for a token anywhere in it.
 
 ### Safari profiles
 
@@ -164,7 +172,8 @@ Every connected profile is drivable. `tabs_context` lists the tabs of all of the
 
 | Flag | Description |
 |-|-|
-| `--port <n>` / `-p <n>` | WebSocket port (default: `8089`) |
+| `--port <n>` / `-p <n>` | WebSocket port to try first (default: `8089`) |
+| `--port-range <n>` | How many consecutive ports to try from `--port`, 1 to 64 (default: `10`). Also `MCP_SAFARI_PORT_RANGE`. See [Ports](#ports) |
 | `--log-level <level>` | `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `critical` (default: `notice`) |
 | `--verbose` | Shorthand for `--log-level debug` |
 | `--help` / `-h` | Print usage and exit |
@@ -179,7 +188,7 @@ mcp-safari doctor
 mcp-safari doctor --json
 ```
 
-The doctor checks the server executable, app and extension bundles, PlugInKit registration, matching versions, and the selected port's token file. It never returns token contents and does not change system state.
+The doctor checks the server executable, app and extension bundles, PlugInKit registration, matching versions, and the token files in the port range. It takes `--port` and `--port-range` as the server does, so pass the same values. It never returns token contents and does not change system state.
 
 ## Troubleshooting
 
@@ -204,4 +213,4 @@ To stop being asked per site, click "Always Allow on Every Website" in Safari > 
 
 ### Port already in use
 
-The server tries other ports automatically. To choose a port outside 8089–8098, set `--port` and add that port in the extension popup. See [multiple MCP clients](#multiple-mcp-clients).
+The server tries the next ports automatically, ten by default. If they are all taken, the tools report `bridge_unavailable` and the server keeps retrying. Widen the search with `--port-range`, or start it on a free range with `--port`. See [Ports](#ports).
