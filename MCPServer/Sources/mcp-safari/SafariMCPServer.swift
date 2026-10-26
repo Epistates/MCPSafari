@@ -1,12 +1,7 @@
-import AppKit
-import ApplicationServices
-import Carbon
-import CoreGraphics
 import Foundation
-import ImageIO
 import Logging
 import MCP
-import UniformTypeIdentifiers
+import struct os.OSAllocatedUnfairLock
 
 /// Core MCP server that registers Safari automation tools and bridges
 /// tool calls to the Safari extension via WebSocket.
@@ -14,6 +9,11 @@ actor SafariMCPServer {
     private let server: Server
     private let bridge: WebSocketBridge
     private let logger: Logger
+
+    /// Held from the extension's prepare step through the act step of every tool
+    /// that depends on what has focus: native input, `screenshot`, and
+    /// `select_tab` when it brings the tab to the front.
+    private let focusLock = AsyncFIFOLock()
 
     init(port: UInt16 = 8089, logger: Logger) throws {
         self.logger = logger
@@ -107,6 +107,7 @@ actor SafariMCPServer {
         let args = params.arguments ?? [:]
 
         do {
+            try Self.preflight(tool: params.name, arguments: args)
             switch params.name {
             case "status":          return try await handleStatus()
             case "tabs_context":    return try await handleTabsContext()
@@ -165,12 +166,58 @@ actor SafariMCPServer {
         let handle = try TabHandle.resolve(args["tabId"])
         var params = params
         if let handle { params["tabId"] = AnyCodable(handle.tabID) }
-        return try await bridge.send(
+        // Resolved here rather than left to the bridge, so the profile a request
+        // went to is known and can qualify the tab the extension reports back.
+        let profileIndex: Int
+        if let handle { profileIndex = handle.profileIndex } else { profileIndex = try await resolveProfileIndex(args) }
+        var response = try await bridge.send(
             action: action,
             params: params,
             timeout: timeout ?? Self.bridgeTimeout(args),
-            profileIndex: handle?.profileIndex
+            profileIndex: profileIndex
         )
+        response.profileIndex = profileIndex
+        if let tab = Self.resolvedHandle(of: response) { Self.batchPin?.recordFirst(tab) }
+        return response
+    }
+
+    /// The tab the extension resolved for a response, named by a handle.
+    static func resolvedHandle(of response: BridgeResponse) -> TabHandle? {
+        guard let tabID = response.resolvedTabId, let profileIndex = response.profileIndex else { return nil }
+        return TabHandle(profileIndex: profileIndex, tabID: tabID)
+    }
+
+    /// `args` with `tabId` filled in from the tab `response` was resolved against,
+    /// when the caller named none.
+    ///
+    /// A call that names no tab acts on whichever tab is selected at the time,
+    /// and the follow-ups it makes itself (the wait, the snapshot, the end of a
+    /// trace) are separate requests that would each pick again. If the user, or
+    /// a parallel call, moves the selection in between, they land on a different
+    /// tab than the action did. An older extension reports no tab, and the
+    /// arguments are returned as they were.
+    static func pinned(_ args: [String: Value], to response: BridgeResponse) -> [String: Value] {
+        guard args["tabId"] == nil || args["tabId"] == .null,
+              let handle = resolvedHandle(of: response)
+        else { return args }
+        var pinned = args
+        pinned["tabId"] = .string(handle.description)
+        return pinned
+    }
+
+    /// The first tab a `run_steps` batch resolved, so the steps after it act on
+    /// the same one when the batch names none. Set around each step by
+    /// `handleRunSteps`, and read by `send`, which is where responses arrive.
+    @TaskLocal static var batchPin: BatchTabPin?
+
+    final class BatchTabPin: Sendable {
+        private let first = OSAllocatedUnfairLock<TabHandle?>(initialState: nil)
+
+        var handle: TabHandle? { first.withLock { $0 } }
+
+        func recordFirst(_ handle: TabHandle) {
+            first.withLock { if $0 == nil { $0 = handle } }
+        }
     }
 
     /// Rewrites the `id` of a tab object the extension returned into the handle
@@ -187,10 +234,33 @@ actor SafariMCPServer {
             return textResult(response, as: "tab")
         }
         tab["id"] = AnyCodable(TabHandle(profileIndex: profileIndex, tabID: tabID).description)
+        var content = [Self.textContent(Self.jsonText(tab) ?? raw)]
+        if let note = Self.accessNote(for: [tab]) { content.append(Self.textContent(note)) }
         return CallTool.Result(
-            content: [Self.textContent(Self.jsonText(tab) ?? raw)],
+            content: content,
             structuredContent: .object(["tab": (try? Value(tab)) ?? .null])
         )
+    }
+
+    /// Tabs on a site Safari has not granted are listed, selected and created
+    /// like any other and carry `access: "not_granted"` and an `accessHint`. The
+    /// JSON carries that for a program; this sentence is for the model reading
+    /// the result, which would otherwise find out only when its next read fails
+    /// with `permission_required`. One sentence for a whole listing, with each
+    /// distinct hint said once, rather than one per tab.
+    static func accessNote(for tabs: [[String: AnyCodable]]) -> String? {
+        let ungranted = tabs.filter { $0["access"]?.stringValue == "not_granted" }
+        guard !ungranted.isEmpty else { return nil }
+        var hints: [String] = []
+        for hint in ungranted.compactMap({ $0["accessHint"]?.stringValue }) where !hints.contains(hint) {
+            hints.append(hint)
+        }
+        let subject = ungranted.count == 1
+            ? "Access to one tab's site is not granted"
+            : "Access to \(ungranted.count) tabs' sites is not granted"
+        return ([
+            "\(subject), so reading or acting on \(ungranted.count == 1 ? "it" : "them") will fail with permission_required until the user grants it.",
+        ] + hints).joined(separator: " ")
     }
 
     /// Which profile a call will land on. An explicit handle names it; otherwise it
@@ -242,6 +312,9 @@ actor SafariMCPServer {
         }
 
         var content = [Self.textContent(Self.jsonText(merged.tabs) ?? "[]")]
+        if let note = Self.accessNote(for: merged.tabs.compactMap(\.objectValue)) {
+            content.append(Self.textContent(note))
+        }
         if !merged.failures.isEmpty {
             content.append(Self.textContent(
                 "Tabs are missing from \(merged.failures.count) profile(s): "
@@ -299,23 +372,10 @@ actor SafariMCPServer {
     }
 
     private func handleTabsCreate(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let url = args["url"]?.stringValue {
-            guard let parsed = URL(string: url),
-                  let scheme = parsed.scheme?.lowercased(),
-                  Self.allowedURLSchemes.contains(scheme)
-            else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")],
-                    isError: true
-                )
-            }
-            params["url"] = AnyCodable(url)
-        }
         let profileIndex = try await resolveProfileIndex(args)
         let response = try await bridge.send(
             action: "tabs_create",
-            params: params,
+            params: try Self.tabsCreateParams(args),
             timeout: Self.bridgeTimeout(args),
             profileIndex: profileIndex
         )
@@ -342,9 +402,12 @@ actor SafariMCPServer {
         guard let handle = try TabHandle.resolve(args["tabId"]) else {
             throw ToolInputError("select_tab requires tabId, a handle from tabs_context such as p0t5")
         }
-        var params: [String: AnyCodable] = [:]
-        if let bringToFront = args["bringToFront"]?.boolValue { params["bringToFront"] = AnyCodable(bringToFront) }
-        let response = try await send("select_tab", args, params: params)
+        let params = try Self.selectTabParams(args)
+        // Bringing a tab to the front moves focus, so it queues with the other
+        // focus-sensitive tools. Selecting without it touches nothing they use.
+        let response = params["bringToFront"]?.boolValue == false
+            ? try await send("select_tab", args, params: params)
+            : try await focusLock.withLock { try await send("select_tab", args, params: params) }
         guard response.success else { return textResult(response, as: "tab") }
         // Pinning the tab pins its profile too, so later calls that name no tab
         // stay in the browser window the caller just chose.
@@ -352,126 +415,33 @@ actor SafariMCPServer {
         return tabResult(response, profileIndex: handle.profileIndex)
     }
 
-    private static let allowedURLSchemes: Set<String> = ["http", "https", "about", "file"]
-    private static let allowedNavActions: Set<String> = ["goto", "back", "forward", "reload"]
-    private static let allowedPageFormats: Set<String> = ["text", "html", "snapshot"]
-    private static let allowedConsoleLevels: Set<String> = ["all", "log", "warn", "error", "info", "debug"]
-    private static let allowedNetworkTypes: Set<String> = ["all", "xhr", "fetch", "resource"]
-
     private func handleNavigate(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let url = args["url"]?.stringValue {
-            guard let parsed = URL(string: url),
-                  let scheme = parsed.scheme?.lowercased(),
-                  Self.allowedURLSchemes.contains(scheme)
-            else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")],
-                    isError: true
-                )
-            }
-            params["url"] = AnyCodable(url)
-        }
-        if let action = args["action"]?.stringValue {
-            guard Self.allowedNavActions.contains(action) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid navigation action: \(action). Use goto, back, forward, or reload.")],
-                    isError: true
-                )
-            }
-            params["action"] = AnyCodable(action)
-        }
-        let response = try await send("navigate", args, params: params)
+        let response = try await send("navigate", args, params: try Self.navigateParams(args))
         return try await resultAfterAction(response, args)
     }
 
     private func handleReadPage(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let format = args["format"]?.stringValue {
-            guard Self.allowedPageFormats.contains(format) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid page format: \(format). Use text, html, or snapshot.")],
-                    isError: true
-                )
-            }
-            params["format"] = AnyCodable(format)
-        }
-        if let maxChars = args["maxChars"]?.intValue {
-            guard maxChars > 0 else {
-                return Self.failureResult(ToolFailure(
-                    code: "invalid_input",
-                    message: "Invalid maxChars: \(maxChars). Use a positive integer.",
-                    retryable: false,
-                    recoveryAction: "fix_input"
-                ))
-            }
-            params["maxChars"] = AnyCodable(maxChars)
-        }
-        if let maxNodes = args["maxNodes"]?.intValue {
-            guard maxNodes > 0 else {
-                return Self.failureResult(ToolFailure(
-                    code: "invalid_input",
-                    message: "Invalid maxNodes: \(maxNodes). Use a positive integer.",
-                    retryable: false,
-                    recoveryAction: "fix_input"
-                ))
-            }
-            params["maxNodes"] = AnyCodable(maxNodes)
-        }
-        let response = try await send("read_page", args, params: params)
+        let response = try await send("read_page", args, params: try Self.readPageParams(args))
         return textResult(response, as: "page", decoding: args["format"]?.stringValue == "snapshot" ? .containers : .text)
     }
 
     private func handleSnapshot(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let maxNodes = args["maxNodes"]?.intValue {
-            guard maxNodes > 0 else {
-                return Self.failureResult(ToolFailure(
-                    code: "invalid_input",
-                    message: "Invalid maxNodes: \(maxNodes). Use a positive integer.",
-                    retryable: false,
-                    recoveryAction: "fix_input"
-                ))
-            }
-            params["maxNodes"] = AnyCodable(maxNodes)
-        }
-        let response = try await send("snapshot", args, params: params)
+        let response = try await send("snapshot", args, params: try Self.snapshotParams(args))
         return textResult(response, as: "snapshot")
     }
 
     private func handleFind(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
-        if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
-        if let role = args["role"]?.stringValue { params["role"] = AnyCodable(role) }
-        let response = try await send("find", args, params: params)
+        let response = try await send("find", args, params: try Self.findParams(args))
         return textResult(response, as: "matches")
     }
 
     /// Reads the caller's local files, then runs the interaction with them attached.
     private func handleFileAction(_ action: String, _ args: [String: Value]) async throws -> CallTool.Result {
-        var paths: [String] = []
-        if let filePath = args["filePath"] {
-            guard let path = filePath.stringValue else { throw ToolInputError("filePath must be a string") }
-            paths.append(path)
-        }
-        if let filePaths = args["filePaths"] {
-            guard let values = filePaths.arrayValue else { throw ToolInputError("filePaths must be an array of strings") }
-            for value in values {
-                guard let path = value.stringValue else { throw ToolInputError("filePaths must be an array of strings") }
-                paths.append(path)
-            }
-        }
-
-        var mimeTypeOverride: String?
-        if let mimeType = args["mimeType"] {
-            guard let value = mimeType.stringValue else { throw ToolInputError("mimeType must be a string") }
-            mimeTypeOverride = value
-        }
+        let inputs = try Self.fileAttachmentInputs(args)
 
         let attachments: [FileAttachment]
         do {
-            attachments = try FileAttachmentLoader.load(paths: paths, mimeTypeOverride: mimeTypeOverride)
+            attachments = try FileAttachmentLoader.load(paths: inputs.paths, mimeTypeOverride: inputs.mimeType)
         } catch let error as FileAttachmentError {
             throw ToolInputError(error.description)
         }
@@ -546,32 +516,8 @@ actor SafariMCPServer {
 
     private func handleNativeTypeText(_ args: [String: Value]) async throws -> CallTool.Result {
         let input = try Self.nativeInputPlan(args)
-        let traceSession = try await startTraceIfNeeded(args)
-        do {
-            let preparation = try await send("native_type_text", args, params: interactionParams(args))
-            guard preparation.success else {
-                return try await resultAfterAction(preparation, args, traceSession: traceSession)
-            }
-
-            let message = try Self.typeNativeText(
-                input,
-                deadline: Self.numberValue(args["_batchDeadline"])
-            )
-            let response = BridgeResponse(
-                id: preparation.id,
-                success: true,
-                data: AnyCodable(message),
-                error: nil,
-                errorCode: nil,
-                retryable: nil,
-                recoveryAction: nil
-            )
-            return try await resultAfterAction(response, args, traceSession: traceSession)
-        } catch {
-            if let traceSession {
-                _ = try? await stopTraceResponse(traceSession, args, waitForDuration: false)
-            }
-            throw error
+        return try await runNativeAction("native_type_text", args) { _ in
+            try await Self.typeNativeText(input, deadline: Self.numberValue(args["_batchDeadline"]))
         }
     }
 
@@ -586,20 +532,28 @@ actor SafariMCPServer {
 
     // Shared flow for native input tools: permission, trace, bridge
     // preparation, then the CGEvent posting supplied by the caller.
+    //
+    // Preparation and posting run under the focus lock as one unit. The
+    // extension focuses the tab or element during preparation, and the events
+    // are only right while that focus holds; a parallel call that focuses
+    // something else in between would take the keystrokes or the click.
     private func runNativeAction(
         _ action: String,
         _ args: [String: Value],
-        perform: (BridgeResponse) throws -> String
+        perform: (BridgeResponse) async throws -> String
     ) async throws -> CallTool.Result {
         try Self.ensureNativeInputPermission()
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let preparation = try await send(action, args, params: interactionParams(args))
-            guard preparation.success else {
+            let (preparation, delivered) = try await focusLock.withLock { () -> (BridgeResponse, String?) in
+                let preparation = try await send(action, args, params: interactionParams(args))
+                guard preparation.success else { return (preparation, nil) }
+                return (preparation, try await perform(preparation))
+            }
+            guard let message = delivered else {
                 return try await resultAfterAction(preparation, args, traceSession: traceSession)
             }
 
-            let message = try perform(preparation)
             let response = BridgeResponse(
                 id: preparation.id,
                 success: true,
@@ -607,7 +561,9 @@ actor SafariMCPServer {
                 error: nil,
                 errorCode: nil,
                 retryable: nil,
-                recoveryAction: nil
+                recoveryAction: nil,
+                resolvedTabId: preparation.resolvedTabId,
+                profileIndex: preparation.profileIndex
             )
             return try await resultAfterAction(response, args, traceSession: traceSession)
         } catch {
@@ -622,10 +578,7 @@ actor SafariMCPServer {
         guard try nativeRequested(args) else {
             return try await handleInteraction("press_key", args)
         }
-        guard let key = args["key"]?.stringValue, !key.isEmpty else {
-            throw ToolInputError("key is required")
-        }
-        let combo = try Self.nativeKeyCombo(key)
+        let combo = try Self.nativeKeyCombo(Self.requiredKey(args))
         return try await runNativeAction("native_press_key", args) { _ in
             try Self.pressNativeKey(combo, deadline: Self.numberValue(args["_batchDeadline"]))
         }
@@ -707,16 +660,15 @@ actor SafariMCPServer {
         var params: [String: AnyCodable] = [:]
         if let uid = args["uid"]?.stringValue { params["uid"] = AnyCodable(uid) }
         if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
-        // Validate before the bridge call: a targeted capture scrolls the page.
-        let padding: Double
-        let scale: Double
-        do {
-            padding = try Self.capturePadding(args)
-            scale = try Self.captureScale(args)
-        } catch {
-            return Self.failureResult(toolFailure(for: error))
-        }
-        let response = try await send("screenshot", args, params: params)
+        // Validated before the bridge call (see `preflight`): a targeted capture
+        // scrolls the page, and a refused destination should not have cost that.
+        let padding = try Self.capturePadding(args)
+        let scale = try Self.captureScale(args)
+        // The extension may activate the tab before capturing it, so the capture
+        // queues with the other focus-sensitive tools rather than racing them.
+        // The extension may activate the tab before capturing it, so the capture
+        // queues with the other focus-sensitive tools rather than racing them.
+        let response = try await focusLock.withLock { try await send("screenshot", args, params: params) }
 
         guard response.success, let raw = response.data?.stringValue else {
             return textResult(response, as: "screenshot")
@@ -754,10 +706,9 @@ actor SafariMCPServer {
         captureDetails["scale"] = AnyCodable(scale)
         if let note { captureDetails["note"] = AnyCodable(note) }
 
-        if let filePath = args["filePath"] {
+        if let path = try Self.optionalString("filePath", in: args) {
             let url: URL
             do {
-                guard let path = filePath.stringValue else { throw FileAttachmentError("filePath must be a string") }
                 url = try Self.writeCapture(png, to: path)
             } catch {
                 return Self.failureResult(ToolFailure(
@@ -787,103 +738,24 @@ actor SafariMCPServer {
     }
 
     private func handleJavaScript(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let code = args["code"]?.stringValue { params["code"] = AnyCodable(code) }
-        let response = try await send("javascript_tool", args, params: params)
+        let response = try await send("javascript_tool", args, params: try Self.javaScriptParams(args))
         return textResult(response, as: "result", decoding: .json)
     }
 
     private func handleReadConsole(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let level = args["level"]?.stringValue {
-            guard Self.allowedConsoleLevels.contains(level) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid console level: \(level). Use all, log, warn, error, info, or debug.")],
-                    isError: true
-                )
-            }
-            params["level"] = AnyCodable(level)
-        }
-        if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
-        if let pattern = args["pattern"]?.stringValue {
-            guard pattern.count <= 200 else {
-                return CallTool.Result(
-                    content: [Self.textContent("Pattern too long (max 200 characters)")],
-                    isError: true
-                )
-            }
-            // Validate it's a valid regex
-            guard (try? NSRegularExpression(pattern: pattern)) != nil else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid regex pattern: \(pattern)")],
-                    isError: true
-                )
-            }
-            params["pattern"] = AnyCodable(pattern)
-        }
-        let response = try await send("read_console", args, params: params)
+        let response = try await send("read_console", args, params: try Self.readConsoleParams(args))
         return textResult(response, as: "messages")
     }
 
     private func handleReadNetwork(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let type = args["type"]?.stringValue {
-            guard Self.allowedNetworkTypes.contains(type) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid network type: \(type). Use all, xhr, fetch, or resource.")],
-                    isError: true
-                )
-            }
-            params["type"] = AnyCodable(type)
-        }
-        if let urlPattern = args["urlPattern"]?.stringValue {
-            guard urlPattern.count <= 200 else {
-                return CallTool.Result(
-                    content: [Self.textContent("URL pattern too long (max 200 characters)")],
-                    isError: true
-                )
-            }
-            guard (try? NSRegularExpression(pattern: urlPattern)) != nil else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid regex pattern: \(urlPattern)")],
-                    isError: true
-                )
-            }
-            params["urlPattern"] = AnyCodable(urlPattern)
-        }
-        if let status = args["status"]?.intValue {
-            guard (0...599).contains(status) else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid status: \(status). Use an HTTP status code (0-599; 0 means network error).")],
-                    isError: true
-                )
-            }
-            params["status"] = AnyCodable(status)
-        }
-        if let maxResults = args["maxResults"]?.intValue {
-            guard maxResults > 0 else {
-                return CallTool.Result(
-                    content: [Self.textContent("Invalid maxResults: \(maxResults). Use a positive integer.")],
-                    isError: true
-                )
-            }
-            params["maxResults"] = AnyCodable(maxResults)
-        }
-        if let clear = args["clear"]?.boolValue { params["clear"] = AnyCodable(clear) }
-        let response = try await send("read_network", args, params: params)
+        let response = try await send("read_network", args, params: try Self.readNetworkParams(args))
         return textResult(response, as: "requests")
     }
 
     private func handleResizeWindow(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-        if let width = args["width"]?.intValue { params["width"] = AnyCodable(width) }
-        if let height = args["height"]?.intValue { params["height"] = AnyCodable(height) }
-        let response = try await send("resize_window", args, params: params)
+        let response = try await send("resize_window", args, params: try Self.resizeWindowParams(args))
         return textResult(response, as: "window")
     }
-
-    private static let maxWaitSeconds: Double = 300 // 5-minute cap
-    private static let maxTraceSeconds: Double = 30
 
     private func handleRunSteps(_ args: [String: Value]) async throws -> CallTool.Result {
         let plan: RunStepsPlan
@@ -899,6 +771,7 @@ actor SafariMCPServer {
         var batchArgs = args
         batchArgs["_batchDeadline"] = .double(ProcessInfo.processInfo.systemUptime + plan.timeout)
         let traceSession = try await startTraceIfNeeded(batchArgs)
+        let pin = BatchTabPin()
         var results: [Value] = []
         var content: [Tool.Content] = []
 
@@ -922,7 +795,18 @@ actor SafariMCPServer {
 
             var stepArguments = step.arguments
             stepArguments["_batchDeadline"] = batchArgs["_batchDeadline"]
-            let result = await handleToolCall(.init(name: step.tool, arguments: stepArguments))
+            // With no batch tab, step 1 acts on whichever tab is selected and
+            // every later step acts on that same one, even if the selection
+            // moves while the batch runs.
+            if stepArguments["tabId"] == nil, let tab = pin.handle {
+                stepArguments["tabId"] = .string(tab.description)
+            }
+            let result = await Self.$batchPin.withValue(pin) {
+                await handleToolCall(.init(name: step.tool, arguments: stepArguments))
+            }
+            if batchArgs["tabId"] == nil, let tab = pin.handle {
+                batchArgs["tabId"] = .string(tab.description)
+            }
             content.append(Self.textContent("--- Step \(index): \(step.tool) ---"))
             content.append(contentsOf: result.content)
             results.append(try .object([
@@ -1005,8 +889,9 @@ actor SafariMCPServer {
     }
 
     private func handleWait(_ args: [String: Value]) async throws -> CallTool.Result {
-        if let seconds = Self.numberValue(args["seconds"]), args["selector"] == nil, args["text"] == nil {
-            let requested = max(0, min(seconds, Self.maxWaitSeconds))
+        let request = try Self.waitRequest(args)
+        switch request {
+        case .duration(let requested):
             let duration = min(requested, Self.batchRemaining(args))
             try await Task.sleep(for: .seconds(duration))
             guard duration == requested else {
@@ -1021,20 +906,21 @@ actor SafariMCPServer {
                 content: [Self.textContent("Waited \(duration) seconds")],
                 structuredContent: .object(["wait": .object(["seconds": .double(duration)])])
             )
-        }
 
-        var params: [String: AnyCodable] = [:]
-        if let selector = args["selector"]?.stringValue { params["selector"] = AnyCodable(selector) }
-        if let text = args["text"]?.stringValue { params["text"] = AnyCodable(text) }
-        let userTimeout = min(Self.cappedWaitTimeout(args["timeout"]), Self.batchRemaining(args))
-        params["timeout"] = AnyCodable(userTimeout)
-        // Extend bridge timeout to exceed the wait timeout so it doesn't race
-        let response = try await send(
-            "wait", args,
-            params: params,
-            timeout: Self.bridgeTimeout(args, default: userTimeout + 5)
-        )
-        return textResult(response, as: "wait")
+        case .condition(let selector, let text, let timeout):
+            var params: [String: AnyCodable] = [:]
+            if let selector { params["selector"] = AnyCodable(selector) }
+            if let text { params["text"] = AnyCodable(text) }
+            let userTimeout = min(timeout, Self.batchRemaining(args))
+            params["timeout"] = AnyCodable(userTimeout)
+            // Extend bridge timeout to exceed the wait timeout so it doesn't race
+            let response = try await send(
+                "wait", args,
+                params: params,
+                timeout: Self.bridgeTimeout(args, default: userTimeout + 5)
+            )
+            return textResult(response, as: "wait")
+        }
     }
 
     // MARK: - Helpers
@@ -1042,6 +928,8 @@ actor SafariMCPServer {
     private struct TraceSession {
         let id: String
         let duration: Double
+        /// The tab `start_trace` resolved, when the extension reported one.
+        let tab: TabHandle?
     }
 
     private func resultAfterAction(
@@ -1050,6 +938,8 @@ actor SafariMCPServer {
         wantSnapshot: Bool? = nil,
         traceSession: TraceSession? = nil
     ) async throws -> CallTool.Result {
+        // Everything after the action goes to the tab the action went to.
+        let args = Self.pinned(args, to: response)
         var content = [Self.textContent(responseText(response))]
         var details: [String: Value] = ["result": Self.structuredPayload(response.data)]
         guard response.success else {
@@ -1096,18 +986,12 @@ actor SafariMCPServer {
     }
 
     private func startTraceIfNeeded(_ args: [String: Value]) async throws -> TraceSession? {
-        guard let traceValue = args["trace"] else { return nil }
-        guard let traceEnabled = traceValue.boolValue else { throw ToolInputError("trace must be a boolean") }
-        guard traceEnabled else { return nil }
+        // Every option is validated before `start_trace` goes out, so a bad one
+        // cannot leave a trace running that nothing will stop.
+        guard let options = try Self.traceOptions(args) else { return nil }
 
         var params: [String: AnyCodable] = [:]
-        if let value = args["eventTypes"] {
-            guard let values = value.arrayValue,
-                  values.allSatisfy({ $0.stringValue?.isEmpty == false }) else {
-                throw ToolInputError("eventTypes must be an array of non-empty strings")
-            }
-            params["eventTypes"] = AnyCodable(values.compactMap(\.stringValue))
-        }
+        if let eventTypes = options.eventTypes { params["eventTypes"] = AnyCodable(eventTypes) }
 
         let response = try await send("start_trace", args, params: params)
         guard response.success else { throw ToolInputError(responseText(response)) }
@@ -1117,7 +1001,8 @@ actor SafariMCPServer {
 
         return TraceSession(
             id: traceID,
-            duration: try Self.cappedTraceDuration(args["traceDuration"])
+            duration: options.duration,
+            tab: Self.resolvedHandle(of: response)
         )
     }
 
@@ -1126,6 +1011,12 @@ actor SafariMCPServer {
         _ args: [String: Value],
         waitForDuration: Bool = true
     ) async throws -> BridgeResponse {
+        // The trace lives on the tab it was started on. Stopping it is aimed
+        // there when nothing more specific names a tab.
+        var args = args
+        if args["tabId"] == nil || args["tabId"] == .null, let tab = traceSession.tab {
+            args["tabId"] = .string(tab.description)
+        }
         if waitForDuration, traceSession.duration > 0 {
             try await Task.sleep(for: .seconds(min(traceSession.duration, Self.batchRemaining(args))))
         }
@@ -1134,19 +1025,11 @@ actor SafariMCPServer {
     }
 
     private func waitAfterAction(_ args: [String: Value]) async throws -> BridgeResponse? {
-        guard args["waitForSelector"] != nil || args["waitForText"] != nil else { return nil }
+        guard let wait = try Self.postActionWait(args) else { return nil }
         var params: [String: AnyCodable] = [:]
-        if let selectorValue = args["waitForSelector"] {
-            guard let selector = selectorValue.stringValue else { throw ToolInputError("waitForSelector must be a string") }
-            guard !selector.isEmpty else { throw ToolInputError("waitForSelector must not be empty") }
-            params["selector"] = AnyCodable(selector)
-        }
-        if let textValue = args["waitForText"] {
-            guard let text = textValue.stringValue else { throw ToolInputError("waitForText must be a string") }
-            guard !text.isEmpty else { throw ToolInputError("waitForText must not be empty") }
-            params["text"] = AnyCodable(text)
-        }
-        let timeout = min(Self.cappedWaitTimeout(args["waitTimeout"]), Self.batchRemaining(args))
+        if let selector = wait.selector { params["selector"] = AnyCodable(selector) }
+        if let text = wait.text { params["text"] = AnyCodable(text) }
+        let timeout = min(wait.timeout, Self.batchRemaining(args))
         params["timeout"] = AnyCodable(timeout)
         return try await send(
             "wait", args,
@@ -1157,17 +1040,6 @@ actor SafariMCPServer {
 
     private func snapshotResponse(_ args: [String: Value]) async throws -> BridgeResponse {
         try await send("snapshot", args)
-    }
-
-    private static func cappedWaitTimeout(_ value: Value?) -> Double {
-        max(0.1, min(Self.numberValue(value) ?? 10, Self.maxWaitSeconds))
-    }
-
-    private static func cappedTraceDuration(_ value: Value?) throws -> Double {
-        if let value, Self.numberValue(value) == nil {
-            throw ToolInputError("traceDuration must be a number")
-        }
-        return max(0, min(Self.numberValue(value) ?? 2, Self.maxTraceSeconds))
     }
 
     private static func batchRemaining(_ args: [String: Value]) -> Double {

@@ -133,7 +133,7 @@ extension SafariMCPServer {
                     "properties": .object([
                         "maxNodes": .object([
                             "type": .string("integer"),
-                            "description": .string("Maximum nodes to return (default 2000)"),
+                            "description": .string("Maximum nodes to return (default 2000, max \(Self.maxSnapshotNodes))"),
                         ]),
                         "tabId": Self.tab,
                     ]),
@@ -149,11 +149,11 @@ extension SafariMCPServer {
                         "format": .object(["type": .string("string"), "enum": .array([.string("text"), .string("html"), .string("snapshot")])]),
                         "maxChars": .object([
                             "type": .string("integer"),
-                            "description": .string("Character cap for text and html (default 100000)"),
+                            "description": .string("Character cap for text and html (default 100000, max \(Self.maxPageChars))"),
                         ]),
                         "maxNodes": .object([
                             "type": .string("integer"),
-                            "description": .string("Node cap when format is snapshot (default 2000)"),
+                            "description": .string("Node cap when format is snapshot (default 2000, max \(Self.maxSnapshotNodes))"),
                         ]),
                         "tabId": Self.tab,
                     ]),
@@ -202,7 +202,7 @@ extension SafariMCPServer {
                         "clearFirst": .object(["type": .string("boolean")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code. " + Self.nativeRequirements),
+                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code; text over 1000 characters is refused. " + Self.nativeRequirements),
                         ]),
                         "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
@@ -261,7 +261,7 @@ extension SafariMCPServer {
                         "key": .object(["type": .string("string")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Use a real macOS key event. " + Self.nativeRequirements),
+                            "description": .string("Use a real macOS key event; shortcuts that quit, close, hide, or leave Safari (Command+Q, Command+W, Command+Tab) are refused. " + Self.nativeRequirements),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -354,7 +354,7 @@ extension SafariMCPServer {
                         "uid": Self.uid, "selector": Self.sel,
                         "padding": .object(["type": .string("number"), "description": .string("CSS px kept around the element (default: 16)")]),
                         "scale": .object(["type": .string("number"), "description": .string("Shrink the PNG by this factor, 0 to 1 (default: 1)")]),
-                        "filePath": .object(["type": .string("string"), "description": .string("Save the PNG to this local path (~ expanded) and return the path instead of the image")]),
+                        "filePath": .object(["type": .string("string"), "description": .string("Save the PNG to this local path (~ expanded, must end in .png, may only replace an existing PNG) and return the path instead of the image")]),
                         "tabId": Self.tab,
                     ]),
                 ]),
@@ -395,7 +395,7 @@ extension SafariMCPServer {
                         "type": .object(["type": .string("string"), "enum": .array([.string("all"), .string("xhr"), .string("fetch"), .string("resource")])]),
                         "urlPattern": .object(["type": .string("string"), "description": .string("Bounded regex on URL: literals, dots, anchors, character classes, alternation; no repetitions or groups (max 200 characters)")]),
                         "status": .object(["type": .string("integer"), "description": .string("Filter by HTTP status code (fetch/xhr only; 0 means network error)")]),
-                        "maxResults": .object(["type": .string("integer"), "description": .string("Return at most this many most recent entries")]),
+                        "maxResults": .object(["type": .string("integer"), "description": .string("Return at most this many most recent entries (max \(Self.maxNetworkResults))")]),
                         "clear": .object(["type": .string("boolean")]),
                         "tabId": Self.tab,
                     ]),

@@ -83,7 +83,8 @@ struct NativeKeyComboTests {
         // Not keycode 0, which is Q — and therefore Quit — on this layout.
         #expect(combo.keyCode == 12)
         #expect(combo.flags == .maskCommand)
-        #expect(try SafariMCPServer.nativeKeyCombo("Meta+q") { azerty[$0] }.keyCode == 0)
+        // Meta+q is refused outright now; q itself still lands on keycode 0.
+        #expect(try SafariMCPServer.nativeKeyCombo("Control+q") { azerty[$0] }.keyCode == 0)
     }
 
     @Test func namedKeysIgnoreTheLayout() throws {
@@ -136,6 +137,61 @@ struct NativeKeyComboTests {
             #expect(results.count == 64)
             #expect(Set(results).count == 1, "every concurrent read agrees")
         }
+    }
+
+    // A real key event is the user's own as far as macOS can tell, so these end
+    // the session rather than acting on the page.
+    @Test(arguments: [
+        "Meta+q", "Command+Q", "cmd+q", "Meta+w", "Command+Shift+W", "Command+Alt+w",
+        "Meta+Tab", "Meta+Shift+Tab", "Meta+Space", "Control+Space", "Control+Alt+Space",
+        "Meta+Shift+q", "Meta+Alt+Shift+q", "Control+Meta+q", "Meta+Alt+Escape",
+        "Meta+h", "Meta+m", "Meta+Shift+Delete", "Meta+Shift+Backspace",
+    ])
+    func refusesCombosThatQuitCloseHideOrLeaveSafari(_ key: String) {
+        let message = errorMessage(key)
+        #expect(message?.hasPrefix("Native press_key does not send \(key)") == true, "\(key) was sent")
+    }
+
+    @Test(arguments: [
+        "Meta+a", "Meta+c", "Meta+v", "Meta+Shift+z", "Control+c", "Control+Tab", "Shift+Tab",
+        "Tab", "Space", "Escape", "Shift+Space", "Enter", "Meta+ArrowLeft", "Meta+Alt+i",
+        "Meta+Escape", "Meta+Delete", "Alt+Backspace", "q", "w", "h", "m",
+    ])
+    func stillSendsOrdinaryShortcutsAndBareKeys(_ key: String) throws {
+        // `q`, `w`, `h` and `m` alone are text, not shortcuts.
+        let letters: [String: SafariMCPServer.ResolvedCharacter] = [
+            "a": .init(keyCode: 0, needsShift: false), "c": .init(keyCode: 8, needsShift: false),
+            "v": .init(keyCode: 9, needsShift: false), "z": .init(keyCode: 6, needsShift: false),
+            "i": .init(keyCode: 34, needsShift: false), "q": .init(keyCode: 12, needsShift: false),
+            "w": .init(keyCode: 13, needsShift: false), "h": .init(keyCode: 4, needsShift: false),
+            "m": .init(keyCode: 46, needsShift: false),
+        ]
+        let combo = try SafariMCPServer.nativeKeyCombo(key) { letters[$0] }
+        #expect(combo.label == key)
+    }
+
+    // AZERTY puts q where QWERTY puts a. The guard follows the character the
+    // caller named, so the remapped keycode cannot slip a quit past it.
+    @Test func theGuardFollowsTheCharacterNotTheKeycode() throws {
+        let azerty: [String: SafariMCPServer.ResolvedCharacter] = [
+            "a": .init(keyCode: 12, needsShift: false),
+            "q": .init(keyCode: 0, needsShift: false),
+        ]
+        #expect(try SafariMCPServer.nativeKeyCombo("Meta+a") { azerty[$0] }.keyCode == 12)
+        #expect(throws: SafariMCPServer.ToolInputError.self) {
+            try SafariMCPServer.nativeKeyCombo("Meta+q") { azerty[$0] }
+        }
+        // And on QWERTY, where keycode 12 is q.
+        #expect(throws: SafariMCPServer.ToolInputError.self) {
+            try SafariMCPServer.nativeKeyCombo("Meta+q") { Self.qwerty[$0] }
+        }
+    }
+
+    @Test func theRefusalListIsSmallAndNamed() {
+        let names = SafariMCPServer.blockedNativeCombos.map(\.name)
+        #expect(names.count == Set(names).count)
+        #expect(names.count <= 12)
+        #expect(names.contains("Command+Q"))
     }
 
     @Test func keepsOriginalLabel() throws {

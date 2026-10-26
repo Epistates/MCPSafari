@@ -89,12 +89,16 @@ Tokens are written only under `~/Library/Application Support/MCPSafari/`. Earlie
 
 ### Input validation
 
-- URL schemes restricted to `http`, `https`, `about`, and `file`
+- URL schemes restricted to `http`, `https`, `about`, and `file`, judged after the normalization the browser applies (leading and trailing control characters and spaces dropped, tabs and newlines removed), and the normalized URL is what is sent
 - Navigation actions validated against an allowlist
-- Regex patterns capped at 200 characters and validated before forwarding
+- Optional arguments of the wrong type rejected with `invalid_input`, never read as absent, so a mistyped filter cannot return unfiltered data and a mistyped flag cannot fall back to its default
+- Regex patterns held to the bounded subset (at most 200 UTF-16 code units, no repetition, groups, or backreferences) and validated by the server before forwarding, so the check does not depend on the page-world filter, which a page can rewrite
 - Wait durations capped at 300 seconds
 - File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call
+- `upload_file` and `drop_file` refuse any file inside the bridge token directories (`~/Library/Application Support/MCPSafari/` and `~/.config/mcp-safari/`). The check is made on the open descriptor's resolved path, so symlinks, including a symlinked `~/.config`, and different spellings of the same path do not get around it. `navigate` and `tabs_create` apply the same rule to `file:` URLs after resolving symlinks, so Safari cannot be pointed at the token and `read_page` cannot return it
+- `screenshot` `filePath` must end in `.png`; an existing target must be a regular file that already begins with the PNG signature (symlinks and other files are refused, so it cannot overwrite `~/.zshrc` or a key), the token directories are refused, new files are created `0600`, and the write is a rename of a finished temporary file
 - `find` returns at most 50 matches per call
+- `maxChars`, `maxNodes` and `maxResults` clamped to documented maxima, so a caller cannot ask for unbounded output
 
 ### Snapshot redaction
 

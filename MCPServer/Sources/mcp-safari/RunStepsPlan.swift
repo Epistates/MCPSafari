@@ -71,6 +71,14 @@ struct RunStepsPlan: Equatable, Sendable {
             if stepArguments["tabId"] == nil, let batchTabId {
                 stepArguments["tabId"] = batchTabId
             }
+            // The same checks the step's own handler makes, run now. A bad URL
+            // scheme, navigation action, wait length or key combination in step 7
+            // would otherwise surface only after steps 1 to 6 had acted.
+            do {
+                try SafariMCPServer.preflight(tool: tool, arguments: stepArguments)
+            } catch let error as SafariMCPServer.ToolInputError {
+                throw RunStepsInputError("steps[\(index)] (\(tool)): \(error.description)")
+            }
             return RunStep(tool: tool, arguments: stepArguments)
         }
 

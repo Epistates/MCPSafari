@@ -92,10 +92,14 @@ struct ScreenshotContextTests {
         _ = try SafariMCPServer.writeCapture(next, to: url.path)
         #expect(try Data(contentsOf: url) == next)
 
-        // A trailing space is part of the filename, not something to strip
-        // before picking the destination.
-        let spaced = try SafariMCPServer.writeCapture(png, to: url.path + " ")
-        #expect(spaced.lastPathComponent == "shot.png ")
+        // A space is part of the filename, not something to strip before picking
+        // the destination. A trailing one is not stripped either, which leaves a
+        // name that does not end in .png, so it is refused rather than guessed at.
+        let spaced = try SafariMCPServer.writeCapture(png, to: root.appendingPathComponent("my shot.png").path)
+        #expect(spaced.lastPathComponent == "my shot.png")
+        #expect(throws: FileAttachmentError.self) {
+            try SafariMCPServer.writeCapture(png, to: url.path + " ")
+        }
         #expect(try Data(contentsOf: url) == next)
     }
 

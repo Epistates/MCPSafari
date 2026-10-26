@@ -54,7 +54,11 @@ This reference describes `main`, which may include tools and options not yet in 
 
 By default, interaction tools send synthetic DOM events. These reach page event handlers, but they do not trigger browser shortcuts, clipboard actions, or CSS `:hover`. Text entry uses setters and editing events that update application state.
 
-Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the page needs real macOS input. Safari must already be in front, and the app running the server needs Accessibility permission. Native input takes over your keyboard and mouse, so tool descriptions and errors tell agents to ask you before bringing Safari to the front. If you want agents to do that on their own, say so in your agent instructions. Native `type_text` types one character at a time and is not paste. Native hover and drag move your real pointer; screen coordinates assume 100% page zoom. `click` uses synthetic events and has no native mode. Running JavaScript does not make an event trusted.
+Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the page needs real macOS input. Safari must already be in front, and the app running the server needs Accessibility permission. Native input takes over your keyboard and mouse, so tool descriptions and errors tell agents to ask you before bringing Safari to the front. If you want agents to do that on their own, say so in your agent instructions. Native `type_text` types one character at a time and is not paste, so it is for short input: text over 1,000 characters is refused with `invalid_input`, and `type_text` without `native` is the tool for anything longer. Safari's focus is checked before typing, every 16 characters, and after the last one; if it is lost partway, the call stops and the error says how many characters were delivered. A cancelled call stops typing too, and native typing does not hold up other tool calls while it runs.
+
+Native `press_key` refuses shortcuts that quit, close, hide, or leave Safari, or that lock, log out, or empty the Trash, with `invalid_input` and nothing sent. A real key event cannot be told apart from yours, so there is no page to contain it. A combination is refused when it holds Command plus Q, W, H, M, Tab, or Space; Control plus Space; Command and Option plus Escape; or Command and Shift plus Delete or Backspace. Extra modifiers do not get around it, so Command+Shift+Q and Control+Command+Q are refused too. Use `close_tab` to close a tab, or omit `native` to send the key to the page only. Native hover and drag move your real pointer; screen coordinates assume 100% page zoom. Before the first pointer event, the server finds the topmost window at each target point, including the Dock and the menu bar, and refuses with `native_input_focus_lost` and nothing sent unless it belongs to Safari, so a window of another app over the page cannot receive the click. `click` uses synthetic events and has no native mode. Running JavaScript does not make an event trusted.
+
+Tools that depend on what has focus run one at a time, in the order they arrive: native `type_text`, `press_key`, `hover` and `drag`, `screenshot`, and `select_tab` unless `bringToFront` is false. The extension focuses a tab or element and the server then acts on it, and a parallel call that moved focus in between would send the keystrokes or the click somewhere else. Other tools are not held up by them.
 
 ### Dialogs
 
@@ -66,7 +70,9 @@ Use `native: true` with `type_text`, `press_key`, `hover`, or `drag` when the pa
 
 | Tool | Description |
 |-|-|
-| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `uid`/`selector` crop to one element plus `padding` CSS px, `scale` shrinks the PNG, and `filePath` saves it to disk and returns the path instead of inline image data |
+| `screenshot` | Capture the visible tab area as a PNG image, with viewport, scale, page visibility, and window focus; `uid`/`selector` crop to one element plus `padding` CSS px, `scale` shrinks the PNG, and `filePath` saves it to disk and returns the path instead of inline image data; the path must end in `.png` and may replace only a file that is already a PNG |
+
+A screenshot saved with `filePath` is written to a temporary file beside the destination and renamed into place, so a failure leaves the previous file untouched. A new file is created readable by its owner only (`0600`), and an existing PNG keeps its mode. A destination that exists and is not a regular file that begins with the PNG signature, such as `~/.zshrc` renamed to end in `.png` or a symlink, is refused rather than replaced, as is anything inside MCPSafari's token directories.
 
 ### JavaScript
 
@@ -91,7 +97,7 @@ Console and network capture run in the page's JavaScript context. Pages can obse
 
 | Tool | Description |
 |-|-|
-| `resize_window` | Resize the browser window to specific dimensions |
+| `resize_window` | Resize the browser window; `width` and `height` are both required, positive integers of at most 10,000 |
 
 ### Utility
 
@@ -115,7 +121,11 @@ Console and network capture run in the page's JavaScript context. Pages can obse
 
 Safari runs a separate, complete instance of the extension in every profile, and each instance numbers its own tabs, so tab 5 names a different page in each one. The handle carries the profile the way an element UID carries its frame. Omit `tabId` to act on the selected tab of the selected profile.
 
+A call that names no tab acts on the selected tab, and its follow-ups stay on that same tab: the extension reports which tab it resolved, and the post-action wait, the `includeSnapshot` snapshot and the end of a trace are sent to it, so switching tabs while a call runs does not split it across two pages. A `run_steps` batch that names no tab does the same, taking the first step's tab for every later step and for its final snapshot and trace. (An older extension reports no tab, and then each request picks the selected tab itself.)
+
 Naming a profile that is not connected fails with `profile_not_connected` rather than falling back to another one, because answering from a different browser window is worse than refusing.
+
+`tabs_context`, `tabs_create` and `select_tab` mark each tab `access: "granted"` or `"not_granted"`, with an `accessHint` pointing at the toolbar popup when it is not granted. `select_tab` on such a tab still succeeds and pins the tab's profile. The result also says in prose, once for a whole listing, that reading or acting on those tabs will fail with `permission_required` until the user grants the site.
 
 ### Element targeting
 
@@ -196,6 +206,8 @@ Every tool failure carries a stable `code`, a human-readable `message`, a `retry
 | `inspect_batch_result` | A `run_steps` batch stopped partway; read the per-step results. |
 | `grant_accessibility_to_mcp_client` | Native input needs Accessibility for the app running `mcp-safari`. |
 
+An optional argument given with the wrong type, such as `bringToFront: "false"`, `status: "500"`, or `pattern: 5`, is refused with `fix_input` before anything is sent. It is never read as absent, so a call does not run with a default the caller did not ask for. Whole-valued numbers such as `800.0` are accepted where an integer is wanted.
+
 A `bridge_timeout` means no reply arrived before the deadline; the browser operation may already have completed. It is not automatically retryable. Inspect the target state before repeating a click, submission, upload, or JavaScript call. Canceling a request stops the server waiting, but cannot retract work already sent to Safari.
 
 ### Safari profiles
@@ -234,7 +246,7 @@ This uses React-compatible value setting (`nativeInputValueSetter`) so it works 
 { "selector": "#dropzone", "filePaths": ["/tmp/a.pdf", "/tmp/b.pdf"] }
 ```
 
-The server reads only the paths you name, infers each MIME type from the file extension (override with `mimeType`), and sends the bytes to the page. `upload_file` accepts the input itself, its `<label>`, or a wrapper containing it, then fires `input` and `change`; `drop_file` dispatches `dragenter`, `dragover`, and `drop` with a `DataTransfer` holding the files. Up to 10 files and 10 MB total per call.
+The server reads only the paths you name, infers each MIME type from the file extension (override with `mimeType`), and sends the bytes to the page. `upload_file` accepts the input itself, its `<label>`, or a wrapper containing it, then fires `input` and `change`; `drop_file` dispatches `dragenter`, `dragover`, and `drop` with a `DataTransfer` holding the files. Up to 10 files and 10 MB total per call. Files inside MCPSafari's own token directories are refused, however the path is spelled or linked, because the token is what authenticates the bridge; `navigate` and `tabs_create` refuse `file:` URLs into them for the same reason.
 
 ### Smart text matching
 
@@ -246,7 +258,7 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 
 ### Post-action waits
 
-`navigate` and interaction tools support `waitForSelector`, `waitForText`, and `waitTimeout` to wait after a successful action before returning. When combined with `includeSnapshot: true`, the snapshot is captured after the wait.
+`navigate` and interaction tools support `waitForSelector`, `waitForText`, and `waitTimeout` to wait after a successful action before returning. When combined with `includeSnapshot: true`, the snapshot is captured after the wait. These options, and the trace options below, are checked before the action is sent, so a malformed one is refused without anything having happened and the corrected call is safe to send again. `waitTimeout` defaults to 10 seconds and is capped at 300.
 
 ### Page traces
 
@@ -267,6 +279,8 @@ Use `run_steps` for a fixed sequence of existing interactions and waits with a s
   "includeSnapshot": true
 }
 ```
+
+Every step's arguments are validated before the first step runs, with the same checks the step's own tool makes: URL scheme, navigation action, wait length and wait options, native key combination and text length, and file arguments. A bad argument in step 3 refuses the whole batch, naming the step and tool, with nothing sent. What cannot be known up front still surfaces at run time, such as a missing element or an unreadable file.
 
 The batch stops at the first structured failure and reports `completedSteps`, `failedStep`, and ordered step results. Completed browser actions are not rolled back. Batch-level trace and snapshot options produce one trace and one final snapshot rather than one artifact per step.
 
@@ -289,8 +303,10 @@ limits (1,000 console messages, 500 network requests and 500 resource entries) a
 `pattern` and `urlPattern` support a bounded regex subset: literals, dots, anchors,
 character classes, escaped characters, and alternation, up to 200 characters.
 Repetition (`*`, `+`, `?`, `{}`), groups, and backreferences are rejected, as are
-invalid patterns. Filter rejection never silently returns unfiltered data. For
+invalid patterns. The server applies the same rule before the request is forwarded, counting length in UTF-16 code units, so a pattern the page-side filter would refuse is refused up front. Filter rejection never silently returns unfiltered data. For
 example, use `error|warning` or `^https://example\.com/` rather than `(error)+`.
+
+Output size arguments have ceilings, and a larger value is brought down to the ceiling rather than refused: `maxChars` on `read_page` at 1,000,000 (default 100,000), `maxNodes` on `snapshot` and `read_page` at 10,000 (default 2,000), and `maxResults` on `read_network` at 1,000. Zero and negative values are refused with `invalid_input`.
 
 The bridge accepts up to 128 in-flight requests and 32 MiB per WebSocket message.
 File uploads retain their separate 10 MiB aggregate file limit. Large captures may

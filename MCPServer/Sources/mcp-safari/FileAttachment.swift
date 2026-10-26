@@ -25,13 +25,25 @@ enum FileAttachmentLoader {
     static let maxFileCount = 10
     static let maxTotalBytes = 10 * 1024 * 1024
 
-    static func load(paths: [String], mimeTypeOverride: String? = nil) throws -> [FileAttachment] {
+    /// The checks on the list itself, before any file is touched. Shared with the
+    /// pre-dispatch validation, which runs them without reading anything.
+    static func validateCount(of paths: [String]) throws {
         guard !paths.isEmpty else {
             throw FileAttachmentError("Provide filePath or filePaths")
         }
         guard paths.count <= maxFileCount else {
             throw FileAttachmentError("Too many files: \(paths.count). Maximum is \(maxFileCount) per call.")
         }
+    }
+
+    /// `protectedRoots` are directories no file may be read from, the bridge token
+    /// roots by default. See `ProtectedPaths` for why.
+    static func load(
+        paths: [String],
+        mimeTypeOverride: String? = nil,
+        protectedRoots: [String] = ProtectedPaths.defaultRoots
+    ) throws -> [FileAttachment] {
+        try validateCount(of: paths)
 
         var attachments: [FileAttachment] = []
         var totalBytes = 0
@@ -47,6 +59,11 @@ enum FileAttachmentLoader {
             let data: Data
             do {
                 defer { Darwin.close(descriptor) }
+                // Asked of the open descriptor, after resolving symlinks, so a
+                // link into the token directory is refused as the file it is.
+                guard !ProtectedPaths.isProtected(descriptor: descriptor, roots: protectedRoots) else {
+                    throw FileAttachmentError("Refusing to read \(url.path): it is in a directory where MCPSafari keeps its bridge token")
+                }
                 data = try read(descriptor: descriptor, budget: maxTotalBytes - totalBytes)
             }
             let name = url.lastPathComponent

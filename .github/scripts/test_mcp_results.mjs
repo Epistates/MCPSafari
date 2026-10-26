@@ -129,14 +129,26 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     let pageText = "Example Domain";
     let jsText = "42";
     let failAction;
-    const tab = { id: 7, url: "https://example.com/", title: "Example" };
+    // The shape the extension sends: tabs_query entries carry the browser's tab
+    // fields plus `access`, and url and title only for a granted site. An
+    // ungranted tab also carries `accessHint`.
+    const tab = {
+        id: 7, active: true, pinned: false, audible: false, muted: false, status: "complete",
+        windowId: 1, index: 0, access: "granted", url: "https://example.com/", title: "Example",
+    };
+    const ungrantedTab = (id) => ({
+        id, active: false, pinned: false, audible: false, muted: false, status: "complete",
+        windowId: 1, index: id, access: "not_granted",
+        accessHint: "Grant access from the MCPSafari button in Safari's toolbar.",
+    });
+    let queryTabs = [tab];
     const snapshot = { uid: "f0e1", tag: "body", children: [] };
     const trace = { events: [{ type: "click", timestamp: 1 }] };
     const responseData = (action, params) => {
         switch (action) {
-            case "tabs_query": return [tab];
-            case "tabs_create": return tab;
-            case "select_tab": return { ...tab, selected: true };
+            case "tabs_query": return queryTabs;
+            case "tabs_create": return { id: tab.id, access: "granted", url: tab.url, title: tab.title };
+            case "select_tab": return { id: tab.id, selected: true, access: "granted", url: tab.url, title: tab.title };
             case "read_page": return params.format === "snapshot" ? snapshot : pageText;
             case "snapshot": return snapshot;
             case "find": return [{ uid: "f0e1", tag: "body" }];
@@ -166,7 +178,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
             socket.addEventListener("open", () => socket.send(JSON.stringify({
                 hello: { clientNonce, extensionVersion: "9.9.9", protocolVersion: BRIDGE_PROTOCOL_VERSION, profileId },
             })));
-            socket.addEventListener("message", ({ data }) => {
+            socket.addEventListener("message", async ({ data }) => {
                 const message = JSON.parse(data);
                 if (message.challenge) {
                     serverNonce = message.challenge.serverNonce;
@@ -182,22 +194,57 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
                     else reject(new Error(`Authentication failed: ${message.error}`));
                     return;
                 }
-                socket.send(JSON.stringify({ id: message.id, ...respond(message) }));
+                socket.send(JSON.stringify({ id: message.id, ...(await respond(message)) }));
             });
         });
         await bounded(authenticated, "extension authentication");
     };
-    await connect("default", ({ action, params }) => {
+    // How many requests for each action the extension holds at once, and for how
+    // long it takes to answer one. The delay is what lets overlap happen at all.
+    const inFlight = new Map();
+    const peakInFlight = new Map();
+    let answerDelayMs = 0;
+    // Every request the extension received, in order, so a test can show that a
+    // refused call never reached it.
+    const received = [];
+    // The tab the user has selected, which a request that names none acts on.
+    // `moveSelectionAfter` makes the user switch tabs once that action has been
+    // answered, the way they can while a multi-request call is still running.
+    let selectedTab = 7;
+    let moveSelectionAfter;
+    const requests = [];
+    const untargeted = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab"]);
+    await connect("default", async ({ action, params }) => {
         sentActions.add(action);
-        if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user" };
+        received.push(action);
+        requests.push({ action, tabId: params.tabId });
+        inFlight.set(action, (inFlight.get(action) ?? 0) + 1);
+        peakInFlight.set(action, Math.max(peakInFlight.get(action) ?? 0, inFlight.get(action)));
+        if (answerDelayMs) await new Promise((resolve) => setTimeout(resolve, answerDelayMs));
+        inFlight.set(action, inFlight.get(action) - 1);
+        // Reported on success and failure alike, null where no tab is involved.
+        const resolvedTabId = untargeted.has(action) ? null : (params.tabId ?? selectedTab);
+        if (action === moveSelectionAfter) selectedTab = 9;
+        if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user", resolvedTabId };
         const data = responseData(action, params);
-        return { success: true, data: typeof data === "string" ? data : JSON.stringify(data) };
+        return { success: true, data: typeof data === "string" ? data : JSON.stringify(data), resolvedTabId };
     });
 
     const { tools } = await call("tools/list");
     const tabs = await tool("tabs_context");
     assert.equal(tabs.structuredContent.tabs[0].id, "p0t7");
     assert.deepEqual(tabs.structuredContent.profileFailures, []);
+    // A granted listing has nothing to add. An ungranted one says so once for
+    // the whole listing, with the extension's hint said once rather than per tab.
+    assert.equal(tabs.content.length, 1);
+    queryTabs = [tab, ungrantedTab(11), ungrantedTab(12)];
+    const mixed = await tool("tabs_context");
+    queryTabs = [tab];
+    assert.equal(mixed.structuredContent.tabs.length, 3);
+    assert.equal(mixed.structuredContent.tabs[1].access, "not_granted");
+    assert.equal(mixed.content.length, 2);
+    assert.match(mixed.content[1].text, /Access to 2 tabs' sites is not granted/);
+    assert.equal(mixed.content[1].text.split("Grant access from the MCPSafari button").length - 1, 1);
     for (const name of ["tabs_create", "select_tab"]) {
         const result = await tool(name, name === "select_tab" ? { tabId: "p0t7" } : {});
         assert.equal(result.structuredContent.tab.id, "p0t7");
@@ -271,6 +318,127 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.deepEqual(batch.structuredContent.trace, trace);
     assert.deepEqual([...exercised].sort(), tools.map(({ name }) => name).sort());
 
+    // A screenshot may activate its tab, and the extension's prepare step and the
+    // capture must not be pulled apart by a parallel call that focuses something
+    // else. The server serialises such calls end to end; an ordinary read is
+    // free to overlap, which is what shows the fixture could have caught it.
+    answerDelayMs = 40;
+    await Promise.all([0, 1, 2, 3].map(() => tool("screenshot")));
+    assert.equal(peakInFlight.get("screenshot"), 1, "screenshots overlapped at the extension");
+    await Promise.all([0, 1, 2, 3].map(() => tool("snapshot")));
+    assert.ok(peakInFlight.get("snapshot") > 1, "the fixture never overlapped two plain reads");
+    answerDelayMs = 0;
+
+    // A call that names no tab acts on the selected one, and its own follow-ups
+    // are separate requests. The extension reports the tab it resolved, and the
+    // follow-ups go to that tab even if the user switches while the call runs.
+    const sentSince = (start) => requests.slice(start).map(({ action, tabId }) => `${action}:${tabId ?? "-"}`);
+    selectedTab = 7;
+    moveSelectionAfter = "click";
+    let start = requests.length;
+    await tool("click", { selector: "body", waitForText: "Done", includeSnapshot: true });
+    moveSelectionAfter = undefined;
+    assert.deepEqual(sentSince(start), ["click:-", "wait:7", "snapshot:7"]);
+
+    selectedTab = 7;
+    moveSelectionAfter = "click";
+    start = requests.length;
+    await tool("click", { selector: "body", trace: true, traceDuration: 0 });
+    moveSelectionAfter = undefined;
+    assert.deepEqual(sentSince(start), ["start_trace:-", "click:-", "stop_trace:7"]);
+
+    // An explicit tab is left alone.
+    selectedTab = 9;
+    start = requests.length;
+    await tool("click", { selector: "body", tabId: "p0t3", includeSnapshot: true });
+    assert.deepEqual(sentSince(start), ["click:3", "snapshot:3"]);
+
+    // A batch with no tab pins the first step's tab for every later step, and
+    // for its final snapshot and trace.
+    selectedTab = 7;
+    moveSelectionAfter = "click";
+    start = requests.length;
+    const pinnedBatch = await tool("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body" } },
+            { tool: "hover", arguments: { selector: "body" } },
+            { tool: "wait", arguments: { text: "Done" } },
+            { tool: "click", arguments: { selector: "body", tabId: "p0t3" } },
+        ],
+        includeSnapshot: true, trace: true, traceDuration: 0,
+    });
+    moveSelectionAfter = undefined;
+    assert.equal(pinnedBatch.structuredContent.completedSteps, 4);
+    assert.deepEqual(sentSince(start), [
+        "start_trace:-", "click:-", "hover:7", "wait:7", "click:3", "stop_trace:7", "snapshot:7",
+    ]);
+    selectedTab = 7;
+
+    // A batch that names a tab uses it throughout.
+    start = requests.length;
+    await tool("run_steps", {
+        tabId: "p0t5",
+        steps: [{ tool: "click", arguments: { selector: "body" } }, { tool: "wait", arguments: { seconds: 0 } }],
+    });
+    assert.deepEqual(sentSince(start), ["click:5"]);
+
+    // A wrong-typed argument is refused before the extension hears of the call.
+    // Reading it as absent would have run the call with a default the caller
+    // never asked for: bringToFront "false" activates the tab, and a status
+    // filter given as "500" returns every request.
+    const refuse = async (name, args, expected) => {
+        const before = received.length;
+        const refused = await tool(name, args, false);
+        assert.equal(refused.structuredContent.code, "invalid_input", `${name}: ${JSON.stringify(refused)}`);
+        assert.equal(refused.structuredContent.recoveryAction, "fix_input", name);
+        assert.match(refused.structuredContent.message, expected, name);
+        assert.equal(received.length, before, `${name} reached the extension`);
+    };
+    await refuse("select_tab", { tabId: "p0t7", bringToFront: "false" }, /bringToFront must be a boolean/);
+    await refuse("read_network", { status: "500" }, /status must be an integer/);
+    await refuse("read_console", { pattern: 5, clear: true }, /pattern must be a string/);
+    await refuse("resize_window", { width: 800 }, /height is required/);
+    await refuse("navigate", { url: "javascript:alert(1)" }, /disallowed scheme/);
+    // The wait and trace options are read before the action is sent. Checking
+    // them afterwards meant a caller who corrected the argument and retried
+    // submitted the form twice, or left a trace running that nothing stopped.
+    await refuse("click", { selector: "#submit", waitForSelector: "" }, /waitForSelector must not be empty/);
+    await refuse("click", { selector: "#submit", waitForText: 5 }, /waitForText must be a string/);
+    await refuse("click", { selector: "#submit", waitForText: "Done", waitTimeout: "5" }, /waitTimeout must be a number/);
+    await refuse("navigate", { url: "https://example.com/", trace: true, traceDuration: "long" }, /traceDuration must be a number/);
+    await refuse("type_text", { selector: "input", text: "x", trace: true, eventTypes: [""] }, /eventTypes must be an array/);
+    // The bridge token is a file the same account can read, so a file tool that
+    // took any caller-named path would hand it to a page. It is refused as a
+    // file to attach and as a file: URL to open, before the extension is asked.
+    const tokenPath = join(homedir(), "Library/Application Support/MCPSafari/tokens", String(port));
+    await refuse("upload_file", { selector: "input", filePath: tokenPath }, /bridge token/);
+    await refuse("drop_file", { selector: "body", filePaths: [tokenPath] }, /bridge token/);
+    await refuse("navigate", { url: `file://${tokenPath}` }, /bridge token/);
+    await refuse("tabs_create", { url: `file://${tokenPath}` }, /bridge token/);
+    // A screenshot save may only create a .png or replace a PNG: it used to
+    // overwrite any file the account could write.
+    const notes = join(directory, "notes.png");
+    await writeFile(notes, "not an image");
+    await refuse("screenshot", { filePath: join(directory, "profile.sh") }, /must end in \.png/);
+    await refuse("screenshot", { filePath: notes }, /not a PNG image/);
+    assert.equal(await readFile(notes, "utf8"), "not an image");
+    await refuse("screenshot", { filePath: `${tokenPath}.png` }, /bridge token/);
+    // A batch is validated as a whole before its first step runs: a bad URL in
+    // step 3 must not leave steps 1 and 2 already performed.
+    await refuse("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body" } },
+            { tool: "wait", arguments: { seconds: 0 } },
+            { tool: "navigate", arguments: { url: "jav\tascript:alert(1)" } },
+        ],
+    }, /steps\[2\] \(navigate\): Invalid URL or disallowed scheme/);
+    await refuse("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body" } },
+            { tool: "navigate", arguments: { action: "sideways" } },
+        ],
+    }, /steps\[1\] \(navigate\): Invalid navigation action/);
+
     failAction = "click";
     const failed = await tool("click", { selector: "body" }, false);
     assert.equal(failed.structuredContent.code, "permission_required");
@@ -280,6 +448,23 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(partial.structuredContent.tabs.length, 1);
     assert.equal(partial.structuredContent.profileFailures.length, 1);
     assert.match(partial.structuredContent.profileFailures[0], /Profile unavailable/);
+
+    // Selecting a tab on a site Safari has not granted succeeds and says so. It
+    // still pins the tab's profile, and the result tells the model in prose that
+    // the next read will be refused rather than leaving it to find out.
+    await connect("third", ({ action }) => action === "select_tab"
+        ? { success: true, data: JSON.stringify({ id: 9, selected: true, access: "not_granted", accessHint: "Grant example.org from the MCPSafari toolbar button." }) }
+        : { success: false, error: "Not used" });
+    const ungranted = await tool("select_tab", { tabId: "p2t9" });
+    assert.equal(ungranted.structuredContent.tab.id, "p2t9");
+    assert.equal(ungranted.structuredContent.tab.access, "not_granted");
+    assert.match(ungranted.content[0].text, /not_granted/);
+    const ungrantedText = ungranted.content.map(({ text }) => text).join("\n");
+    assert.match(ungrantedText, /Access to one tab's site is not granted/);
+    assert.match(ungrantedText, /Grant example\.org from the MCPSafari toolbar button\./);
+    const pinned = (await tool("status")).structuredContent.status.profiles.find((profile) => profile.selected);
+    assert.equal(pinned.handle, "p2");
+
 
     // The one boundary that spans both languages. This fixture answers any
     // action it is sent, including `default: Completed ${action}`, so every
