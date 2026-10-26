@@ -35,7 +35,9 @@ actor SafariMCPServer {
     }
 
     func start() async throws {
-        await bridge.start()
+        // Not awaited: a bind that stalls must not hold up `initialize`. Until it
+        // finishes, tool calls fail with `bridge_unavailable` rather than waiting.
+        Task { await bridge.start() }
         await registerToolHandlers()
         let transport = ClientCapabilityNormalizingTransport(
             wrapping: StdioTransport(),
@@ -49,6 +51,12 @@ actor SafariMCPServer {
             await bridge.stop()
             throw error
         }
+        await bridge.stop()
+    }
+
+    /// Takes the bridge down and removes its token files. For a signal, which ends the
+    /// process without letting `start()` return.
+    func shutdown() async {
         await bridge.stop()
     }
 
@@ -192,7 +200,7 @@ actor SafariMCPServer {
     private func resolveProfileIndex(_ args: [String: Value]) async throws -> Int {
         if let handle = try TabHandle.resolve(args["tabId"]) { return handle.profileIndex }
         guard let selected = await bridge.connectedProfiles().first(where: \.selected) else {
-            throw WebSocketBridge.BridgeError.notConnected
+            throw await bridge.noConnectionError()
         }
         return selected.index
     }

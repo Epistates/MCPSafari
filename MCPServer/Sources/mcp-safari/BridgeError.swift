@@ -15,6 +15,10 @@ extension WebSocketBridge {
         case decodingFailed(String)
         case extensionError(String)
         case authenticationFailed
+        /// The server could not open its side of the bridge at all, as opposed to
+        /// having no extension connected to it. Carries the reason the bridge
+        /// recorded, or nil while it is still starting.
+        case bridgeUnavailable(WebSocketBridge.Failure?)
 
         var description: String {
             switch self {
@@ -32,6 +36,12 @@ extension WebSocketBridge {
                 "Safari extension error: \(message)"
             case .authenticationFailed:
                 "Extension failed to authenticate. Token mismatch."
+            case .bridgeUnavailable(let failure?):
+                // Unlike `notConnected`, nothing the user does in Safari helps here,
+                // so the cause and its fix are the whole message.
+                "The extension bridge is not running. \(failure.message) \(failure.recovery)"
+            case .bridgeUnavailable(nil):
+                "The extension bridge is not listening yet. Call status, or retry in a moment."
             }
         }
 
@@ -61,6 +71,13 @@ extension WebSocketBridge {
             case .authenticationFailed:
                 ToolFailure(
                     code: "bridge_authentication_failed",
+                    message: description,
+                    retryable: false,
+                    recoveryAction: "call_status"
+                )
+            case .bridgeUnavailable:
+                ToolFailure(
+                    code: "bridge_unavailable",
                     message: description,
                     retryable: false,
                     recoveryAction: "call_status"

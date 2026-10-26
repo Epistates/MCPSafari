@@ -52,7 +52,7 @@ struct BridgeLifecycleTests {
         let bridge = try WebSocketBridge(
             port: first,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
 
@@ -61,6 +61,9 @@ struct BridgeLifecycleTests {
         // Without a reason recorded, `doctor` and `status` report a dead bridge
         // and leave the user to guess that something else holds the ports.
         #expect(status.lastError?.code == "bridge_bind_failed")
+        // The last port tried is held by someone else. Reporting it would point
+        // `status` at that other server's token file.
+        #expect(status.port == first)
 
         for descriptor in held { Darwin.close(descriptor) }
         held = []
@@ -73,69 +76,104 @@ struct BridgeLifecycleTests {
         await bridge.stop()
     }
 
-    /// Writes a WebSocket upgrade by hand so the request headers are under this
-    /// test's control. `NWConnection`'s own WebSocket client wants a URL
-    /// endpoint rather than a host and port, and `URLSessionWebSocketTask` sends
-    /// no `Origin` at all, so neither can ask this question.
-    private func upgradeRequest(port: UInt16, origin: String?) -> String {
-        let key = Data((0..<16).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        var lines = [
-            "GET / HTTP/1.1",
-            "Host: 127.0.0.1:\(port)",
-            "Upgrade: websocket",
-            "Connection: Upgrade",
-            "Sec-WebSocket-Key: \(key)",
-            "Sec-WebSocket-Version: 13",
-        ]
-        if let origin { lines.append("Origin: \(origin)") }
-        return lines.joined(separator: "\r\n") + "\r\n\r\n"
-    }
-
-    /// Whether a loopback WebSocket server can see the browser's `Origin` at all
-    /// decides whether #121 is implementable, and it is: the header reaches
-    /// `setClientRequestHandler`, which also gets to refuse the handshake.
-    /// Nothing is refused on it yet, because what Safari sends is still unknown.
-    @Test func theHandshakeOriginIsVisibleToTheServer() async throws {
+    /// "Open Safari and click the extension icon" is the wrong advice when the
+    /// server never opened its port, and it is what every tool said (#154).
+    @Test func everyCallSaysWhyWhenTheBridgeCouldNotBind() async throws {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
+        let first: UInt16 = 8401
+        let held = holdPorts(from: first, count: 10)
+        defer { for descriptor in held { Darwin.close(descriptor) } }
+        try #require(held.count == 10, "every port in the sweep has to be occupied for this to test anything")
+
         let bridge = try WebSocketBridge(
-            port: 8371,
+            port: first,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
         defer { Task { await bridge.stop() } }
-        let port = await bridge.port
-        #expect(await bridge.lastHandshakeOrigin == nil)
+        let reason = try #require(await bridge.status().lastError)
 
-        let origin = "safari-web-extension://0E4C1B2A-TEST"
-        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-        try #require(descriptor >= 0)
-        defer { Darwin.close(descriptor) }
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = port.bigEndian
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
+        let failures = [
+            await bridgeFailure { _ = try await bridge.send(action: "tabs_query") },
+            await bridgeFailure { _ = try await bridge.send(action: "tabs_query", profileIndex: 0) },
+            await bridgeFailure { _ = try await bridge.broadcast(action: "tabs_query") },
+        ]
+        for failure in failures {
+            #expect(failure?.code == "bridge_unavailable")
+            #expect(failure?.message.contains(reason.message) == true)
+            #expect(failure?.message.contains(reason.recovery) == true)
         }
-        try #require(connected == 0)
+    }
 
-        let request = Array(upgradeRequest(port: port, origin: origin).utf8)
-        try #require(Darwin.write(descriptor, request, request.count) == request.count)
+    /// A port held when the client started is not a reason to stay dead for the
+    /// life of the process (#154).
+    @Test func aBridgeThatCouldNotBindRetriesWithoutBeingAsked() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
-        var reply = [UInt8](repeating: 0, count: 256)
-        let read = Darwin.read(descriptor, &reply, reply.count)
-        try #require(read > 0)
-        let status = String(decoding: reply.prefix(read), as: UTF8.self)
-        #expect(status.hasPrefix("HTTP/1.1 101"), "the handshake is accepted, not refused: \(status)")
+        let first: UInt16 = 8411
+        var held = holdPorts(from: first, count: 10)
+        defer { for descriptor in held { Darwin.close(descriptor) } }
+        try #require(held.count == 10, "every port in the sweep has to be occupied for this to test anything")
 
-        try await Task.sleep(for: .milliseconds(250))
-        #expect(await bridge.lastHandshakeOrigin == origin)
+        let bridge = try WebSocketBridge(
+            port: first,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoot: tokenRoot,
+            rebindDelay: .milliseconds(50)
+        )
+        await bridge.start()
+        #expect(await bridge.status().listener == .failed)
+
+        for descriptor in held { Darwin.close(descriptor) }
+        held = []
+
+        #expect(await eventually { await bridge.status().listener == .listening })
+        let status = await bridge.status()
+        #expect(status.port == first)
+        #expect(status.lastError == nil)
+        // With the listener up, a call is back to being about the extension.
+        let failure = await bridgeFailure { _ = try await bridge.send(action: "tabs_query") }
+        #expect(failure?.code == "bridge_disconnected")
+        await bridge.stop()
+    }
+
+    /// The listener is ready a little before its token is on disk, and a socket
+    /// accepted in that gap used to be cancelled before the upgrade, which the
+    /// extension saw as a bridge that hung up on it for no reason (#156). This
+    /// holds the bridge in that gap and dials into it.
+    @Test func aDialInsideTheStartupGapIsHeldAndThenServed() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let (gateStream, gate) = AsyncStream<Void>.makeStream()
+        let port: UInt16 = 8391
+        let bridge = try WebSocketBridge(
+            port: port,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoot: tokenRoot,
+            beforeTokenPublication: { for await _ in gateStream { break } }
+        )
+        let starting = Task { await bridge.start() }
+        defer { gate.finish(); Task { await bridge.stop() } }
+
+        // The listener accepts TCP as soon as it is ready, which is before the
+        // hook above returns, so this connects inside the gap.
+        var dialled: RawSocket?
+        let deadline = Date().addingTimeInterval(10)
+        while dialled == nil, Date() < deadline { dialled = RawSocket.dial(port: port) }
+        let socket = try #require(dialled, "the listener never came up")
+
+        // Held means silent. A cancelled socket instead reads end-of-file or is reset.
+        #expect(socket.reply(within: 0.3) == .silent, "the socket is neither served nor dropped yet")
+
+        gate.yield()
+        await starting.value
+
+        #expect(socket.reply() == .upgraded)
     }
 
     /// A listener left in place by one failed attempt would also make `stop()`
@@ -147,7 +185,7 @@ struct BridgeLifecycleTests {
         let bridge = try WebSocketBridge(
             port: 8311,
             logger: Logger(label: "BridgeLifecycleTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
         #expect(await bridge.status().listener == .listening)

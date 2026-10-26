@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 
+import { handshakeGlobals, serverHandshake } from "./helpers/bridge-handshake.mjs";
 import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
 
 const source = backgroundScriptSource();
@@ -49,6 +50,7 @@ function loadBackground() {
     };
 
     const context = vm.createContext({
+        ...handshakeGlobals,
         browser,
         clearTimeout() {},
         console: { error() {}, log() {}, warn() {} },
@@ -76,7 +78,7 @@ function loadBackground() {
             const socket = sockets.at(-1);
             socket.readyState = FakeWebSocket.OPEN;
             socket.onopen();
-            socket.onmessage({ data: JSON.stringify({ auth: "ok" }) });
+            await serverHandshake(socket, { token: "token", port: 8089 });
             socket.sent.length = 0;
             return socket;
         },

@@ -11,7 +11,7 @@
  */
 
 const DEFAULT_PORT = 8089;
-const BRIDGE_PROTOCOL_VERSION = 1;
+const BRIDGE_PROTOCOL_VERSION = 2;
 const EXTENSION_VERSION = browser.runtime.getManifest().version;
 const AUTO_SCAN_RANGE = 10; // Ports 8089-8098 are auto-managed
 const RECONNECT_BASE_MS = 1000;

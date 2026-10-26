@@ -24,7 +24,7 @@ struct ProfileConnectionTests {
         let bridge = try WebSocketBridge(
             port: port,
             logger: Logger(label: "ProfileConnectionTests"),
-            tokenRoots: [tokenRoot]
+            tokenRoot: tokenRoot
         )
         await bridge.start()
         let boundPort = await bridge.port
@@ -49,23 +49,14 @@ struct ProfileConnectionTests {
     ) async throws -> [String: Any] {
         task.resume()
 
-        var handshake: [String: Any] = [
-            "auth": token,
-            "extensionVersion": "0.3.1",
-            "protocolVersion": MCPSafariProduct.bridgeProtocolVersion,
-        ]
-        if let profileId { handshake["profileId"] = profileId }
-
-        let payload = try JSONSerialization.data(withJSONObject: handshake)
-        try await task.send(.string(String(decoding: payload, as: UTF8.self)))
-
-        let message = try await withTimeout { try await task.receive() }
-        guard case let .string(reply) = message,
-              let parsed = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any]
-        else {
+        let extensionSide = TestExtension(token: token, port: port, profileId: profileId, extensionVersion: "0.3.1")
+        // Through `Data`, which is Sendable where a decoded dictionary is not.
+        let reply = try await withTimeout {
+            try JSONSerialization.data(withJSONObject: try await extensionSide.handshake(over: task))
+        }
+        guard let parsed = try JSONSerialization.jsonObject(with: reply) as? [String: Any] else {
             throw BridgeTestError.unexpectedReply
         }
-
         return parsed
     }
 
@@ -504,24 +495,20 @@ struct ProfileConnectionTests {
     }
 
     @Test func anExtensionThatSendsNoProfileCountsAsTheDefault() async throws {
-        // Builds predating profile support send no profileId at all, and Safari sends
-        // none for the default profile. Both have to keep working unchanged.
-        let legacy = Data(#"{"auth":"secret","extensionVersion":"0.3.0","protocolVersion":1}"#.utf8)
-        #expect(
-            BridgeHandshake.decision(for: legacy, expectedToken: "secret")
-                == .accept(.init(version: "0.3.0", protocolVersion: 1, profileID: "default"))
-        )
+        // Safari sends no profile key for the default profile, so the hello may
+        // carry none, a blank one, or a named one.
+        let version = MCPSafariProduct.bridgeProtocolVersion
+        func profile(_ extra: String) throws -> ExtensionMetadata {
+            let nonce = BridgeHandshake.makeNonce()
+            let hello = Data(#"{"hello":{"clientNonce":"\#(nonce)","protocolVersion":\#(version)\#(extra)}}"#.utf8)
+            guard case .challenge(let pending)? = BridgeHandshake.begin(with: hello, token: "secret", port: 8089) else {
+                throw BridgeTestError.unexpectedReply
+            }
+            return pending.metadata
+        }
 
-        let blank = Data(#"{"auth":"secret","profileId":"   "}"#.utf8)
-        #expect(
-            BridgeHandshake.decision(for: blank, expectedToken: "secret")
-                == .accept(.init(version: nil, protocolVersion: nil, profileID: "default"))
-        )
-
-        let named = Data(#"{"auth":"secret","profileId":"WORK-UUID"}"#.utf8)
-        #expect(
-            BridgeHandshake.decision(for: named, expectedToken: "secret")
-                == .accept(.init(version: nil, protocolVersion: nil, profileID: "WORK-UUID"))
-        )
+        #expect(try profile("") == .init(version: nil, protocolVersion: version, profileID: "default"))
+        #expect(try profile(#","profileId":"   ""#) == .init(version: nil, protocolVersion: version, profileID: "default"))
+        #expect(try profile(#","profileId":"WORK-UUID""#) == .init(version: nil, protocolVersion: version, profileID: "WORK-UUID"))
     }
 }

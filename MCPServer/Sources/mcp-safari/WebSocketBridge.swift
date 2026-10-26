@@ -34,6 +34,21 @@ actor WebSocketBridge {
     /// Kept as a list rather than a single slot for the same reason as `connections`:
     /// a second profile dialing in must not cancel the first one mid-handshake.
     private var authenticatingConnections: [BridgeConnection] = []
+    /// Challenges sent and not yet answered, by connection. A connection in
+    /// `authenticatingConnections` without an entry here is still waiting to say hello.
+    private var pendingHandshakes: [UInt64: PendingHandshake] = [:]
+    /// Sockets that arrived after the listener was ready but before its token was on
+    /// disk. They are not started, so the peer's upgrade waits in the kernel, until
+    /// `start()` either goes live and admits them or fails and drops them. Refusing
+    /// them instead closed the extension's first dial silently (#156).
+    private var connectionsAwaitingListener: [NWConnection] = []
+    /// Counts `stop()` calls. A bind sweep suspends several times, so `stop()` can run
+    /// in the middle of one, and without this the sweep would carry on and open a
+    /// listener on a bridge that has just been shut down.
+    private var lifecycleGeneration = 0
+    /// The pending retry after a failed start, and how many have failed in a row.
+    private var rebindTask: Task<Void, Never>?
+    private var rebindAttempts = 0
     private struct PendingRequest {
         let connectionID: UInt64
         let continuation: CheckedContinuation<BridgeResponse, any Error>
@@ -42,7 +57,7 @@ actor WebSocketBridge {
 
     private var pendingRequests: [String: PendingRequest] = [:]
     private let logger: Logger
-    private let tokenRoots: [URL]
+    private let tokenRoot: URL
     private let requestedPort: UInt16
     private(set) var port: UInt16
     private var listenerStatus = ListenerStatus.stopped
@@ -54,17 +69,9 @@ actor WebSocketBridge {
     private var rejectedExtension: ExtensionMetadata?
     private let networkQueue = DispatchQueue(label: "mcp-safari.websocket", qos: .userInitiated)
 
-    /// Authentication token that the extension must send as its first message.
+    /// The secret the extension and the bridge prove to each other that they share.
+    /// It is the key to the handshake's HMACs and is never sent.
     let authToken: String
-
-    /// The `Origin` the most recent handshake arrived with, or nil if it sent
-    /// none. Nothing turns on this yet; it exists so that what Safari sends can
-    /// be read off a real run instead of guessed at. See #121.
-    private(set) var lastHandshakeOrigin: String?
-
-    private func recordHandshakeOrigin(_ origin: String?) {
-        lastHandshakeOrigin = origin
-    }
 
     /// Stands in for a profile that reached the native handler with no
     /// `SFExtensionProfileKey`. Must match `SafariWebExtensionHandler.defaultProfileID`.
@@ -79,17 +86,28 @@ actor WebSocketBridge {
     private static let maxAuthenticatingConnections = 8
     /// How many distinct profile ids this bridge will ever hand a handle to.
     private static let maxProfiles = 32
-    /// How long a connection may sit without completing its handshake. Injected
-    /// so a test does not have to wait out the real one.
+    /// How long a connection may sit without completing its handshake. The
+    /// extension sends its first frame within milliseconds of the socket opening,
+    /// so this only has to cover a slow machine, and every second beyond that is a
+    /// second an unauthenticated peer holds one of the few slots. Injected so a
+    /// test does not have to wait out the real one.
     private let handshakeDeadline: Duration
+    /// Runs once the listener is ready and before its token is written. The gap is
+    /// real but a few milliseconds wide, so a test that wants to dial inside it has
+    /// to be able to hold it open.
+    private let beforeTokenPublication: (@Sendable () async -> Void)?
+    /// First wait before trying to bind again after a failure; it doubles up to
+    /// `maxRebindDelay`. Injected for the same reason as `handshakeDeadline`.
+    private let rebindDelay: Duration
+    private static let maxRebindDelay: Duration = .seconds(30)
     static let maxMessageBytes = 32 * 1024 * 1024
     static let maxPendingRequests = 128
-    /// Primary token root. The sandboxed extension reads tokens through a
+    /// Where tokens live. The sandboxed extension reads tokens through a
     /// home-relative-path exception that the sandbox evaluates against the
-    /// *resolved* path, and `~/.config` is commonly symlinked into a dotfiles
-    /// repo — which puts the real file outside the granted path and makes it
-    /// unreadable. `~/Library/Application Support` is effectively never
-    /// symlinked, so tokens live there.
+    /// *resolved* path, and a directory under `~/.config` is commonly symlinked
+    /// into a dotfiles repo, which puts the real file outside the granted path and
+    /// makes it unreadable. `~/Library/Application Support` is effectively never
+    /// symlinked, so tokens live there and nowhere else.
     ///
     /// Every component below says whether it is a directory. The one-argument
     /// `appendingPathComponent` asks the filesystem instead, and appends a
@@ -105,25 +123,9 @@ actor WebSocketBridge {
             .appendingPathComponent("MCPSafari", isDirectory: true)
     }()
 
-    /// Legacy token root, still written so extension builds that predate the
-    /// move keep authenticating.
-    static let configDirectoryURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config", isDirectory: true)
-            .appendingPathComponent("mcp-safari", isDirectory: true)
-    }()
-
-    /// Token roots to populate, most preferred first.
-    static let tokenRootURLs: [URL] = [applicationSupportDirectoryURL, configDirectoryURL]
-
     /// Directory where per-port auth tokens are written for the extension to read.
     static let tokenDirectoryURL: URL = applicationSupportDirectoryURL
         .appendingPathComponent("tokens", isDirectory: true)
-
-    /// Legacy single-token path kept for older extension builds.
-    static let legacyTokenFilePath: String = configDirectoryURL
-        .appendingPathComponent("token", isDirectory: false)
-        .path
 
     var isConnected: Bool { !connections.isEmpty }
 
@@ -177,7 +179,7 @@ actor WebSocketBridge {
     }
 
     func status() -> Status {
-        let tokenFilePath = tokenFile(for: port, under: tokenRoots[0]).path
+        let tokenFilePath = tokenFile(for: port).path
         // Whichever profile a call with no tab handle would drive, falling back
         // to a rejected build only when nothing is connected to report instead.
         let reported = activeProfileID.flatMap { metadataByProfile[$0] } ?? rejectedExtension
@@ -214,18 +216,22 @@ actor WebSocketBridge {
         wsOptions.autoReplyPing = true
         wsOptions.maximumMessageSize = Self.maxMessageBytes
 
-        // Records the Origin each handshake arrives with and refuses nothing on
-        // it. Browsers do not apply same-origin to WebSockets, so a page on any
-        // site can open one against a loopback port; the token is what stops it
-        // getting further. Checking Origin would be defence in depth, but what
-        // Safari's own extension sends here has never been observed, and
-        // enforcing a guess would break every install at once. Logging it means
-        // the next real-Safari run answers that, and #121 can then enforce it.
+        // Turns away a browser page. Browsers do not apply same-origin to
+        // WebSockets, so a page on any site can open one against a loopback port, and
+        // each such socket would otherwise sit in one of the few handshake slots until
+        // its deadline. Safari sends `Origin: safari-web-extension://<per-profile
+        // UUID>` for the extension, measured on a real run (#121); a client with no
+        // browser behind it sends none. Anything else is a page, and the token is
+        // still what authenticates, so this only keeps pages from crowding out the
+        // real extension.
         let logger = logger
-        wsOptions.setClientRequestHandler(networkQueue) { [weak self] _, headers in
-            let origin = headers.first { $0.name.lowercased() == "origin" }?.value
-            logger.notice("WebSocket handshake origin: \(origin ?? "<none sent>")")
-            Task { await self?.recordHandshakeOrigin(origin) }
+        wsOptions.setClientRequestHandler(networkQueue) { _, headers in
+            let origins = headers.filter { $0.name.lowercased() == "origin" }.map(\.value)
+            if let refused = origins.first(where: { !BridgeHandshake.isAllowedOrigin($0) }) {
+                // The header is the peer's own text, so it is escaped before it is logged.
+                logger.warning("Refusing a WebSocket upgrade from origin \(String(reflecting: String(refused.prefix(120))))")
+                return NWProtocolWebSocket.Response(status: .reject, subprotocol: nil)
+            }
             return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
         }
 
@@ -236,11 +242,14 @@ actor WebSocketBridge {
     init(
         port: UInt16 = 8089,
         logger: Logger,
-        tokenRoots: [URL] = WebSocketBridge.tokenRootURLs,
-        handshakeDeadline: Duration = .seconds(10)
+        tokenRoot: URL = WebSocketBridge.applicationSupportDirectoryURL,
+        handshakeDeadline: Duration = .seconds(2),
+        rebindDelay: Duration = .seconds(2),
+        beforeTokenPublication: (@Sendable () async -> Void)? = nil
     ) throws {
-        precondition(!tokenRoots.isEmpty)
-        self.tokenRoots = tokenRoots
+        self.rebindDelay = rebindDelay
+        self.beforeTokenPublication = beforeTokenPublication
+        self.tokenRoot = tokenRoot
         self.requestedPort = port
         self.port = port
         self.logger = logger
@@ -251,50 +260,58 @@ actor WebSocketBridge {
         self.authToken = UUID().uuidString
     }
 
-    private func writeAuthTokenFile(for port: UInt16) throws {
-        // The preferred root must succeed; the legacy root is best effort so a
-        // broken or unwritable `~/.config` cannot stop the server from starting.
-        try writeToken(for: port, under: tokenRoots[0])
-        for root in tokenRoots.dropFirst() {
-            do { try writeToken(for: port, under: root) }
-            catch { logger.debug("Could not write legacy token under \(root.path): \(error)") }
-        }
-    }
-
-    /// The per-port token file under one root.
+    /// The per-port token file.
     ///
     /// Every component says whether it is a directory. The one-argument
     /// `appendingPathComponent` asks the filesystem instead and appends a
     /// trailing slash only for a path that already exists, so the same
     /// expression produced different values depending on whether the server had
     /// ever run. That was a real CI flake once; two callers still had that form.
-    private func tokenFile(for port: UInt16, under root: URL) -> URL {
-        root.appendingPathComponent("tokens", isDirectory: true)
+    private func tokenFile(for port: UInt16) -> URL {
+        tokenRoot.appendingPathComponent("tokens", isDirectory: true)
             .appendingPathComponent(String(port), isDirectory: false)
     }
 
-    private func writeToken(for port: UInt16, under root: URL) throws {
+    /// Who owns the token file for `port`, kept beside it as `<port>.pid`.
+    ///
+    /// A separate file because the token file's format is not this server's alone to
+    /// change: the native handler reads the whole file as the token, and takes only
+    /// files whose names are a bare port number, so a name with a suffix is ignored
+    /// by it and by the extension. The pid is what lets a later server tell a token
+    /// left behind by a process that died from one a live server is using.
+    private func ownerFile(for port: UInt16) -> URL {
+        tokenRoot.appendingPathComponent("tokens", isDirectory: true)
+            .appendingPathComponent("\(port).pid", isDirectory: false)
+    }
+
+    private func writeAuthTokenFile(for port: UInt16) throws {
         let fileManager = FileManager.default
-        let tokenDirectory = root.appendingPathComponent("tokens", isDirectory: true)
+        let tokenDirectory = tokenRoot.appendingPathComponent("tokens", isDirectory: true)
 
         try fileManager.createDirectory(at: tokenDirectory, withIntermediateDirectories: true)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenRoot.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenDirectory.path)
 
-        let tokenFilePath = tokenFile(for: port, under: root).path
+        // The owner goes first, so a token never exists on disk without a record of
+        // whose it is.
+        let ownerFilePath = ownerFile(for: port).path
+        try String(getpid()).write(toFile: ownerFilePath, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ownerFilePath)
+
+        let tokenFilePath = tokenFile(for: port).path
         try authToken.write(toFile: tokenFilePath, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFilePath)
-
-        // Keep the single-token path populated for older extension builds.
-        // Current builds prefer the per-port map and avoid its rewrite race.
-        let singleTokenPath = root.appendingPathComponent("token", isDirectory: false).path
-        try authToken.write(toFile: singleTokenPath, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: singleTokenPath)
     }
 
     func start() async {
         guard listener == nil else { return }
-        lastError = nil
+        // Whoever called this has superseded a retry that was still waiting.
+        rebindTask?.cancel()
+        rebindTask = nil
+        removeStaleTokenFiles()
+        let generation = lifecycleGeneration
+        // `lastError` is left alone until a bind succeeds, so a caller who arrives
+        // while a retry is mid-sweep still sees why the last attempt failed.
         listenerStatus = .binding
         // Try the requested port, then successive ports if in use
         let lastPort = min(
@@ -309,44 +326,29 @@ actor WebSocketBridge {
             do {
                 let newListener = try NWListener(using: makeWebSocketParameters(for: nwPort))
                 self.listener = newListener
-                self.port = tryPort
 
-                let success = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                    nonisolated(unsafe) var resumed = false
-
-                    newListener.stateUpdateHandler = { [weak self] state in
-                        guard let self else { return }
-                        switch state {
-                        case .ready:
-                            if !resumed {
-                                resumed = true
-                                cont.resume(returning: true)
-                            }
-                            Task { await self.handleListenerState(state, listener: newListener) }
-                        // `.cancelled` is terminal too, and a concurrent `stop()`
-                        // can produce it while this continuation is still
-                        // suspended. Without it here, `start()` never returns and
-                        // takes the whole MCP server down with it, since
-                        // `withCheckedContinuation` cannot be cancelled either.
-                        case .failed, .cancelled:
-                            if !resumed {
-                                resumed = true
-                                cont.resume(returning: false)
-                            }
-                            Task { await self.handleListenerState(state, listener: newListener) }
-                        default:
-                            Task { await self.handleListenerState(state, listener: newListener) }
-                        }
-                    }
-
-                    newListener.newConnectionHandler = { [weak self] newConnection in
-                        guard let self else { return }
-                        Task { await self.handleNewConnection(newConnection) }
-                    }
-
-                    newListener.start(queue: self.networkQueue)
+                // `.cancelled` settles an attempt as well as `.ready` and `.failed`:
+                // a `stop()` that lands mid-sweep produces it, and an attempt that
+                // never settled would leave `start()` suspended for good. So does
+                // `.waiting`, and a deadline covers whatever else never arrives.
+                // See `ListenerAttempt`.
+                let (verdicts, report) = AsyncStream<Bool>.makeStream()
+                newListener.stateUpdateHandler = { [weak self] state in
+                    if let verdict = ListenerAttempt.verdict(for: state) { report.yield(verdict) }
+                    guard let self else { return }
+                    Task { await self.handleListenerState(state, listener: newListener) }
                 }
+                newListener.newConnectionHandler = { [weak self] newConnection in
+                    guard let self else { return }
+                    Task { await self.handleNewConnection(newConnection) }
+                }
+                newListener.start(queue: networkQueue)
+                let success = await ListenerAttempt.outcome(of: verdicts)
 
+                guard generation == lifecycleGeneration else {
+                    discard(listener: newListener)
+                    return
+                }
                 if success {
                     guard let boundPort = newListener.port?.rawValue else {
                         discard(listener: newListener)
@@ -356,21 +358,29 @@ actor WebSocketBridge {
                     if requestedPort != 0 && boundPort != requestedPort {
                         logger.info("Port \(requestedPort) in use — listening on \(boundPort) instead")
                     }
+                    await beforeTokenPublication?()
+                    guard generation == lifecycleGeneration else { return }
                     do {
                         try writeAuthTokenFile(for: boundPort)
                     } catch {
-                        stop()
-                        listenerStatus = .failed
-                        lastError = Failure(
+                        // Whatever was written before the failure is this bridge's own.
+                        removeOwnedTokenFiles(for: boundPort)
+                        discard(listener: newListener)
+                        logger.error("Could not write auth token file for port \(boundPort): \(error)")
+                        failStart(Failure(
                             code: "token_write_failed",
                             message: "Could not publish the authentication token for port \(boundPort).",
-                            recovery: "Check permissions for \(tokenRoots[0].path), then restart the MCP client."
-                        )
-                        logger.error("Could not write auth token file for port \(boundPort): \(error)")
+                            recovery: "Check permissions for \(tokenRoot.path). The server keeps retrying, or restart the MCP client."
+                        ))
                         return
                     }
                     listenerStatus = .listening
+                    lastError = nil
+                    rebindAttempts = 0
                     logger.info("WebSocket server listening on port \(boundPort)")
+                    let waiting = connectionsAwaitingListener
+                    connectionsAwaitingListener.removeAll()
+                    for socket in waiting { handleNewConnection(socket) }
                     return
                 } else {
                     discard(listener: newListener)
@@ -381,13 +391,86 @@ actor WebSocketBridge {
             }
         }
 
-        listenerStatus = .failed
-        lastError = Failure(
+        logger.error("Could not bind to any port in range \(requestedPort)-\(lastPort)")
+        failStart(Failure(
             code: "bridge_bind_failed",
             message: "No free port in \(requestedPort)-\(lastPort) for the extension bridge.",
-            recovery: "Quit whatever is holding those ports, or start the server with --port on a free one."
-        )
-        logger.error("Could not bind to any port in range \(requestedPort)-\(lastPort)")
+            recovery: "Quit whatever is holding those ports, or start the server with --port on a free one. The server keeps retrying."
+        ))
+    }
+
+    /// Records that the bridge could not come up, and schedules another try.
+    ///
+    /// The process stays alive on purpose: the MCP client is still talking to it, and
+    /// a port that frees up a minute later should bring the bridge back without the
+    /// user restarting the client. `port` goes back to the requested one because the
+    /// last port tried is not one this server holds, and `status` would otherwise
+    /// point at whichever other server's token file lives there.
+    private func failStart(_ failure: Failure) {
+        dropConnectionsAwaitingListener()
+        port = requestedPort
+        listenerStatus = .failed
+        lastError = failure
+        scheduleRebind()
+    }
+
+    private func scheduleRebind() {
+        let delay = min(rebindDelay * (1 << min(rebindAttempts, 10)), Self.maxRebindDelay)
+        rebindAttempts += 1
+        logger.info("Will try to start the extension bridge again in \(delay)")
+        rebindTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            await self?.rebind()
+        }
+    }
+
+    private func rebind() async {
+        // Let go of this task's own handle first. `start()` cancels the pending
+        // retry, and a bind attempt run from a cancelled task fails at once.
+        rebindTask = nil
+        await start()
+    }
+
+    /// Removes this bridge's own per-port token for `port`, and nothing else.
+    private func removeOwnedTokenFiles(for port: UInt16) {
+        let url = tokenFile(for: port)
+        if (try? String(contentsOf: url, encoding: .utf8)) == authToken {
+            try? FileManager.default.removeItem(at: url)
+        }
+        let owner = ownerFile(for: port)
+        if (try? String(contentsOf: owner, encoding: .utf8)) == String(getpid()) {
+            try? FileManager.default.removeItem(at: owner)
+        }
+    }
+
+    /// Deletes per-port tokens whose owning process is gone.
+    ///
+    /// A server that is killed outright, or crashes, never gets to remove its token,
+    /// and the extension then keeps dialling a port nothing listens on (or, worse,
+    /// one a different program has since taken). Only a token with an owner record
+    /// is touched: a missing record could mean an older server that is still
+    /// running, and nothing proves it is dead.
+    private func removeStaleTokenFiles() {
+        let fileManager = FileManager.default
+        let directory = tokenRoot.appendingPathComponent("tokens", isDirectory: true)
+        guard let names = try? fileManager.contentsOfDirectory(atPath: directory.path) else { return }
+        for name in names where name.hasSuffix(".pid") {
+            guard let port = UInt16(name.dropLast(".pid".count)) else { continue }
+            let owner = ownerFile(for: port)
+            guard let text = try? String(contentsOf: owner, encoding: .utf8),
+                  let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  pid > 1, pid != getpid(), !Self.isProcessAlive(pid)
+            else { continue }
+            logger.info("Removing the token for port \(port): its server (pid \(pid)) is gone")
+            try? fileManager.removeItem(at: tokenFile(for: port))
+            try? fileManager.removeItem(at: owner)
+        }
+    }
+
+    /// `kill` with signal 0 checks that a process exists without sending anything.
+    /// Not permitted still means it exists, under another user.
+    private static func isProcessAlive(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     /// Releases a listener this bridge is finished with.
@@ -406,20 +489,19 @@ actor WebSocketBridge {
 
     func stop() {
         // Remove only owned per-port tokens while this listener still owns its port.
-        // The shared legacy `token` is deliberately left alone: another process
-        // can replace it between an ownership check and unlink.
-        for root in tokenRoots {
-            let url = tokenFile(for: port, under: root)
-            if (try? String(contentsOf: url, encoding: .utf8)) == authToken {
-                try? FileManager.default.removeItem(at: url)
-            }
-        }
+        removeOwnedTokenFiles(for: port)
+        lifecycleGeneration += 1
+        rebindTask?.cancel()
+        rebindTask = nil
+        rebindAttempts = 0
         if let listener { discard(listener: listener) }
+        dropConnectionsAwaitingListener()
         for pending in authenticatingConnections {
             pending.socket.stateUpdateHandler = nil
             pending.socket.cancel()
         }
         authenticatingConnections.removeAll()
+        pendingHandshakes.removeAll()
         for connection in connections.values {
             connection.socket.stateUpdateHandler = nil
             connection.socket.cancel()
@@ -504,7 +586,7 @@ actor WebSocketBridge {
         timeout: TimeInterval = 30
     ) async throws -> [ProfileOutcome] {
         let targets = profileStatuses().map { (index: $0.index, id: $0.id) }
-        guard !targets.isEmpty else { throw BridgeError.notConnected }
+        guard !targets.isEmpty else { throw noConnectionError() }
 
         let outcomes = await withTaskGroup(of: ProfileOutcome.self) { group in
             for target in targets {
@@ -551,14 +633,24 @@ actor WebSocketBridge {
     private func connection(forProfileIndex index: Int?) throws -> BridgeConnection {
         guard let index else {
             guard let profileID = activeProfileID, let connection = connections[profileID] else {
-                throw BridgeError.notConnected
+                throw noConnectionError()
             }
             return connection
         }
         guard let profileID = profileID(atIndex: index), let connection = connections[profileID] else {
-            throw BridgeError.profileNotConnected(index)
+            throw noConnectionError(profileIndex: index)
         }
         return connection
+    }
+
+    /// Why a call has nothing to talk to. A bridge that never opened its side is a
+    /// different problem from one with no extension dialled in, and only the second
+    /// is fixed by opening Safari, so telling someone to do that when the port is
+    /// held by another process sends them the wrong way.
+    func noConnectionError(profileIndex: Int? = nil) -> BridgeError {
+        if listenerStatus != .listening { return .bridgeUnavailable(lastError) }
+        if let profileIndex { return .profileNotConnected(profileIndex) }
+        return .notConnected
     }
 
     /// Removes a pending request by ID and resumes its continuation with an error,
@@ -601,14 +693,25 @@ actor WebSocketBridge {
 
     private func removeAuthenticating(_ conn: BridgeConnection) {
         authenticatingConnections.removeAll { $0.id == conn.id }
+        pendingHandshakes.removeValue(forKey: conn.id)
     }
 
     private func handleListenerState(_ state: NWListener.State, listener source: NWListener) {
         guard listener === source else { return }
         switch state {
         case .failed(let error):
-            listenerStatus = .failed
+            // While `start()` is sweeping ports a failure just means "try the next
+            // one", and the sweep decides what that adds up to. Only a listener that
+            // was serving has anything to tear down.
+            guard listenerStatus == .listening else { return }
             logger.error("WebSocket server failed: \(error)")
+            removeOwnedTokenFiles(for: port)
+            discard(listener: source)
+            failStart(Failure(
+                code: "bridge_listener_failed",
+                message: "The extension bridge stopped listening: \(error).",
+                recovery: "The server keeps retrying. If it does not recover, restart the MCP client."
+            ))
         case .cancelled:
             logger.info("WebSocket server cancelled")
         default:
@@ -616,9 +719,19 @@ actor WebSocketBridge {
         }
     }
 
+    private func dropConnectionsAwaitingListener() {
+        for socket in connectionsAwaitingListener { socket.cancel() }
+        connectionsAwaitingListener.removeAll()
+    }
+
     private func handleNewConnection(_ socket: NWConnection) {
         guard listenerStatus == .listening else {
-            socket.cancel()
+            if listenerStatus == .binding,
+               connectionsAwaitingListener.count < Self.maxAuthenticatingConnections {
+                connectionsAwaitingListener.append(socket)
+            } else {
+                socket.cancel()
+            }
             return
         }
         // Accept the socket, but don't make it active until the token handshake
@@ -753,36 +866,9 @@ actor WebSocketBridge {
         // a second one re-registered the same socket under a new profile id and
         // left the first `connections` entry pointing at it forever, so
         // `isConnected` stayed true for a profile that was gone. It also let a
-        // later handshake overwrite `lastError` through `handshakeDecision`.
-        let authenticated = profileIDsByConnection[conn.id] != nil
-        if !authenticated, let decision = handshakeDecision(for: data) {
-            switch decision {
-            case .accept(let metadata):
-                authenticate(conn, metadata: metadata)
-            case .rejectToken:
-                logger.warning("Auth token mismatch — closing connection")
-                conn.socket.cancel()
-                removeAuthenticating(conn)
-            case .rejectProtocol(_, let received):
-                logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
-                // Free the slot now. `closeAfterSending` only cancels from the
-                // send completion, which never arrives if the peer vanishes
-                // first, and there are only a few slots to go round.
-                removeAuthenticating(conn)
-                sendAuthResponse([
-                    "auth": "error",
-                    "error": "protocol_version_mismatch",
-                    "extensionProtocolVersion": received,
-                    "serverProtocolVersion": MCPSafariProduct.bridgeProtocolVersion,
-                ], to: conn, closeAfterSending: true)
-            }
-            return
-        }
-
-        guard authenticated else {
-            logger.warning("Closing unauthenticated WebSocket connection that sent non-auth traffic")
-            conn.socket.cancel()
-            removeAuthenticating(conn)
+        // later handshake overwrite `lastError`.
+        guard profileIDsByConnection[conn.id] != nil else {
+            handleHandshakeFrame(data, from: conn)
             return
         }
 
@@ -806,16 +892,79 @@ actor WebSocketBridge {
         }
     }
 
-    func handshakeDecision(for data: Data) -> HandshakeDecision? {
-        let decision = BridgeHandshake.decision(for: data, expectedToken: authToken)
-        // Held separately from any connected profile's metadata. This used to
-        // overwrite the shared version fields, so an old build rejected in a
-        // second profile relabelled a healthy first one with its version.
-        if case .rejectProtocol(let rejectedVersion, let protocolVersion) = decision {
-            rejectedExtension = ExtensionMetadata(version: rejectedVersion, protocolVersion: protocolVersion)
-            lastError = .protocolMismatch(extensionProtocolVersion: protocolVersion)
+    /// One frame from a connection that has not finished its handshake. Which step
+    /// it is follows from whether a challenge is outstanding; what each step
+    /// accepts is decided in `BridgeHandshake`, and anything it does not recognise
+    /// as the next frame closes the connection.
+    private func handleHandshakeFrame(_ data: Data, from conn: BridgeConnection) {
+        if let pending = pendingHandshakes[conn.id] {
+            switch BridgeHandshake.finish(with: data, pending: pending, token: authToken, port: port) {
+            case .accept(let metadata)?:
+                pendingHandshakes.removeValue(forKey: conn.id)
+                authenticate(conn, metadata: metadata)
+            case .rejectToken?:
+                rejectToken(conn)
+            case nil:
+                closeUnauthenticated(conn)
+            }
+            return
         }
-        return decision
+
+        switch BridgeHandshake.begin(with: data, token: authToken, port: port) {
+        case .challenge(let pending)?:
+            pendingHandshakes[conn.id] = pending
+            sendAuthResponse(
+                BridgeHandshake.challengeFrame(for: pending, token: authToken, port: port),
+                to: conn
+            )
+        case .rejectToken?:
+            rejectToken(conn)
+        case .rejectProtocol(let rejectedVersion, let received, let tokenVerified)?:
+            logger.warning("Bridge protocol mismatch: extension=\(received), server=\(MCPSafariProduct.bridgeProtocolVersion)")
+            // Held separately from any connected profile's metadata. This used to
+            // overwrite the shared version fields, so an old build rejected in a
+            // second profile relabelled a healthy first one with its version. And
+            // only a peer that proved it holds the token may write it at all: this
+            // is what `status` and `doctor` tell the user, and anything on the
+            // machine can send a frame.
+            if tokenVerified { recordProtocolMismatch(extensionVersion: rejectedVersion, protocolVersion: received) }
+            // Free the slot now. `closeAfterSending` only cancels from the
+            // send completion, which never arrives if the peer vanishes
+            // first, and there are only a few slots to go round.
+            removeAuthenticating(conn)
+            sendAuthResponse([
+                "auth": "error",
+                "error": "protocol_version_mismatch",
+                "extensionProtocolVersion": received,
+                "serverProtocolVersion": MCPSafariProduct.bridgeProtocolVersion,
+            ], to: conn, closeAfterSending: true)
+        case nil:
+            closeUnauthenticated(conn)
+        }
+    }
+
+    func recordProtocolMismatch(extensionVersion: String?, protocolVersion: Int) {
+        rejectedExtension = ExtensionMetadata(version: extensionVersion, protocolVersion: protocolVersion)
+        lastError = .protocolMismatch(extensionProtocolVersion: protocolVersion)
+    }
+
+    private func rejectToken(_ conn: BridgeConnection) {
+        logger.warning("Auth token mismatch — closing connection")
+        // Say why before closing. A silent close is indistinguishable from
+        // a crash, so an extension holding the token of a previous server
+        // run could not tell it needed to read the new one, and stayed
+        // locked out until its next keepalive (#156).
+        removeAuthenticating(conn)
+        sendAuthResponse([
+            "auth": "error",
+            "error": "token_mismatch",
+        ], to: conn, closeAfterSending: true)
+    }
+
+    private func closeUnauthenticated(_ conn: BridgeConnection) {
+        logger.warning("Closing unauthenticated WebSocket connection that sent something other than the next handshake frame")
+        conn.socket.cancel()
+        removeAuthenticating(conn)
     }
 
     private func authenticate(_ conn: BridgeConnection, metadata: ExtensionMetadata) {
