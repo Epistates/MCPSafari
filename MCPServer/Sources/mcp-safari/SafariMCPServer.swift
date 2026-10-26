@@ -15,9 +15,13 @@ actor SafariMCPServer {
     /// `select_tab` when it brings the tab to the front.
     private let focusLock = AsyncFIFOLock()
 
-    init(port: UInt16 = 8089, logger: Logger) throws {
+    init(
+        port: UInt16 = 8089,
+        portCount: UInt16 = WebSocketBridge.defaultPortCount,
+        logger: Logger
+    ) throws {
         self.logger = logger
-        self.bridge = try WebSocketBridge(port: port, logger: logger)
+        self.bridge = try WebSocketBridge(port: port, portCount: portCount, logger: logger)
         self.server = Server(
             name: "mcp-safari",
             version: MCPSafariProduct.version,

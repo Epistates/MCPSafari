@@ -22,6 +22,34 @@ func eventually(
     return await condition()
 }
 
+/// Binds and listens on `count` consecutive loopback ports with plain POSIX
+/// sockets. Deterministic in a way an NWListener is not: there is no ready
+/// state to wait for, so the ports are occupied the moment this returns.
+/// The caller closes the descriptors.
+func holdPorts(from first: UInt16, count: UInt16) -> [Int32] {
+    var held: [Int32] = []
+    for offset in 0..<count {
+        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { continue }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = (first + offset).bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if bound == 0, Darwin.listen(descriptor, 1) == 0 {
+            held.append(descriptor)
+        } else {
+            Darwin.close(descriptor)
+        }
+    }
+    return held
+}
+
 /// Runs `body` against a started bridge and stops it afterwards, with its token
 /// files in a directory of its own. `port` 0 takes any free port, which keeps
 /// tests from colliding; the port it bound is passed to `body`.

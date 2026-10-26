@@ -2,8 +2,8 @@ import Foundation
 import Logging
 
 enum CLICommand: Equatable {
-    case serve(port: UInt16, logLevel: Logger.Level)
-    case doctor(port: UInt16, json: Bool)
+    case serve(port: UInt16, portCount: UInt16 = WebSocketBridge.defaultPortCount, logLevel: Logger.Level)
+    case doctor(port: UInt16, portCount: UInt16 = WebSocketBridge.defaultPortCount, json: Bool)
     case help
     case version
 }
@@ -29,6 +29,7 @@ func parseCommand(
     let doctorMode = arguments.first == "doctor"
     let options = doctorMode ? Array(arguments.dropFirst()) : arguments
     var port: UInt16 = 8089
+    var explicitPortCount: (value: UInt16, source: String)?
     var logLevel: Logger.Level?
     var verbose = false
     var json = false
@@ -41,6 +42,12 @@ func parseCommand(
                 throw CLIError(description: "--port requires a value from 0 through 65535")
             }
             port = parsed
+            index += 2
+        case "--port-range":
+            guard index + 1 < options.count, let parsed = portCount(from: options[index + 1]) else {
+                throw CLIError(description: "--port-range requires \(portCountUsage)")
+            }
+            explicitPortCount = (parsed, "--port-range")
             index += 2
         case "--log-level" where !doctorMode:
             guard index + 1 < options.count else {
@@ -62,7 +69,28 @@ func parseCommand(
         }
     }
 
-    if doctorMode { return .doctor(port: port, json: json) }
+    // The flag beats the environment, as with the log level. A value that was asked
+    // for and cannot be honoured is an error rather than a quiet fallback to ten:
+    // the user would find out when the extension missed a server.
+    if explicitPortCount == nil, let text = environment[portRangeEnvironmentVariable]?
+        .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+        guard let parsed = portCount(from: text) else {
+            throw CLIError(description: "\(portRangeEnvironmentVariable) must be \(portCountUsage), not \(text)")
+        }
+        explicitPortCount = (parsed, portRangeEnvironmentVariable)
+    }
+    // Only an explicit count is held to this. The default has always shortened
+    // itself near the top of the port space, and refusing it would stop a
+    // `--port 65535` that works today.
+    if let (count, source) = explicitPortCount, UInt32(port) + UInt32(count) - 1 > UInt32(UInt16.max) {
+        throw CLIError(
+            description: "--port \(port) with a range of \(count) ports (set by \(source)) runs past port 65535. "
+                + "Lower the port or the range."
+        )
+    }
+    let portCount = explicitPortCount?.value ?? WebSocketBridge.defaultPortCount
+
+    if doctorMode { return .doctor(port: port, portCount: portCount, json: json) }
 
     // An explicit flag beats --verbose, which beats the environment. MCP client
     // configs can set env but not always argv, so both need to work.
@@ -70,9 +98,17 @@ func parseCommand(
         Logger.Level(rawValue: value.lowercased()) ?? defaultLogLevel
     }
     let resolved = logLevel ?? (verbose ? .debug : nil) ?? fromEnvironment ?? defaultLogLevel
-    return .serve(port: port, logLevel: resolved)
+    return .serve(port: port, portCount: portCount, logLevel: resolved)
 }
 
+/// A whole number of ports from one through `WebSocketBridge.maxPortCount`, or nil.
+private func portCount(from text: String) -> UInt16? {
+    guard let parsed = UInt16(text), (1...WebSocketBridge.maxPortCount).contains(parsed) else { return nil }
+    return parsed
+}
+
+let portRangeEnvironmentVariable = "MCP_SAFARI_PORT_RANGE"
+let portCountUsage = "a whole number of ports from 1 through \(WebSocketBridge.maxPortCount)"
 let logLevelUsage = "Use trace, debug, info, notice, warning, error, or critical."
 
 let usageText = """
@@ -85,17 +121,23 @@ let usageText = """
 
     OPTIONS:
       -p, --port <n>        WebSocket port the Safari extension connects to (default: 8089)
+          --port-range <n>  Ports to try from --port when one is taken, 1 through 64 (default: 10)
           --log-level <l>   trace, debug, info, notice, warning, error, critical (default: notice)
           --verbose         Shorthand for --log-level debug
       -h, --help            Show this help and exit
       -V, --version         Show the version and exit
 
     DOCTOR OPTIONS:
-      -p, --port <n>        Port whose token file to check (default: 8089)
+      -p, --port <n>        First port whose token file to check (default: 8089)
+          --port-range <n>  Ports to check from --port, 1 through 64 (default: 10)
           --json            Emit the report as JSON
 
     ENVIRONMENT:
-      MCP_SAFARI_LOG_LEVEL  Log level used when --log-level and --verbose are absent
+      MCP_SAFARI_LOG_LEVEL   Log level used when --log-level and --verbose are absent
+      MCP_SAFARI_PORT_RANGE  Port count used when --port-range is absent
+
+    The Safari extension finds a server through its token file, so the port range needs no
+    matching setting there.
 
     Logs go to stderr. stdout carries the MCP stdio transport, so nothing else writes there.
     https://github.com/Epistates/MCPSafari
@@ -215,6 +257,7 @@ enum Doctor {
     static func inspect(
         paths: DoctorPaths = .system,
         port: UInt16 = 8089,
+        portCount: UInt16 = WebSocketBridge.defaultPortCount,
         registration: ExtensionRegistration = .unknown
     ) -> DoctorReport {
         let extensionRegistered = registration.isRegistered
@@ -323,25 +366,10 @@ enum Doctor {
             ))
         }
 
-        let tokenURL = paths.tokenDirectoryURL.appendingPathComponent(String(port))
-        if fileManager.fileExists(atPath: tokenURL.path) {
-            let permissions = (try? fileManager.attributesOfItem(atPath: tokenURL.path)[.posixPermissions] as? NSNumber)?.intValue
-            checks.append(.init(
-                code: "token_file",
-                status: permissions == 0o600 ? .ok : .warning,
-                message: permissions == 0o600
-                    ? "Authentication token file exists with mode 0600 at \(tokenURL.path)."
-                    : "Authentication token file exists at \(tokenURL.path), but its permissions are not 0600.",
-                recovery: permissions == 0o600 ? nil : "Restart mcp-safari to recreate the token file securely."
-            ))
-        } else {
-            checks.append(.init(
-                code: "token_file",
-                status: .warning,
-                message: "No authentication token file exists at \(tokenURL.path).",
-                recovery: "Start an MCP client configured to run mcp-safari."
-            ))
-        }
+        checks.append(tokenFileCheck(
+            in: paths.tokenDirectoryURL,
+            ports: port...WebSocketBridge.lastPort(from: port, count: portCount)
+        ))
 
         checks.append(tokenPathCheck(for: paths.tokenDirectoryURL))
 
@@ -421,6 +449,51 @@ enum Doctor {
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Looks for the token a server leaves for the extension, anywhere in the range
+    /// that server was told to use. A server whose first port was taken binds a
+    /// later one and writes its token there, so checking only the first port
+    /// called a working install broken.
+    static func tokenFileCheck(in tokenDirectoryURL: URL, ports: ClosedRange<UInt16>) -> DiagnosticCheck {
+        let fileManager = FileManager.default
+        let present = ports
+            .map { tokenDirectoryURL.appendingPathComponent(String($0)) }
+            .filter { fileManager.fileExists(atPath: $0.path) }
+        let insecure = present.filter { url in
+            let permissions = (try? fileManager.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+            return permissions != 0o600
+        }
+
+        guard !present.isEmpty else {
+            let scanned = ports.lowerBound == ports.upperBound
+                ? "at \(tokenDirectoryURL.appendingPathComponent(String(ports.lowerBound)).path)"
+                : "for ports \(ports.lowerBound)-\(ports.upperBound) in \(tokenDirectoryURL.path)"
+            return .init(
+                code: "token_file",
+                status: .warning,
+                message: "No authentication token file exists \(scanned).",
+                recovery: "Start an MCP client configured to run mcp-safari."
+            )
+        }
+        guard insecure.isEmpty else {
+            return .init(
+                code: "token_file",
+                status: .warning,
+                message: "Authentication token file exists at \(insecure.map(\.path).joined(separator: ", ")), "
+                    + "but its permissions are not 0600.",
+                recovery: "Restart mcp-safari to recreate the token file securely."
+            )
+        }
+        let located = present.count == 1
+            ? "at \(present[0].path)"
+            : "for ports \(present.map(\.lastPathComponent).joined(separator: ", ")) in \(tokenDirectoryURL.path)"
+        return .init(
+            code: "token_file",
+            status: .ok,
+            message: "Authentication token file exists with mode 0600 \(located).",
+            recovery: nil
+        )
     }
 
     /// The extension reads tokens through a sandbox exception granted on a

@@ -75,6 +75,8 @@ extension WebSocketBridge {
         let serverVersion: String
         let protocolVersion: Int
         let requestedPort: UInt16
+        /// The highest port the bind sweep tries: the range is `requestedPort` through here.
+        let lastPort: UInt16
         let port: UInt16
         let listener: ListenerStatus
         let bridge: ConnectionStatus
@@ -89,6 +91,7 @@ extension WebSocketBridge {
             case serverVersion
             case protocolVersion
             case requestedPort
+            case lastPort
             case port
             case listener
             case bridge
@@ -105,6 +108,7 @@ extension WebSocketBridge {
             try container.encode(serverVersion, forKey: .serverVersion)
             try container.encode(protocolVersion, forKey: .protocolVersion)
             try container.encode(requestedPort, forKey: .requestedPort)
+            try container.encode(lastPort, forKey: .lastPort)
             try container.encode(port, forKey: .port)
             try container.encode(listener, forKey: .listener)
             try container.encode(bridge, forKey: .bridge)
