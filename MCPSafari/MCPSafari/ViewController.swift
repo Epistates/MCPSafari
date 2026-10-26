@@ -10,7 +10,7 @@ import SafariServices
 import WebKit
 
 nonisolated let extensionBundleIdentifier = "com.epistates.MCPSafari.Extension"
-nonisolated private let accessibilitySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+nonisolated private let accessibilitySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
 
 class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHandler {
 
@@ -23,7 +23,19 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
 
         self.webView.configuration.userContentController.add(self, name: "controller")
 
-        self.webView.loadFileURL(Bundle.main.url(forResource: "Main", withExtension: "html")!, allowingReadAccessTo: Bundle.main.resourceURL!)
+        // A bundle missing its page was damaged after it was built. A force
+        // unwrap would crash on launch with nothing said about why, so the window
+        // says what is wrong and the user is told what to do about it.
+        guard let page = Bundle.main.url(forResource: "Main", withExtension: "html"),
+              let resources = Bundle.main.resourceURL else {
+            NSLog("MCPSafari is missing its Main.html resource")
+            self.webView.loadHTMLString(
+                "<p style=\"font: -apple-system-body; padding: 2em\">MCPSafari is damaged: its window content is missing. Reinstall the app.</p>",
+                baseURL: nil
+            )
+            return
+        }
+        self.webView.loadFileURL(page, allowingReadAccessTo: resources)
 
         // Enabling the extension happens in Safari, so the answer this window is
         // showing goes stale the moment the user acts on it. Re-ask whenever they
@@ -86,6 +98,10 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
                 }
             }
         case "enable-native-input":
+            guard let accessibilitySettingsURL else {
+                NSLog("Could not form the Accessibility settings URL")
+                return
+            }
             NSWorkspace.shared.open(accessibilitySettingsURL)
         default:
             break

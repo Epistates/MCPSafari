@@ -18,6 +18,10 @@ node --test Tests/*.mjs
 (cd MCPSafari && xcodebuild -project MCPSafari.xcodeproj \
   -scheme MCPSafari -configuration Debug build \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
+
+(cd MCPSafari && xcodebuild test -project MCPSafari.xcodeproj \
+  -scheme MCPSafari -destination 'platform=macOS' \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
 ```
 
 The extension build above matches CI and checks compilation. To install a development build, open `MCPSafari/MCPSafari.xcodeproj` in Xcode, configure signing for your team, and build and run the app. Enable its extension in Safari settings.
@@ -98,7 +102,7 @@ A Manifest V3 Safari Web Extension with:
 
 ### macOS host app
 
-A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension and provides native messaging for auth token exchange.
+A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension, and the extension's native messaging handler (`SafariWebExtensionHandler.swift`) that serves the auth tokens. The token reading and the reply to the background script live in `TokenStore.swift`, which imports only Foundation so `MCPSafariTests` compiles the same file and tests it without hosting the app. The two `.entitlements` files are the only source of the sandbox grants; keep build settings from adding to them.
 
 ## Release qualification
 

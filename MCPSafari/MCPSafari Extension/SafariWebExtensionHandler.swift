@@ -13,128 +13,23 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
     func beginRequest(with context: NSExtensionContext) {
         let request = context.inputItems.first as? NSExtensionItem
+        let profile = request?.userInfo?[SFExtensionProfileKey] as? UUID
+        let message = request?.userInfo?[SFExtensionMessageKey]
 
-        let profile: UUID?
-        if #available(iOS 17.0, macOS 14.0, *) {
-            profile = request?.userInfo?[SFExtensionProfileKey] as? UUID
-        } else {
-            profile = request?.userInfo?["profile"] as? UUID
-        }
+        // Only a fixed word is logged. The message is whatever the sender chose
+        // to put in it, and the reply carries tokens, so neither belongs in a log.
+        os_log(.default, "Received native message: %{public}@", TokenStore.isTokenRequest(message) ? "getTokens" : "unsupported")
 
-        let message: Any?
-        if #available(iOS 15.0, macOS 11.0, *) {
-            message = request?.userInfo?[SFExtensionMessageKey]
-        } else {
-            message = request?.userInfo?["message"]
-        }
-
-        os_log(.default, "Received message from browser.runtime.sendNativeMessage: %@ (profile: %@)", String(describing: message), profile?.uuidString ?? "none")
-
-        var responseBody: [String: Any] = [:]
-
-        // Handle token requests from the extension background script.
-        if let dict = message as? [String: Any],
-           let type = dict["type"] as? String,
-           type == "getToken" || type == "getTokens" {
-            let result = Self.loadTokens()
-
-            if !result.tokens.isEmpty {
-                responseBody = ["tokens": result.tokens]
-            } else if let token = result.legacyToken {
-                responseBody = ["token": token]
-            } else {
-                responseBody = ["error": "No token files found in \(result.checkedPaths.joined(separator: ", "))"]
-            }
-
-            // Safari runs a separate extension instance per profile, each with its own
-            // background page. The bridge needs to tell them apart so they stop evicting
-            // one another, and this handler is the only place the identity is available.
-            // Safari omits the key for the default profile.
-            responseBody["profile"] = profile?.uuidString ?? Self.defaultProfileID
-        } else {
-            responseBody = ["echo": message as Any]
-        }
+        let responseBody = TokenStore.response(to: message, profile: profile, roots: Self.tokenRoots())
 
         let response = NSExtensionItem()
-        if #available(iOS 15.0, macOS 11.0, *) {
-            response.userInfo = [ SFExtensionMessageKey: responseBody ]
-        } else {
-            response.userInfo = [ "message": responseBody ]
-        }
+        response.userInfo = [ SFExtensionMessageKey: responseBody ]
 
         context.completeRequest(returningItems: [ response ], completionHandler: nil)
     }
 
-    /// Reported when Safari supplies no `SFExtensionProfileKey`. Must match
-    /// `WebSocketBridge.defaultProfileID`.
-    ///
-    /// This is a fallback, not the usual path. The default profile was assumed to
-    /// present by sending no key at all, and a real run on Safari 27.0.1
-    /// (2026-10-08) disproved that: it sent the profile's UUID like any other,
-    /// and the profile came through as `p0`, selected and authenticated. So the
-    /// literal `"default"` is only reached on a Safari that sends nothing, which
-    /// no observed version does. Kept because a missing key still has to resolve
-    /// to one stable id rather than an empty one.
-    static let defaultProfileID = "default"
-
-    private struct TokenLoadResult {
-        let tokens: [String: String]
-        let legacyToken: String?
-        let checkedPaths: [String]
-    }
-
-    private static func loadTokens() -> TokenLoadResult {
-        var checkedPaths: [String] = []
-
-        var allTokens: [String: String] = [:]
-        var legacyToken: String?
-        for configDirectory in tokenConfigDirectories() {
-            let tokenDirectory = configDirectory.appendingPathComponent("tokens")
-            checkedPaths.append(tokenDirectory.path)
-            // A stale primary token must not hide live ports in the legacy root.
-            for (port, token) in readPortTokens(from: tokenDirectory) where allTokens[port] == nil {
-                allTokens[port] = token
-            }
-            let legacyTokenPath = configDirectory.appendingPathComponent("token")
-            checkedPaths.append(legacyTokenPath.path)
-            if legacyToken == nil { legacyToken = readToken(at: legacyTokenPath) }
-        }
-        if !allTokens.isEmpty {
-            return TokenLoadResult(tokens: allTokens, legacyToken: nil, checkedPaths: checkedPaths)
-        }
-        if let legacyToken {
-            return TokenLoadResult(tokens: [:], legacyToken: legacyToken, checkedPaths: checkedPaths)
-        }
-
-        return TokenLoadResult(tokens: [:], legacyToken: nil, checkedPaths: checkedPaths)
-    }
-
-    /// Token roots to search, most preferred first.
-    ///
-    /// Application Support comes first: this extension is sandboxed, and its
-    /// read exception is evaluated against the *resolved* path, so a `~/.config`
-    /// symlinked into a dotfiles repo puts the token outside the granted path
-    /// and makes it unreadable. `~/.config/mcp-safari` stays in the list so a
-    /// server predating the move still authenticates.
-    private static let tokenRootRelativePaths = [
-        "Library/Application Support/MCPSafari",
-        ".config/mcp-safari",
-    ]
-
-    private static func tokenConfigDirectories() -> [URL] {
-        var directories: [URL] = []
-
-        for relativePath in tokenRootRelativePaths {
-            if let realHomeDirectory {
-                appendUnique(realHomeDirectory.appendingPathComponent(relativePath), to: &directories)
-            }
-            appendUnique(
-                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(relativePath),
-                to: &directories
-            )
-        }
-
-        return directories
+    private static func tokenRoots() -> [URL] {
+        TokenStore.roots(homes: [realHomeDirectory, FileManager.default.homeDirectoryForCurrentUser].compactMap { $0 })
     }
 
     private static var realHomeDirectory: URL? {
@@ -143,41 +38,6 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         else { return nil }
 
         return URL(fileURLWithPath: String(cString: homeDirectory), isDirectory: true)
-    }
-
-    private static func appendUnique(_ url: URL, to directories: inout [URL]) {
-        let path = url.standardizedFileURL.path
-
-        if !directories.contains(where: { $0.standardizedFileURL.path == path }) {
-            directories.append(url)
-        }
-    }
-
-    private static func readPortTokens(from tokenDirectory: URL) -> [String: String] {
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: tokenDirectory,
-            includingPropertiesForKeys: nil
-        ) else { return [:] }
-
-        var tokens: [String: String] = [:]
-        for file in files {
-            guard UInt16(file.lastPathComponent) != nil,
-                  let token = readToken(at: file)
-            else { continue }
-
-            tokens[file.lastPathComponent] = token
-        }
-
-        return tokens
-    }
-
-    private static func readToken(at file: URL) -> String? {
-        guard let token = try? String(contentsOf: file, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !token.isEmpty
-        else { return nil }
-
-        return token
     }
 
 }

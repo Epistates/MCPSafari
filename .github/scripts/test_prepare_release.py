@@ -16,7 +16,10 @@ class ReleasePreparationTests(unittest.TestCase):
         fixtures = {
             "MCPSafari/MCPSafari Extension/Resources/manifest.json": '{"version":"0.3.2"}',
             "MCPServer/Sources/mcp-safari/Diagnostics.swift": 'static let version = "0.3.2"',
-            "MCPSafari/MCPSafari.xcodeproj/project.pbxproj": "MARKETING_VERSION = 0.3.2;",
+            "MCPSafari/MCPSafari.xcodeproj/project.pbxproj": (
+                "CURRENT_PROJECT_VERSION = 31;\nMARKETING_VERSION = 0.3.2;\n"
+                "CURRENT_PROJECT_VERSION = 31;\nMARKETING_VERSION = 0.3.2;"
+            ),
         }
         for name, contents in fixtures.items():
             destination = self.root / name
@@ -67,6 +70,21 @@ class ReleasePreparationTests(unittest.TestCase):
         path = self.root / "MCPSafari/MCPSafari Extension/Resources/manifest.json"
         path.write_text('{"version":"0.3.1"}')
         with self.assertRaises(ValueError):
+            release_notes("v0.3.2", self.root)
+
+    def test_build_number_must_be_identical_across_targets(self):
+        path = self.root / "MCPSafari/MCPSafari.xcodeproj/project.pbxproj"
+        path.write_text(
+            "CURRENT_PROJECT_VERSION = 31;\nMARKETING_VERSION = 0.3.2;\n"
+            "CURRENT_PROJECT_VERSION = 32;\nMARKETING_VERSION = 0.3.2;"
+        )
+        with self.assertRaisesRegex(ValueError, "CURRENT_PROJECT_VERSION differs"):
+            release_notes("v0.3.2", self.root)
+
+    def test_a_project_with_no_build_number_fails(self):
+        path = self.root / "MCPSafari/MCPSafari.xcodeproj/project.pbxproj"
+        path.write_text("MARKETING_VERSION = 0.3.2;")
+        with self.assertRaisesRegex(ValueError, "build number"):
             release_notes("v0.3.2", self.root)
 
     def test_checksums_are_complete_relative_and_repeatable(self):

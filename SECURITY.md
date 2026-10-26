@@ -65,6 +65,8 @@ The details below describe `main`; installed releases may differ.
 
 The server generates a random UUID token at startup, writes it to `~/Library/Application Support/MCPSafari/tokens/<port>` (mode `0600`), and requires it as the first WebSocket message before any MCP tool traffic is sent. The extension reads the per-port token map via native messaging from the host app, so multiple server instances can authenticate independently. Connections without a valid token are closed.
 
+The extension is sandboxed, and its only file grant is read access to that `tokens/` directory. It passes a file on to the background script only if the file is a regular file of at most 256 bytes holding a UUID, opened without following a symlink, and only if its name is a canonical port number. Anything else in the directory is skipped. The host app holds no file grants at all. An unknown native message gets a fixed error rather than an echo, and a missing token is reported as a code with no paths in it.
+
 The listener binds to the loopback address, so only processes on this machine can reach it, and a connection is never given MCP traffic before its handshake succeeds.
 
 The server does not check the WebSocket `Origin` header. A page in any browser can open a connection to a loopback port and learn that something is listening there, which is a fingerprinting surface. It cannot authenticate, because the token is a random UUID in a `0600` file it has no way to read. At most eight connections may wait mid-handshake and a ninth evicts the oldest, so a flood of them cannot hold the bridge shut against a real Safari profile.
