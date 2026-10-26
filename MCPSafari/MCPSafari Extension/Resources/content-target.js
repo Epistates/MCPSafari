@@ -153,7 +153,10 @@
     // match on each branch is a candidate. Several equally good candidates are
     // refused: picking one would act on an element the caller may not mean.
     function resolveByText(text) {
-        const needle = text.trim().toLowerCase();
+        // Both sides have their whitespace collapsed, because source markup
+        // wraps lines and indents between inline pieces while the name a
+        // snapshot reports, which is what a caller copies from, does not.
+        const needle = text.trim().replace(/\s+/g, " ").toLowerCase();
         const matches = [];
         for (const root of allRoots()) {
             const walkRoot = walkRootFor(root);
@@ -164,7 +167,7 @@
                 {
                     acceptNode: (node) =>
                         node.textContent &&
-                        node.textContent.toLowerCase().includes(needle) &&
+                        node.textContent.replace(/\s+/g, " ").toLowerCase().includes(needle) &&
                         isVisible(node) &&
                         node.getClientRects().length > 0
                             ? NodeFilter.FILTER_ACCEPT

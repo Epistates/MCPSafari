@@ -115,6 +115,18 @@ Console and network capture run in the page's JavaScript context. Pages can obse
 3. Use those UIDs with `click`, `type_text`, or `hover`.
 4. Check the result with `includeSnapshot: true` on the action, or take a `screenshot`.
 
+### Reading a snapshot node
+
+Each node has a `uid`, `tag`, and `role`, and may carry `name`, `text`, `value`, `href`, states, and `children`.
+
+`text` is the element's own text: the whole text of a leaf, and for an element with element children only its direct text nodes, since the children report their own. `<p>Hello <b>world</b></p>` is `text: "Hello"` with a child `b` holding `"world"`. Text is not rebuilt from the children because that would repeat every word at each level of the tree.
+
+`name` is what the page calls the element. It comes from `aria-label`, `aria-labelledby`, a `<label>`, `alt`, `title` or `placeholder`. Roles named by their content (link, button, heading, tab, menu item, option, tree item, switch, checkbox, radio, tooltip) take the element's whole text in reading order, whitespace collapsed, ahead of `title`, which is a tooltip and only names such an element when its content is empty. So `<a>Human <b>Brain</b> Organoids</a>` has `name: "Human Brain Organoids"` while its `text` is `"Human  Organoids"` and its `b` child keeps its own uid to click.
+
+A node leaves `name` out when it would only repeat `text` (compared with whitespace collapsed), so a plain `<a>Home</a>` reports `text: "Home"` and nothing more. `name` appears when it adds something: inline markup, an `aria-label`, an image `alt`, a label from elsewhere, or content that sits in children. When a link, button or heading has a `name`, that is its label; otherwise its `text` is. `find` always reports the name, and `text` targeting does not depend on whether the tree shows it.
+
+A name is built from what the snapshot shows. Content that is hidden (`aria-hidden`, `display: none`) is left out, a nested `aria-label` or image `alt` stands in for what it wraps, block-level children are separated by a space, and form controls contribute nothing, so a field's value, redacted or not, never appears in a name. Names and text are cut to 500 characters, ending in `...`.
+
 ### Tab handles
 
 `tabId` is a handle such as `p0t5`, meaning tab 5 of profile 0. Read handles out of `tabs_context` rather than composing them.
@@ -263,6 +275,8 @@ The server reads only the paths you name, infers each MIME type from the file ex
 ### Smart text matching
 
 When targeting by `text`, interactive elements (buttons, links, inputs) are ranked higher than generic containers. Clicking `text: "Submit"` will prefer a `<button>Submit</button>` over a `<div>Submit</div>`.
+
+Text matches across inline markup and ignores how the page's source wraps and indents it, so the `name` a snapshot reports for a link, such as `Human Brain Organoids`, targets that link even though the words sit in separate elements.
 
 ### Post-action snapshots
 
