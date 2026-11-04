@@ -66,9 +66,14 @@
 
         target.scrollIntoView({ behavior: "instant", block: "center" });
         const rect = target.getBoundingClientRect();
+        // Composed, as a real drop is: without it the events stop at the edge
+        // of a shadow root, and a listener on its host never sees the drop.
+        // This file cannot read the content scripts' event helper; all three
+        // events bubble and can be cancelled, so the flags are written out.
         const baseOpts = {
             bubbles: true,
             cancelable: true,
+            composed: true,
             view: window,
             clientX: rect.left + rect.width / 2,
             clientY: rect.top + rect.height / 2,
