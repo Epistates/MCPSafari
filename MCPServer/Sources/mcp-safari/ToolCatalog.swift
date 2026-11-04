@@ -57,7 +57,16 @@ extension SafariMCPServer {
     }
     // MARK: - Tool Definitions
 
-    func buildToolDefinitions() -> [Tool] {
+    /// The tools that change nothing, by their own annotation. A tool that is
+    /// not in this set is treated as one that may move focus or alter the page,
+    /// and takes the focus lock for the whole call; see `handleToolCall`.
+    nonisolated static let readOnlyTools: Set<String> = Set(
+        toolDefinitions.filter { $0.annotations.readOnlyHint == true }.map(\.name)
+    )
+
+    nonisolated static let toolDefinitions: [Tool] = buildToolDefinitions()
+
+    private nonisolated static func buildToolDefinitions() -> [Tool] {
         [
             Tool(
                 name: "status",
@@ -384,7 +393,8 @@ extension SafariMCPServer {
                         "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(readOnlyHint: true)
+                // `clear` empties the buffer, so the call is not read-only.
+                annotations: .init(readOnlyHint: false, destructiveHint: false)
             ),
             Tool(
                 name: "read_network",
@@ -400,7 +410,7 @@ extension SafariMCPServer {
                         "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(readOnlyHint: true)
+                annotations: .init(readOnlyHint: false, destructiveHint: false)
             ),
 
             // ── Utility ──────────────────────────────────────────────

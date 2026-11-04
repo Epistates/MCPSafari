@@ -439,6 +439,17 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         ],
     }, /steps\[1\] \(navigate\): Invalid navigation action/);
 
+    // A step after a successful action can fail on its own. The failure keeps what
+    // the action returned, so the caller who is told the wait timed out can still
+    // read what the click did.
+    failAction = "wait";
+    const waitFailed = await tool("click", { selector: "body", waitForSelector: "#never" }, false);
+    assert.equal(waitFailed.structuredContent.code, "permission_required");
+    assert.equal(waitFailed.structuredContent.result, "Completed click");
+    failAction = "snapshot";
+    const snapshotFailed = await tool("click", { selector: "body", includeSnapshot: true, waitForSelector: "body" }, false);
+    assert.equal(snapshotFailed.structuredContent.result, "Completed click");
+    assert.deepEqual(snapshotFailed.structuredContent.wait, { matched: true });
     failAction = "click";
     const failed = await tool("click", { selector: "body" }, false);
     assert.equal(failed.structuredContent.code, "permission_required");

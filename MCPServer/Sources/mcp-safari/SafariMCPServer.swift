@@ -67,7 +67,7 @@ actor SafariMCPServer {
     // MARK: - Tool Registration
 
     private func registerToolHandlers() async {
-        let allTools = buildToolDefinitions()
+        let allTools = Self.toolDefinitions
 
         await server.withMethodHandler(ListTools.self) { _ in
             .init(tools: allTools)
@@ -946,12 +946,17 @@ actor SafariMCPServer {
         let args = Self.pinned(args, to: response)
         var content = [Self.textContent(responseText(response))]
         var details: [String: Value] = ["result": Self.structuredPayload(response.data)]
+        // A step after the action can fail when the action itself did not. The
+        // failure carries everything gathered so far in `details`, so a caller
+        // told the wait timed out can still read what the click returned.
         guard response.success else {
+            details["result"] = nil // the action failed; the failure is its result
             if let traceSession {
                 let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
                 content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
+                details["trace"] = Self.structuredPayload(traceResponse.data)
             }
-            return Self.failureResult(response.toolFailure, content: content)
+            return Self.failureResult(response.toolFailure, content: content, details: details)
         }
 
         if let waitResponse = try await waitAfterAction(args) {
@@ -960,8 +965,9 @@ actor SafariMCPServer {
                 if let traceSession {
                     let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
                     content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
+                    details["trace"] = Self.structuredPayload(traceResponse.data)
                 }
-                return Self.failureResult(waitResponse.toolFailure, content: content)
+                return Self.failureResult(waitResponse.toolFailure, content: content, details: details)
             }
             content.append(Self.textContent(responseText(waitResponse)))
             details["wait"] = Self.structuredPayload(waitResponse.data)
@@ -972,7 +978,7 @@ actor SafariMCPServer {
             details["trace"] = Self.structuredPayload(traceResponse.data)
             content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
             guard traceResponse.success else {
-                return Self.failureResult(traceResponse.toolFailure, content: content)
+                return Self.failureResult(traceResponse.toolFailure, content: content, details: details)
             }
         }
 
@@ -982,7 +988,7 @@ actor SafariMCPServer {
             let snapText = responseText(snapResponse)
             content.append(Self.textContent("--- Page Snapshot ---\n\(snapText)"))
             guard snapResponse.success else {
-                return Self.failureResult(snapResponse.toolFailure, content: content)
+                return Self.failureResult(snapResponse.toolFailure, content: content, details: details)
             }
         }
 
