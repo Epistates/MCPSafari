@@ -117,6 +117,7 @@ async function routeAction(action, params, serverPort) {
     if (action === "wait") {
         return waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
     }
+    if (action === "get_network_requests") return readNetworkRequests(params.tabId, params);
     if (CONTENT_ACTIONS.has(action)) {
         const startsLoad = LOAD_STARTING_ACTIONS.get(action);
         return startsLoad && startsLoad(params)
@@ -125,9 +126,79 @@ async function routeAction(action, params, serverPort) {
     }
 
     const proxy = CONTENT_PROXIES.get(action);
-    if (proxy) return sendToContentScript(params.tabId, proxy(params));
+    if (proxy) {
+        const proxied = proxy(params);
+        return proxied.action === "get_network_requests"
+            ? readNetworkRequests(params.tabId, proxied.params)
+            : sendToContentScript(params.tabId, proxied);
+    }
 
     throw new Error(`Unknown action: ${action}`);
+}
+
+// ─── Network reads ──────────────────────────────────────────────────
+
+// `urlPattern` is applied here, to the URLs as they will be reported, and not in
+// the page. The page holds each URL as it was requested, credentials included,
+// so a filter that ran there answered "does the real URL match" with which
+// entries came back, and a caller could pull a redacted token out one character
+// at a time. Filtering the redacted URL leaves nothing to ask about.
+//
+// The page still does the work that needs no URL (the type and status filters),
+// and numbers what it hands back so that `clear` can remove exactly the entries
+// that survived the filter here.
+async function readNetworkRequests(tabId, params) {
+    if (!params.urlPattern) {
+        return sendToContentScript(tabId, { action: "get_network_requests", params });
+    }
+
+    const pattern = boundedUrlPattern(params.urlPattern);
+    const { urlPattern, maxResults, clear, ...pageFilters } = params;
+    const records = await sendToContentScript(tabId, {
+        action: "get_network_requests",
+        params: { ...pageFilters, includeIds: true },
+    });
+    if (!Array.isArray(records)) return records;
+
+    redactEachUrl(records, ["url"]);
+    let matched = records.filter((record) => record && typeof record.url === "string" && pattern.test(record.url));
+    if (maxResults > 0) matched = matched.slice(-maxResults);
+
+    const ids = matched.map((record) => record.id);
+    for (const record of matched) delete record.id;
+    if (clear && ids.length > 0) {
+        await sendToContentScript(tabId, {
+            action: "get_network_requests",
+            params: { clearIds: ids },
+        });
+    }
+    return matched;
+}
+
+// The same bounded subset the server holds a pattern to before it forwards one
+// (see `validatedFilterPattern`): no repetition, groups or backreferences, so
+// the work done is bounded by the pattern times the input. Checked again here
+// because this is where the pattern now runs.
+function boundedUrlPattern(source) {
+    const pattern = String(source);
+    const unescaped = pattern.replace(/\\./g, "");
+    if (pattern.length > 200 || /[()*+?{}]/.test(unescaped) || /\\[1-9k]/.test(pattern)) {
+        throw invalidFilterError(
+            "Unsupported filter: use at most 200 characters, with literals, dots, anchors, character classes, or alternation; no repetition, groups, or backreferences."
+        );
+    }
+    try {
+        return new RegExp(pattern);
+    } catch {
+        throw invalidFilterError(`Invalid regex urlPattern: ${pattern}`);
+    }
+}
+
+function invalidFilterError(message) {
+    const error = new Error(message);
+    error.code = "invalid_input";
+    error.recoveryAction = "fix_input";
+    return error;
 }
 
 // URLs inside page data are redacted here, on the way out, with the one

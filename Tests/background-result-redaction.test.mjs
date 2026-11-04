@@ -48,11 +48,12 @@ function loadBackground(respond) {
     });
     vm.runInContext(source, context);
 
-    return async (action, params = {}) => {
-        const response = await vm.runInContext(
-            `handleRequest(${JSON.stringify({ id: "r1", action, params: { tabId: 1, ...params } })})`,
-            context
-        );
+    const raw = (action, params = {}) => vm.runInContext(
+        `handleRequest(${JSON.stringify({ id: "r1", action, params: { tabId: 1, ...params } })})`,
+        context
+    );
+    const request = async (action, params = {}) => {
+        const response = await raw(action, params);
         assert.equal(response.success, true, response.error);
         // A string result travels as itself rather than as JSON.
         try {
@@ -61,6 +62,9 @@ function loadBackground(respond) {
             return response.data;
         }
     };
+    // The whole response, for a call that is expected to fail.
+    request.raw = raw;
+    return request;
 }
 
 test("read_network reports request URLs without their credentials", async () => {
@@ -78,6 +82,105 @@ test("read_network reports request URLs without their credentials", async () => 
     assert.doesNotMatch(JSON.stringify(records), /LEAK/);
     // Everything else about the record is as the page reported it.
     assert.equal(records[0].status, 200);
+});
+
+// ─── urlPattern ──────────────────────────────────────────────────────
+
+// Stands in for network-interceptor.js as the extension drives it: it filters by
+// type and status, can number what it returns, and clears by number. It holds
+// the URLs unredacted, as the real one does, and throws if it is ever given a
+// pattern, since a filter run there is the oracle this is guarding against.
+function networkPage(records) {
+    const held = records.map((record, index) => ({ ...record, held: index + 1 }));
+    const messages = [];
+    const respond = (message) => {
+        const params = message.params;
+        messages.push(params);
+        if (params.urlPattern) throw new Error("the page was asked to filter by URL");
+        if (Array.isArray(params.clearIds)) {
+            for (let i = held.length - 1; i >= 0; i--) {
+                if (params.clearIds.includes(held[i].held)) held.splice(i, 1);
+            }
+            return [];
+        }
+        return held
+            .filter((record) => !params.type || params.type === "all" || record.type === params.type)
+            .filter((record) => params.status == null || record.status === params.status)
+            .map(({ held: id, ...record }) => (params.includeIds ? { ...record, id } : record));
+    };
+    return { respond, messages, remaining: () => held.map((record) => record.url) };
+}
+
+const TOKENS = [
+    { type: "fetch", url: "https://api.example/a?token=SECRET1", status: 200 },
+    { type: "fetch", url: "https://api.example/b?page=2", status: 200 },
+    { type: "fetch", url: "https://api.example/c?token=SECRET2", status: 500 },
+];
+
+test("urlPattern is matched against the URL as it will be reported, never the secret in it", async () => {
+    const page = networkPage(TOKENS);
+    const request = loadBackground(page.respond);
+
+    // The pattern that would confirm a guess at the secret finds nothing...
+    assert.deepEqual(await request("read_network", { urlPattern: "token=SECRET1" }), []);
+    assert.deepEqual(await request("read_network", { urlPattern: "token=S" }), []);
+    // ...and one written against what the caller can see finds the entry.
+    const found = await request("read_network", { urlPattern: "token=\\[redacted\\]" });
+    assert.deepEqual(found.map((record) => record.url), [
+        "https://api.example/a?token=[redacted]",
+        "https://api.example/c?token=[redacted]",
+    ]);
+    assert.doesNotMatch(JSON.stringify(found), /SECRET/);
+    assert.ok(page.messages.every((params) => !params.urlPattern), "the pattern reached the page");
+});
+
+test("urlPattern composes with the other filters, and the page's numbering stays out of the result", async () => {
+    const request = loadBackground(networkPage(TOKENS).respond);
+
+    const failed = await request("read_network", { urlPattern: "api\\.example", status: 500 });
+    assert.deepEqual(failed.map((record) => record.url), ["https://api.example/c?token=[redacted]"]);
+    assert.equal("id" in failed[0], false);
+
+    // maxResults is the most recent N of the entries that matched, not of all.
+    const latest = await request("read_network", { urlPattern: "token", maxResults: 1 });
+    assert.deepEqual(latest.map((record) => record.url), ["https://api.example/c?token=[redacted]"]);
+});
+
+test("clear with a urlPattern removes exactly the entries it returned", async () => {
+    const page = networkPage(TOKENS);
+    const request = loadBackground(page.respond);
+
+    const cleared = await request("read_network", { urlPattern: "token", maxResults: 1, clear: true });
+
+    assert.equal(cleared.length, 1);
+    assert.deepEqual(page.remaining(), [
+        "https://api.example/a?token=SECRET1",
+        "https://api.example/b?page=2",
+    ]);
+});
+
+test("without a urlPattern the page filters, limits and clears as before", async () => {
+    const page = networkPage(TOKENS);
+    const request = loadBackground(page.respond);
+
+    await request("read_network", { status: 200, maxResults: 5, clear: true });
+
+    assert.equal(page.messages.length, 1);
+    assert.equal(page.messages[0].clear, true);
+    assert.equal(page.messages[0].maxResults, 5);
+    assert.equal(page.messages[0].includeIds, undefined);
+});
+
+test("a urlPattern outside the bounded subset is refused before the page is asked", async () => {
+    for (const urlPattern of ["(a+)+$", "a*", "x".repeat(201), "["]) {
+        const page = networkPage(TOKENS);
+        const response = await loadBackground(page.respond).raw("read_network", { urlPattern });
+
+        assert.equal(response.success, false, urlPattern);
+        assert.equal(response.errorCode, "invalid_input", urlPattern);
+        assert.equal(response.recoveryAction, "fix_input", urlPattern);
+        assert.equal(page.messages.length, 0, `${urlPattern} reached the page`);
+    }
 });
 
 test("a stopped trace reports its URLs without their credentials", async () => {

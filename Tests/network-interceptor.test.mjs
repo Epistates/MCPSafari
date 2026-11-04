@@ -129,22 +129,44 @@ function readNetwork(window, params) {
     return JSON.parse(JSON.stringify(window.__mcpGetNetworkRequests(params)));
 }
 
-test("urlPattern filters resources and rejects invalid or expensive patterns", () => {
+test("the page capture does not filter by URL, because it holds the URLs unredacted", async () => {
+    // A filter run here answers "does the real URL match" with which entries
+    // come back, which lets whoever picks the pattern read a redacted token out
+    // one character at a time. The extension filters what it will report.
     const { observer, window } = loadInterceptor();
-    pushResources(observer, [
-        "https://example.test/variant-a.webp",
-        "https://example.test/original.png",
-        "https://example.test/variant-b.webp",
-    ]);
+    pushResources(observer, ["https://example.test/cb?token=SECRET"]);
+    await window.fetch("https://example.test/api/feed?token=SECRET");
 
-    const matched = readNetwork(window, { type: "resource", urlPattern: "variant" });
-    assert.deepEqual(matched.map((r) => r.url), [
-        "https://example.test/variant-a.webp",
-        "https://example.test/variant-b.webp",
-    ]);
+    for (const urlPattern of ["SECRET", "^https://example.test/cb\\?token=S", "token=Z"]) {
+        assert.throws(
+            () => readNetwork(window, { type: "all", urlPattern }),
+            /urlPattern is applied by the extension/,
+            urlPattern
+        );
+    }
+});
 
-    assert.throws(() => readNetwork(window, { type: "resource", urlPattern: "([" }));
-    assert.throws(() => readNetwork(window, { type: "resource", urlPattern: "(a+)+$" }), /Unsupported filter/);
+test("entries can be numbered on request, and cleared by number", async () => {
+    const { observer, window } = loadInterceptor();
+    pushResources(observer, ["https://example.test/a.png", "https://example.test/b.png"]);
+    await window.fetch("https://example.test/api/feed");
+
+    const shown = readNetwork(window, { type: "resource", includeIds: true });
+    assert.deepEqual(shown.map((r) => r.url), ["https://example.test/a.png", "https://example.test/b.png"]);
+    assert.equal(new Set(shown.map((r) => r.id)).size, 2);
+    // Numbering is for the extension: an ordinary read stays as it was.
+    assert.equal("id" in readNetwork(window, { type: "resource" })[0], false);
+    // The same entry keeps its number.
+    assert.deepEqual(readNetwork(window, { type: "resource", includeIds: true }).map((r) => r.id), shown.map((r) => r.id));
+
+    // Only the entry named is removed, from whichever feed holds it.
+    window.__mcpGetNetworkRequests({ clearIds: [shown[0].id] });
+    assert.deepEqual(readNetwork(window, { type: "resource" }).map((r) => r.url), ["https://example.test/b.png"]);
+    assert.equal(readNetwork(window, { type: "fetch" }).length, 1);
+
+    // An entry never handed out has no number to name it by.
+    window.__mcpGetNetworkRequests({ clearIds: [999] });
+    assert.equal(readNetwork(window, { type: "fetch" }).length, 1);
 });
 
 test("maxResults returns the most recent entries", () => {
@@ -165,24 +187,22 @@ test("maxResults returns the most recent entries", () => {
 test("clear with a filter removes only the returned entries", () => {
     const { observer, window } = loadInterceptor();
     pushResources(observer, [
-        "https://example.test/variant-a.webp",
-        "https://example.test/original.png",
+        "https://example.test/a.png",
+        "https://example.test/b.png",
+        "https://example.test/c.png",
     ]);
 
-    const cleared = readNetwork(window, { type: "resource", urlPattern: "variant", clear: true });
-    assert.equal(cleared.length, 1);
+    const cleared = readNetwork(window, { type: "resource", maxResults: 1, clear: true });
+    assert.deepEqual(cleared.map((r) => r.url), ["https://example.test/c.png"]);
 
     const remaining = readNetwork(window, { type: "resource" });
-    assert.deepEqual(remaining.map((r) => r.url), ["https://example.test/original.png"]);
+    assert.deepEqual(remaining.map((r) => r.url), ["https://example.test/a.png", "https://example.test/b.png"]);
 });
 
-test("urlPattern also filters the fetch feed", async () => {
+test("maxResults also limits the fetch feed", async () => {
     const { window } = loadInterceptor();
     await window.fetch("https://example.test/api/feed");
     await window.fetch("https://example.test/api/health");
-
-    const matched = readNetwork(window, { type: "fetch", urlPattern: "feed" });
-    assert.deepEqual(matched.map((r) => r.url), ["https://example.test/api/feed"]);
 
     const limited = readNetwork(window, { maxResults: 1 });
     assert.deepEqual(limited.map((r) => r.url), ["https://example.test/api/health"]);
