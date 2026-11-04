@@ -60,12 +60,16 @@ function permissionRequiredError(origin, pending) {
     return error;
 }
 
-// The tab `select_tab` pinned is gone. Not retryable as it stands: repeating the
-// call finds the same absence, and the caller has to choose a tab again.
-function tabClosedError(tabId) {
+// The tab is gone: the one `select_tab` pinned, or the one a call named. Not
+// retryable as it stands: repeating the call finds the same absence, and the
+// caller has to choose a tab again.
+function tabClosedError(tabId, pinned = true) {
     const error = new Error(
-        `The tab pinned with select_tab (id ${tabId}) no longer exists, so this call was not run. `
-        + `Call tabs_context to list the open tabs, then select_tab again.`
+        pinned
+            ? `The tab pinned with select_tab (id ${tabId}) no longer exists, so this call was not run. `
+              + `Call tabs_context to list the open tabs, then select_tab again.`
+            : `Tab ${tabId} no longer exists, so this call was not run. `
+              + `Call tabs_context to list the open tabs.`
     );
     error.code = "tab_closed";
     error.retryable = false;
@@ -138,6 +142,16 @@ function probeTabAccess() {
     return true;
 }
 
+// What Safari says when a decision exists and it is no. A probe that fails any
+// other way (the tab closed, the page is mid-teardown) says nothing about
+// access, and reading it as a refusal was how a closed tab got reported as "not
+// allowed on this tab" and a slow granted page lost its stored grant.
+const SAFARI_ACCESS_REFUSAL =
+    /does not have access|do(?:es)? not have permission|missing host permission|cannot access|can't access|not allowed/i;
+
+/** tabId to the probe running for it, so concurrent callers share one. @type {Map<number, Promise<void>>} */
+const tabAccessProbesInFlight = new Map();
+
 // Cheapest call that proves the extension can actually reach this tab. It also
 // raises Safari's dialog when there is no decision yet, which is wanted: the
 // user cannot answer a question nobody asked.
@@ -148,25 +162,55 @@ async function ensureTabAccess(tabId) {
         return;
     }
 
+    // A frame search asks for every frame at once, and each caller used to start
+    // a probe of its own, so a page with eight frames raised eight.
+    let running = tabAccessProbesInFlight.get(tabId);
+    if (!running) {
+        running = probeAccess(tabId).finally(() => tabAccessProbesInFlight.delete(tabId));
+        tabAccessProbesInFlight.set(tabId, running);
+    }
+    return running;
+}
+
+async function probeAccess(tabId) {
     // Read the origin first. The probe below is what raises Safari's dialog, and
     // once that dialog is up `tabs.get` blocks on it as well, so asking
     // afterwards returns nothing and the refusal cannot name the site it is
     // about. Measured against real Safari, which is the only place this shows.
     const origin = await originOfTab(tabId);
 
+    let refusal = null;
     try {
         await withDeadline(
             browser.scripting.executeScript({ target: { tabId }, func: probeTabAccess }),
             PERMISSION_PROBE_TIMEOUT_MS
         );
-        tabAccessProbes.set(tabId, { at: Date.now(), error: null });
-        rememberOriginAccess(origin, true);
     } catch (err) {
-        const refusal = permissionRequiredError(origin, err instanceof DeadlineExceeded);
-        tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
-        rememberOriginAccess(origin, false);
-        throw refusal;
+        if (err instanceof DeadlineExceeded) {
+            // The dialog is open. Nothing has been decided, so nothing stored
+            // about this site changes either way.
+            refusal = permissionRequiredError(origin, true);
+            tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
+            throw refusal;
+        }
+        if (!SAFARI_ACCESS_REFUSAL.test(String(err && err.message))) {
+            if (await tabIsGone(tabId)) throw tabClosedError(tabId, false);
+            throw err;
+        }
+        refusal = permissionRequiredError(origin, false);
     }
+
+    // The tab can navigate while the probe is out, and the probe then ran on
+    // some other origin than the one read above. What it proved cannot be
+    // attributed, so it is answered for this call and neither cached nor stored.
+    // Safe to ask now: with no dialog open, `tabs.get` answers.
+    if (await originOfTab(tabId) !== origin) {
+        if (refusal) throw refusal;
+        return;
+    }
+    tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
+    rememberOriginAccess(origin, refusal === null);
+    if (refusal) throw refusal;
 }
 
 /**

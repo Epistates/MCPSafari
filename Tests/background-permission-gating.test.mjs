@@ -404,3 +404,111 @@ test("a tab that navigates loses its cached grant", async () => {
 
     assert.equal(probes, 2);
 });
+
+// ─── What a failed probe does and does not mean ───────────────────────
+
+const REFUSAL = "This extension does not have access to this tab";
+const BLOCKED_ORIGIN = "https://blocked.example";
+
+test("a probe on a tab that has closed says so instead of claiming access is missing", async () => {
+    // Every probe failure used to read as `permission_required`, so a closed tab
+    // sent the user to Safari's settings to grant a site that was never the
+    // problem, and forgot the grant it had.
+    const harness = loadBackground({
+        probe: async () => { throw new Error("No tab with id: 1"); },
+    });
+    harness.call(`rememberOriginAccess("${BLOCKED_ORIGIN}", true)`);
+    harness.call("browser.tabs.query = async () => []");
+
+    const err = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    assert.equal(err.code, "tab_closed");
+    assert.equal(err.retryable, false);
+    assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), true, "a closed tab revoked the grant");
+});
+
+test("a probe that fails for a reason that is not access is passed on, uncached, with the grant kept", async () => {
+    let probes = 0;
+    const harness = loadBackground({
+        probe: async () => { probes += 1; throw new Error("The page is being torn down"); },
+    });
+    harness.call(`rememberOriginAccess("${BLOCKED_ORIGIN}", true)`);
+
+    const first = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+    const second = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    assert.equal(first.code, undefined);
+    assert.match(first.message, /being torn down/);
+    assert.equal(probes, 2, "a failure that says nothing about access was cached as if it did");
+    assert.equal(second.code, undefined);
+    assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), true);
+});
+
+test("a granted page too slow to probe keeps its stored grant", async () => {
+    // Two seconds is a long time for a probe and not much for a busy page. The
+    // deadline is the dialog case: nothing has been decided, so a stored grant
+    // is not evidence against it.
+    const harness = loadBackground({ probe: parked });
+    harness.call(`rememberOriginAccess("${BLOCKED_ORIGIN}", true)`);
+
+    const pending = track(rejection(harness.call('sendToContentScript(1, { action: "read_page" })')));
+    await fireWhenParked(harness, pending);
+    const err = await pending.promise;
+
+    assert.equal(err.code, "permission_required");
+    assert.equal(err.permissionPending, true);
+    assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), true, "a deadline deleted the stored grant");
+});
+
+test("an explicit refusal forgets the stored grant", async () => {
+    const harness = loadBackground({ probe: async () => { throw new Error(REFUSAL); } });
+    harness.call(`rememberOriginAccess("${BLOCKED_ORIGIN}", true)`);
+
+    const err = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    assert.equal(err.code, "permission_required");
+    assert.equal(err.permissionPending, false);
+    assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), false);
+});
+
+test("a tab that navigates while it is probed is credited to neither origin", async () => {
+    // The probe ran on one origin or the other and which is unknowable, so
+    // crediting a grant to either would be a guess that makes tabs_context show
+    // a URL nobody was granted.
+    let harness;
+    harness = loadBackground({
+        probe: async () => {
+            harness.call('globalThis.__url = "https://elsewhere.example/page"');
+            return [{ result: true }];
+        },
+    });
+    harness.call('globalThis.__url = "https://blocked.example/page"');
+    harness.call("browser.tabs.get = async (id) => ({ id, active: true, windowId: 1, url: globalThis.__url, title: 'T' })");
+
+    await harness.call('sendToContentScript(1, { action: "read_page" })');
+
+    assert.equal(harness.call("grantedOrigins.size"), 0, "an origin the probe may not have run on was recorded");
+});
+
+test("a probe on a tab that did not move records its origin", async () => {
+    const harness = loadBackground();
+
+    await harness.call('sendToContentScript(1, { action: "read_page" })');
+
+    assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), true);
+});
+
+test("concurrent calls on one tab share a single probe", async () => {
+    // A frame search asks for every frame at once. Each used to probe on its own,
+    // since the cache only fills in once a probe has finished.
+    let probes = 0;
+    const harness = loadBackground({
+        probe: async () => { probes += 1; return [{ result: true }]; },
+    });
+
+    await Promise.all([1, 2, 3, 4].map(
+        () => harness.call('sendToContentScript(1, { action: "read_page" })')
+    ));
+
+    assert.equal(probes, 1);
+});
