@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import os
 @testable import MCPSafari
 
 /// The server holds this from a tool's prepare step through its act step. What
@@ -60,6 +61,23 @@ struct AsyncFIFOLockTests {
         #expect(!strictlyPaired)
     }
 
+    /// Waits for something the lock reports about itself rather than for a
+    /// guessed interval, so the ordering below holds on a slow machine too.
+    private func waitUntil(
+        _ what: String,
+        _ condition: () -> Bool,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for \(what)", sourceLocation: sourceLocation)
+                throw CancellationError()
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
     @Test func waitersAreServedInArrivalOrder() async throws {
         let lock = AsyncFIFOLock()
         let log = Log()
@@ -70,13 +88,13 @@ struct AsyncFIFOLockTests {
                 for await _ in gate { break }
             }
         }
-        try await Task.sleep(for: .milliseconds(30))
+        try await waitUntil("the holder to take the lock") { lock.isHeld }
 
         var waiters: [Task<Void, any Error>] = []
         for call in 0..<6 {
             waiters.append(Task { try await lock.withLock { await log.add("call \(call)") } })
             // Let each one reach the queue before the next arrives.
-            try await Task.sleep(for: .milliseconds(15))
+            try await waitUntil("waiter \(call) to queue") { lock.queuedCount == call + 1 }
         }
         open.yield()
         try await holder.value
@@ -95,14 +113,16 @@ struct AsyncFIFOLockTests {
                 for await _ in gate { break }
             }
         }
-        try await Task.sleep(for: .milliseconds(30))
+        try await waitUntil("the holder to take the lock") { lock.isHeld }
 
         let abandoned = Task { try await lock.withLock { await log.add("abandoned") } }
-        try await Task.sleep(for: .milliseconds(15))
+        try await waitUntil("the first waiter to queue") { lock.queuedCount == 1 }
         let patient = Task { try await lock.withLock { await log.add("patient") } }
-        try await Task.sleep(for: .milliseconds(15))
+        try await waitUntil("the second waiter to queue") { lock.queuedCount == 2 }
 
         abandoned.cancel()
+        // It leaves the queue at once, without waiting for the holder.
+        try await waitUntil("the cancelled waiter to leave the queue") { lock.queuedCount == 1 }
         open.yield()
         try await holder.value
         try await patient.value
@@ -111,6 +131,75 @@ struct AsyncFIFOLockTests {
         do { try await abandoned.value } catch is CancellationError { cancelled = true }
         #expect(cancelled)
         #expect(await log.entries == ["patient"])
+    }
+
+    /// Between the check that a caller is not cancelled and the moment it is
+    /// queued there is a window, and a cancellation that lands in it ran the
+    /// handler against an empty queue. The caller then queued anyway and sat
+    /// behind a holder it had given up on, until that holder finished.
+    @Test func aCancellationThatLandsAsTheCallerQueuesIsNotLost() async throws {
+        // The first caller, the holder, is left alone; the second is cancelled
+        // at the moment it is about to queue.
+        let callers = OSAllocatedUnfairLock(initialState: 0)
+        let lock = AsyncFIFOLock(beforeQueueing: {
+            let caller = callers.withLock { count -> Int in
+                count += 1
+                return count
+            }
+            if caller == 2 { withUnsafeCurrentTask { $0?.cancel() } }
+        })
+        let (gate, open) = AsyncStream<Void>.makeStream()
+
+        let holder = Task {
+            try await lock.withLock {
+                for await _ in gate { break }
+            }
+        }
+        try await waitUntil("the holder to take the lock") { lock.isHeld }
+
+        let ran = Flag()
+        let waiter = Task { try await lock.withLock { await ran.set() } }
+
+        let outcome = try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask {
+                do { try await waiter.value; return "ran" } catch is CancellationError { return "cancelled" }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                return "still waiting"
+            }
+            let first = try await group.next() ?? "none"
+            // Let the holder go before the group waits for its children, or a
+            // caller left queued would keep the group, and the test, hanging.
+            open.yield()
+            group.cancelAll()
+            return first
+        }
+        try await holder.value
+
+        #expect(outcome == "cancelled", "the cancelled caller was left queued behind the holder")
+        #expect(await ran.value == false)
+    }
+
+    /// The same window with the lock free: the caller must not run its section
+    /// after it was cancelled just because nobody was in its way.
+    @Test func aCancellationThatLandsAsTheCallerQueuesDoesNotRunAFreeLockSection() async throws {
+        let lock = AsyncFIFOLock(beforeQueueing: { withUnsafeCurrentTask { $0?.cancel() } })
+        let ran = Flag()
+
+        let task = Task { try await lock.withLock { await ran.set() } }
+        var cancelled = false
+        do { try await task.value } catch is CancellationError { cancelled = true }
+
+        #expect(cancelled)
+        #expect(await ran.value == false)
+        // And the lock it never took is free for the next caller.
+        #expect(!lock.isHeld)
+    }
+
+    private actor Flag {
+        private(set) var value = false
+        func set() { value = true }
     }
 
     @Test func aThrowingSectionStillReleasesTheLock() async throws {

@@ -30,6 +30,22 @@ final class AsyncFIFOLock: Sendable {
 
     private let state = OSAllocatedUnfairLock(initialState: State())
 
+    /// Called once the caller has been checked for cancellation and is about to
+    /// queue. Tests use it to cancel at exactly the moment a cancellation used
+    /// to be lost.
+    private let beforeQueueing: (@Sendable () -> Void)?
+
+    init(beforeQueueing: (@Sendable () -> Void)? = nil) {
+        self.beforeQueueing = beforeQueueing
+    }
+
+    /// Whether some task holds the lock right now. For observation in tests.
+    var isHeld: Bool { state.withLock { $0.isLocked } }
+
+    /// How many tasks are queued behind the holder. For observation in tests,
+    /// which wait on it instead of sleeping and hoping.
+    var queuedCount: Int { state.withLock { $0.waiters.count } }
+
     /// Runs `body` while holding the lock, releasing it however `body` exits.
     func withLock<T>(
         isolation: isolated (any Actor)? = #isolation,
@@ -37,6 +53,10 @@ final class AsyncFIFOLock: Sendable {
     ) async throws -> T {
         try await acquire()
         defer { release() }
+        // A task cancelled as the lock was handed to it has been removed from
+        // the queue already, so the cancellation handler had nothing to resume.
+        // It owns the lock now and must not spend its turn.
+        try Task.checkCancellation()
         return try await body()
     }
 
@@ -46,17 +66,28 @@ final class AsyncFIFOLock: Sendable {
             defer { state.nextWaiterID += 1 }
             return state.nextWaiterID
         }
+        beforeQueueing?()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                let acquired = state.withLock { state -> Bool in
+                enum Outcome { case acquired, queued, cancelled }
+                let outcome = state.withLock { state -> Outcome in
+                    // Looked at under the same lock that queues the waiter. A
+                    // cancellation that ran the handler before this point found
+                    // no waiter to remove and would otherwise be lost, leaving
+                    // this task queued behind a holder it has given up on.
+                    if Task.isCancelled { return .cancelled }
                     if !state.isLocked {
                         state.isLocked = true
-                        return true
+                        return .acquired
                     }
                     state.waiters.append(Waiter(id: id, continuation: continuation))
-                    return false
+                    return .queued
                 }
-                if acquired { continuation.resume() }
+                switch outcome {
+                case .acquired: continuation.resume()
+                case .cancelled: continuation.resume(throwing: CancellationError())
+                case .queued: break
+                }
             }
         } onCancel: {
             let abandoned = state.withLock { state -> CheckedContinuation<Void, any Error>? in
