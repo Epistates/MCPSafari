@@ -242,4 +242,16 @@ struct NativeTypingTests {
         events.down.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &length, unicodeString: &buffer)
         #expect(String(utf16CodeUnits: buffer, count: length) == "q")
     }
+
+    // The same source reports the user's held modifiers on mouse events, and a
+    // hover or drag with Command down is a different gesture. This can only
+    // fail on a machine where a modifier is physically held while it runs.
+    @Test func pointerEventsCarryNoModifierFlags() throws {
+        let source = try #require(CGEventSource(stateID: .hidSystemState))
+        for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp] {
+            let event = try SafariMCPServer.mouseEvent(type: type, at: CGPoint(x: 10, y: 20), source: source)
+            #expect(event.flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty)
+            #expect(event.location == CGPoint(x: 10, y: 20))
+        }
+    }
 }

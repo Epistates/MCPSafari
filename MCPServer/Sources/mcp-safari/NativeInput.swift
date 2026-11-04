@@ -768,11 +768,12 @@ extension SafariMCPServer {
         return "Dragged from (\(Int(start.x)), \(Int(start.y))) to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
-    private nonisolated static func postMouse(
+    /// A mouse event, not yet posted.
+    nonisolated static func mouseEvent(
         type: CGEventType,
         at point: CGPoint,
         source: CGEventSource
-    ) throws {
+    ) throws -> CGEvent {
         guard let event = CGEvent(
             mouseEventSource: source,
             mouseType: type,
@@ -781,7 +782,20 @@ extension SafariMCPServer {
         ) else {
             throw nativeInputUnavailable("macOS could not create a native mouse event.")
         }
-        event.post(tap: .cgSessionEventTap)
+        // A `.hidSystemState` source reports the modifiers that are physically
+        // down, as it does for keys: a held Command would turn a drag into a
+        // copy, or a hover into a Command-click on a link. Pointer input the
+        // caller asked for carries none.
+        event.flags = []
+        return event
+    }
+
+    private nonisolated static func postMouse(
+        type: CGEventType,
+        at point: CGPoint,
+        source: CGEventSource
+    ) throws {
+        try mouseEvent(type: type, at: point, source: source).post(tap: .cgSessionEventTap)
     }
 
     // Interpolated so boundary events (mouseout/mouseleave, dragenter/dragover)
