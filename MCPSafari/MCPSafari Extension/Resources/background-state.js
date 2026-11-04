@@ -21,7 +21,13 @@ const manualPorts = new Set();
  * the first client's tab. A pin belongs to the MCP client that made it, and the
  * port is what tells its server from another.
  *
- * @type {Map<number, number>}
+ * A port is reused by the next server to start on it, though, and a pin must not
+ * pass to a client that never chose it. `run` is a fingerprint of the token the
+ * server held when the pin was made (see `serverRunFingerprint`); a pin whose
+ * fingerprint is not the port's current one is from an earlier run and is
+ * dropped when it is next looked up.
+ *
+ * @type {Map<number, {tabId: number, run: string|null}>}
  */
 const pinnedTabs = new Map();
 // Safari runs a separate instance of this extension per profile, each with its own
@@ -31,6 +37,18 @@ const pinnedTabs = new Map();
 let profileId = DEFAULT_PROFILE_ID;
 const authTokensByPort = new Map();
 const staleTokensByPort = new Map();
+
+// Which run of the server on `port` this is. A server writes a new token each
+// time it starts, so the token changes exactly when the run does, and a pin made
+// under one is not for the next. What is kept is a short digest of the token, not
+// the token: it is stored with the pin, and a digest says "the same run" without
+// being a way to authenticate as it. Null when there is no token for the port.
+async function serverRunFingerprint(port) {
+    const token = authTokensByPort.get(port);
+    if (!token) return null;
+    const digest = await crypto.subtle.digest("SHA-256", utf8(`mcpsafari-pin|${port}|${token}`));
+    return base64UrlEncode(new Uint8Array(digest).slice(0, 12));
+}
 
 function toolErrorFromResponse(response) {
     const error = new Error(response.error);

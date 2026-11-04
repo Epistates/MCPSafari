@@ -76,7 +76,7 @@ test("the popup describes the tab the user is looking at, not one a server pinne
         probe: async () => [{ result: true }],
         tabUrl: (id) => (id === 7 ? "https://pinned.example/inbox" : "https://example.com/a/page"),
     });
-    harness.call("pinnedTabs.set(8089, 7)");
+    harness.call("pinnedTabs.set(8089, { tabId: 7, run: null })");
 
     const access = await harness.call("describeActiveTabAccess()");
 

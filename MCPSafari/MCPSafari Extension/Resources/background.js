@@ -10,7 +10,8 @@
 // probed first, because the tab they are looking up is the thing being decided.
 async function getActiveTabId(serverPort) {
     // Use the tab this server pinned with select_tab, if any
-    const pinned = pinnedTabs.get(serverPort);
+    const pin = await currentPin(serverPort);
+    const pinned = pin ? pin.tabId : undefined;
     if (pinned !== undefined) {
         try {
             const tab = await withDeadline(browser.tabs.get(pinned), TAB_LISTING_TIMEOUT_MS);
@@ -33,6 +34,22 @@ async function getActiveTabId(serverPort) {
         }
     }
     return userActiveTabId();
+}
+
+// The pin on this port, if it was made by the server that is running there now.
+// A pin from an earlier run is dropped, not carried over to a client that never
+// chose it. Checked here, when a call arrives, and not when pins are restored,
+// because a woken background page restores them before it has read the tokens.
+async function currentPin(serverPort) {
+    const pin = pinnedTabs.get(serverPort);
+    if (!pin) return undefined;
+    if (pin.run === await serverRunFingerprint(serverPort)) return pin;
+    // Re-read: another call may have replaced the pin while the digest was out.
+    if (pinnedTabs.get(serverPort) === pin) {
+        pinnedTabs.delete(serverPort);
+        persistPinnedTabs();
+    }
+    return undefined;
 }
 
 // The tab the user is looking at, whatever any server has pinned.

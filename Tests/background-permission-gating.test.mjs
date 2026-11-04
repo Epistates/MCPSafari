@@ -287,7 +287,7 @@ test("resolving the active tab reports why instead of riding the bridge timeout"
 
 test("a pinned tab parked on the dialog is not mistaken for a closed one", async () => {
     const harness = loadBackground();
-    harness.call("pinnedTabs.set(8089, 7)");
+    harness.call("pinnedTabs.set(8089, { tabId: 7, run: null })");
     harness.call("browser.tabs.get = () => new Promise(() => {})");
 
     const pending = track(rejection(harness.call("getActiveTabId(8089)")));
@@ -298,7 +298,7 @@ test("a pinned tab parked on the dialog is not mistaken for a closed one", async
     // The old catch-all treated any failure here as "the tab went away" and
     // cleared the pin, losing the caller's chosen tab over a question the user
     // simply had not answered yet.
-    assert.equal(harness.call("pinnedTabs.get(8089)"), 7);
+    assert.equal(harness.call("pinnedTabs.get(8089)?.tabId"), 7);
 });
 
 test("select_tab on a tab parked on the dialog still pins it, and the next page call names the reason", async () => {
@@ -309,7 +309,7 @@ test("select_tab on a tab parked on the dialog still pins it, and the next page 
     const selected = await harness.call("handleSelectTab({ tabId: 1 }, 8089)");
     assert.equal(selected.selected, true);
     assert.equal(selected.access, "not_granted");
-    assert.equal(harness.call("pinnedTabs.get(8089)"), 1);
+    assert.equal(harness.call("pinnedTabs.get(8089)?.tabId"), 1);
 
     const pending = track(rejection(harness.call('sendToContentScript(1, { action: "read_page" })')));
     await fireWhenParked(harness, pending);

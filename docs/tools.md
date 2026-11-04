@@ -135,7 +135,7 @@ Safari runs a separate, complete instance of the extension in every profile, and
 
 A call that names no tab acts on the selected tab, and its follow-ups stay on that same tab: the extension reports which tab it resolved, and the post-action wait, the `includeSnapshot` snapshot and the end of a trace are sent to it, so switching tabs while a call runs does not split it across two pages. A `run_steps` batch that names no tab does the same, taking the first step's tab for every later step and for its final snapshot and trace. (An older extension reports no tab, and then each request picks the selected tab itself.)
 
-The tab `select_tab` pins belongs to the MCP client that pinned it. When two clients run two servers at once, each has its own pin, and one client's `select_tab` does not change where the other's calls with no `tabId` land.
+The tab `select_tab` pins belongs to the MCP client that pinned it. When two clients run two servers at once, each has its own pin, and one client's `select_tab` does not change where the other's calls with no `tabId` land. A pin also ends with the server that made it: a server started later on the same port begins with none, rather than inheriting the last one's tab.
 
 Naming a profile that is not connected fails with `profile_not_connected` rather than falling back to another one, because answering from a different browser window is worse than refusing.
 

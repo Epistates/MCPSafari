@@ -208,7 +208,7 @@ async function handleTabsClose(params, serverPort) {
     await browser.tabs.remove(params.tabId);
     // Clear this server's pin if it was the tab closed. Another server's pin on
     // the same tab is left to say so itself the next time it is used.
-    if (pinnedTabs.get(serverPort) === params.tabId) {
+    if (pinnedTabs.get(serverPort)?.tabId === params.tabId) {
         pinnedTabs.delete(serverPort);
         persistPinnedTabs();
     }
@@ -246,7 +246,7 @@ async function handleSelectTab(params, serverPort) {
         }
     }
 
-    pinnedTabs.set(serverPort, tabId);
+    pinnedTabs.set(serverPort, { tabId, run: await serverRunFingerprint(serverPort) });
     persistPinnedTabs();
 
     const access = tabAccessFields(tab && tab.url);
@@ -409,16 +409,22 @@ async function restoreSessionState() {
     } catch (_) { /* ignore */ }
 
     // Restore pinned tabs (session-only — lost on Safari restart). A pin whose
-    // tab has gone is dropped, and the stored copy is rewritten without it.
+    // tab has gone is dropped, and the stored copy is rewritten without it. Which
+    // server run a pin belongs to is not checked here: this runs beside the read
+    // of the tokens, so the port's token may not be in yet. It is checked when a
+    // call arrives (`currentPin`), by which time a connection exists.
     try {
         if (browser.storage && browser.storage.session) {
             const data = await browser.storage.session.get("pinnedTabs");
             const stored = data.pinnedTabs && typeof data.pinnedTabs === "object" ? data.pinnedTabs : {};
             let dropped = false;
-            for (const [key, tabId] of Object.entries(stored)) {
+            for (const [key, pin] of Object.entries(stored)) {
                 const port = Number(key);
                 try {
+                    const tabId = pin && pin.tabId;
+                    const run = pin && pin.run;
                     if (!Number.isInteger(port) || !Number.isInteger(tabId)) throw new Error("not a pin");
+                    if (run !== null && typeof run !== "string") throw new Error("not a pin");
                     // Startup waits on this before it connects to any server, and
                     // a tab parked on Safari's dialog never answers. A tab that is
                     // parked is a tab that exists, so the pin is kept.
@@ -427,7 +433,7 @@ async function restoreSessionState() {
                     } catch (err) {
                         if (!(err instanceof DeadlineExceeded)) throw err;
                     }
-                    pinnedTabs.set(port, tabId);
+                    pinnedTabs.set(port, { tabId, run });
                 } catch {
                     dropped = true;
                 }
