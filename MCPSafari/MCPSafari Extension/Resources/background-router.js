@@ -22,11 +22,15 @@
 // declaration hoists.
 
 // Served here in the background.
+//
+// A handler is given the port of the server that made the request as well, for
+// the two that keep per-server state: the tab `select_tab` pins is that
+// server's own.
 const BACKGROUND_HANDLERS = new Map([
     ["tabs_query", () => handleTabsQuery()],
     ["tabs_create", (params) => handleTabsCreate(params)],
-    ["tabs_close", (params) => handleTabsClose(params)],
-    ["select_tab", (params) => handleSelectTab(params)],
+    ["tabs_close", (params, serverPort) => handleTabsClose(params, serverPort)],
+    ["select_tab", (params, serverPort) => handleSelectTab(params, serverPort)],
     ["navigate", (params) => handleNavigate(params)],
     ["native_type_text", (params) => handleNativeTypeText(params)],
     ["native_press_key", (params) => handleNativePressKey(params)],
@@ -106,9 +110,9 @@ const LOAD_STARTING_ACTIONS = new Map([
     ["select_option", () => true],
 ]);
 
-async function routeAction(action, params) {
+async function routeAction(action, params, serverPort) {
     const handler = BACKGROUND_HANDLERS.get(action);
-    if (handler) return handler(params);
+    if (handler) return handler(params, serverPort);
 
     if (action === "wait") {
         return waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
@@ -191,19 +195,21 @@ function actsOnATab(action) {
 // once per frame, once per follow-up. The user can change tabs between any two
 // of those, so one request could act on two pages. The target is decided here,
 // once, and travels as `params.tabId` from then on.
-async function withResolvedTab(action, params) {
+async function withResolvedTab(action, params, serverPort) {
     if (!actsOnATab(action) || params.tabId) return params;
-    return { ...params, tabId: await getActiveTabId() };
+    return { ...params, tabId: await getActiveTabId(serverPort) };
 }
 
-async function handleRequest(request) {
+// `serverPort` is the port of the connection the request arrived on, which is
+// what tells one MCP client's pinned tab from another's.
+async function handleRequest(request, serverPort) {
     const { id, action, params: requested } = request;
     let resolvedTabId = null;
 
     try {
-        const params = await withResolvedTab(action, requested ?? {});
+        const params = await withResolvedTab(action, requested ?? {}, serverPort);
         resolvedTabId = params.tabId ?? null;
-        const data = redactResult(action, await routeAction(action, params));
+        const data = redactResult(action, await routeAction(action, params, serverPort));
         return {
             id,
             success: true,

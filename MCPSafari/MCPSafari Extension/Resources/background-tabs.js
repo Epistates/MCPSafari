@@ -168,12 +168,13 @@ async function handleTabsCreate(params) {
     };
 }
 
-async function handleTabsClose(params) {
+async function handleTabsClose(params, serverPort) {
     await browser.tabs.remove(params.tabId);
-    // Clear selected tab if it was closed
-    if (selectedTabId === params.tabId) {
-        selectedTabId = null;
-        persistSelectedTab(null);
+    // Clear this server's pin if it was the tab closed. Another server's pin on
+    // the same tab is left to say so itself the next time it is used.
+    if (pinnedTabs.get(serverPort) === params.tabId) {
+        pinnedTabs.delete(serverPort);
+        persistPinnedTabs();
     }
     return `Closed tab ${params.tabId}`;
 }
@@ -188,7 +189,7 @@ async function handleTabsClose(params) {
 // up under a deadline for its window and to confirm it exists; a lookup that is
 // parked on a dialog for some other tab does not stop the pin, which is only an
 // id, but then there is no window to bring forward and no URL to describe.
-async function handleSelectTab(params) {
+async function handleSelectTab(params, serverPort) {
     const tabId = params.tabId;
     let tab = null;
     try {
@@ -209,8 +210,8 @@ async function handleSelectTab(params) {
         }
     }
 
-    selectedTabId = tabId;
-    persistSelectedTab(tabId);
+    pinnedTabs.set(serverPort, tabId);
+    persistPinnedTabs();
 
     const access = tabAccessFields(tab && tab.url);
     return {
@@ -305,10 +306,12 @@ async function handleNativePointer(params) {
     });
 }
 
-function persistSelectedTab(tabId) {
+// Object keys are strings, so ports come back as text and are turned into
+// numbers again on restore.
+function persistPinnedTabs() {
     try {
         if (browser.storage && browser.storage.session) {
-            browser.storage.session.set({ selectedTabId: tabId });
+            browser.storage.session.set({ pinnedTabs: Object.fromEntries(pinnedTabs) });
         }
     } catch (_) { /* storage may not be available */ }
 }
@@ -371,18 +374,24 @@ async function restoreSessionState() {
         }
     } catch (_) { /* ignore */ }
 
-    // Restore selected tab (session-only — lost on Safari restart)
+    // Restore pinned tabs (session-only — lost on Safari restart). A pin whose
+    // tab has gone is dropped, and the stored copy is rewritten without it.
     try {
         if (browser.storage && browser.storage.session) {
-            const data = await browser.storage.session.get("selectedTabId");
-            if (data.selectedTabId != null) {
+            const data = await browser.storage.session.get("pinnedTabs");
+            const stored = data.pinnedTabs && typeof data.pinnedTabs === "object" ? data.pinnedTabs : {};
+            let dropped = false;
+            for (const [key, tabId] of Object.entries(stored)) {
+                const port = Number(key);
                 try {
-                    await browser.tabs.get(data.selectedTabId);
-                    selectedTabId = data.selectedTabId;
+                    if (!Number.isInteger(port) || !Number.isInteger(tabId)) throw new Error("not a pin");
+                    await browser.tabs.get(tabId);
+                    pinnedTabs.set(port, tabId);
                 } catch {
-                    await browser.storage.session.remove("selectedTabId");
+                    dropped = true;
                 }
             }
+            if (dropped) persistPinnedTabs();
         }
     } catch (_) { /* ignore */ }
 

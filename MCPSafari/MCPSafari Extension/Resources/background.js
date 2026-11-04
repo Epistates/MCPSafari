@@ -8,11 +8,12 @@
 // on either line below puts the whole tool surface back on the 30-second bridge
 // timeout that `handleTabsQuery` is deadlined to avoid. Neither call can be
 // probed first, because the tab they are looking up is the thing being decided.
-async function getActiveTabId() {
-    // Use pinned tab if set via select_tab
-    if (selectedTabId !== null) {
+async function getActiveTabId(serverPort) {
+    // Use the tab this server pinned with select_tab, if any
+    const pinned = pinnedTabs.get(serverPort);
+    if (pinned !== undefined) {
         try {
-            const tab = await withDeadline(browser.tabs.get(selectedTabId), TAB_LISTING_TIMEOUT_MS);
+            const tab = await withDeadline(browser.tabs.get(pinned), TAB_LISTING_TIMEOUT_MS);
             return tab.id;
         } catch (err) {
             // A tab parked on Safari's dialog is not a closed one. Falling
@@ -23,15 +24,19 @@ async function getActiveTabId() {
             // untabbed `type_text` or `click` to whatever they happened to be
             // looking at. A pinned tab that is gone is an error the caller has
             // to hear about; one that failed for any other reason keeps its pin.
-            if (await tabIsGone(selectedTabId)) {
-                const closedId = selectedTabId;
-                selectedTabId = null;
-                persistSelectedTab(null);
-                throw tabClosedError(closedId);
+            if (await tabIsGone(pinned)) {
+                pinnedTabs.delete(serverPort);
+                persistPinnedTabs();
+                throw tabClosedError(pinned);
             }
             throw err;
         }
     }
+    return userActiveTabId();
+}
+
+// The tab the user is looking at, whatever any server has pinned.
+async function userActiveTabId() {
     let tabs;
     try {
         tabs = await withDeadline(

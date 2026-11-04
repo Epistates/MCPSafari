@@ -14,7 +14,16 @@
 const connections = new Map();
 /** @type {Set<number>} Manually added ports (persisted across restarts) */
 const manualPorts = new Set();
-let selectedTabId = null;
+/**
+ * The tab each server's `select_tab` pinned, by the port that server listens on.
+ *
+ * One pin shared by every connection sent a second client's untabbed calls to
+ * the first client's tab. A pin belongs to the MCP client that made it, and the
+ * port is what tells its server from another.
+ *
+ * @type {Map<number, number>}
+ */
+const pinnedTabs = new Map();
 // Safari runs a separate instance of this extension per profile, each with its own
 // background page reading the same tokens. Without an identity in the handshake every
 // instance looks like the same client, and the server evicts whichever one connected

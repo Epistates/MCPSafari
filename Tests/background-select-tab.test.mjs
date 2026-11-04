@@ -9,9 +9,13 @@ const source = backgroundScriptSource();
 // The tab in these tests sits on a site the user has not granted: the access
 // probe is refused. Selecting it only records which tab later calls mean, so it
 // must work anyway, and the first call that reads the page must still refuse.
-function loadBackground({ granted = false, getTab, activeCalls = [] } = {}) {
+function loadBackground({ granted = false, getTab, activeCalls = [], session = {} } = {}) {
     const stored = {};
     const tab = { id: 7, windowId: 3, active: false, url: "https://ungranted.example/account?token=abc", title: "Your account" };
+    // The one the user is looking at, which no pin is on.
+    const front = { id: 1, windowId: 3, active: true, url: "https://front.example/", title: "Front" };
+    const tabs = [tab, front];
+    const sent = [];
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         runtime: {
@@ -29,16 +33,17 @@ function loadBackground({ granted = false, getTab, activeCalls = [] } = {}) {
         },
         storage: {
             local: { get: async () => ({}), set() {} },
-            session: { get: async () => ({}), set: (values) => { Object.assign(stored, values); }, remove: async () => {} },
+            session: { get: async () => session, set: (values) => { Object.assign(stored, values); }, remove: async () => {} },
         },
         tabs: {
             get: getTab || (async (id) => {
-                if (id !== tab.id) throw new Error(`No tab with id: ${id}`);
-                return tab;
+                const found = tabs.find((candidate) => candidate.id === id);
+                if (!found) throw new Error(`No tab with id: ${id}`);
+                return found;
             }),
-            query: async () => [tab],
+            query: async (filter = {}) => (filter.active ? tabs.filter((candidate) => candidate.active) : tabs),
             update: async (id, info) => { activeCalls.push(["tabs.update", id, { ...info }]); },
-            sendMessage: async () => ({ data: "page text", error: null }),
+            sendMessage: async (tabId) => { sent.push(tabId); return { data: "page text", error: null }; },
             onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },
@@ -61,10 +66,13 @@ function loadBackground({ granted = false, getTab, activeCalls = [] } = {}) {
 
     return {
         stored,
+        sent,
         activeCalls,
         evaluate: (expression) => vm.runInContext(expression, context),
-        request: (action, params) => vm.runInContext(
-            `handleRequest(${JSON.stringify({ id: "r1", action, params })})`,
+        // `port` is the server the request arrives from. One server unless a
+        // test is about two.
+        request: (action, params, port = 8089) => vm.runInContext(
+            `handleRequest(${JSON.stringify({ id: "r1", action, params })}, ${port})`,
             context
         ),
     };
@@ -86,8 +94,8 @@ test("selecting a tab on an ungranted site pins it and reports success with the 
     assert.equal("url" in tab, false);
     assert.equal("title" in tab, false);
     assert.doesNotMatch(response.data, /ungranted\.example|Your account|abc/);
-    assert.equal(harness.evaluate("selectedTabId"), 7);
-    assert.equal(harness.stored.selectedTabId, 7, "and it survives the background page being suspended");
+    assert.equal(harness.evaluate("pinnedTabs.get(8089) ?? null"), 7);
+    assert.deepEqual({ ...harness.stored.pinnedTabs }, { 8089: 7 }, "and it survives the background page being suspended");
 });
 
 test("the pinned ungranted tab still refuses the first call that reads the page", async () => {
@@ -134,7 +142,7 @@ test("bringToFront: false pins without moving anything", async () => {
 
     assert.equal(response.success, true);
     assert.deepEqual(calls, []);
-    assert.equal(harness.evaluate("selectedTabId"), 7);
+    assert.equal(harness.evaluate("pinnedTabs.get(8089) ?? null"), 7);
 });
 
 test("a tab that does not exist is refused and not pinned", async () => {
@@ -144,7 +152,7 @@ test("a tab that does not exist is refused and not pinned", async () => {
 
     assert.equal(response.success, false);
     assert.match(response.error, /No tab with id/);
-    assert.equal(harness.evaluate("selectedTabId"), null);
+    assert.equal(harness.evaluate("pinnedTabs.get(8089) ?? null"), null);
 });
 
 test("a lookup parked behind a dialog does not stop the pin", async () => {
@@ -164,5 +172,56 @@ test("a lookup parked behind a dialog does not stop the pin", async () => {
 
     assert.equal(response.success, true);
     assert.equal(JSON.parse(response.data).access, "not_granted");
-    assert.equal(harness.evaluate("selectedTabId"), 7);
+    assert.equal(harness.evaluate("pinnedTabs.get(8089) ?? null"), 7);
+});
+
+// ─── Two servers ─────────────────────────────────────────────────────
+
+// Each MCP client has its own server on its own port, and the extension is
+// connected to all of them. The pin used to be one global, so a second client's
+// untabbed calls landed on the first client's tab.
+
+test("a pin belongs to the server that made it", async () => {
+    const harness = loadBackground({ granted: true });
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8089);
+
+    const pinned = await harness.request("hover", { uid: "f0e1" }, 8089);
+    const other = await harness.request("hover", { uid: "f0e1" }, 8090);
+
+    assert.equal(pinned.resolvedTabId, 7);
+    assert.equal(other.resolvedTabId, 1, "the second server's call went to the first server's tab");
+    assert.deepEqual(harness.sent, [7, 1]);
+});
+
+test("two servers pin different tabs without disturbing each other", async () => {
+    const harness = loadBackground({ granted: true });
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8089);
+    await harness.request("select_tab", { tabId: 1, bringToFront: false }, 8090);
+
+    assert.equal((await harness.request("hover", { uid: "f0e1" }, 8089)).resolvedTabId, 7);
+    assert.equal((await harness.request("hover", { uid: "f0e1" }, 8090)).resolvedTabId, 1);
+    assert.deepEqual({ ...harness.stored.pinnedTabs }, { 8089: 7, 8090: 1 });
+});
+
+test("closing a tab clears the pin of the server that closed it", async () => {
+    const harness = loadBackground({ granted: true });
+    harness.evaluate("browser.tabs.remove = async () => {}");
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8089);
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8090);
+
+    await harness.request("tabs_close", { tabId: 7 }, 8089);
+
+    assert.equal(harness.evaluate("pinnedTabs.has(8089)"), false);
+    assert.equal(harness.evaluate("pinnedTabs.get(8090)"), 7, "another server's pin was cleared");
+    assert.deepEqual({ ...harness.stored.pinnedTabs }, { 8090: 7 });
+});
+
+test("pins are restored per server, and one whose tab has gone is dropped", async () => {
+    const harness = loadBackground({ granted: true, session: { pinnedTabs: { 8089: 7, 8090: 99 } } });
+
+    await harness.evaluate("restoreSessionState()");
+
+    assert.equal(harness.evaluate("pinnedTabs.get(8089)"), 7);
+    assert.equal(harness.evaluate("pinnedTabs.has(8090)"), false);
+    assert.deepEqual({ ...harness.stored.pinnedTabs }, { 8089: 7 }, "the stored copy still names a tab that is gone");
 });

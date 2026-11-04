@@ -202,7 +202,7 @@ function connectToPort(port) {
         }
 
         try {
-            const response = await handleRequest(request);
+            const response = await handleRequest(request, port);
             socket.send(JSON.stringify(response));
         } catch (err) {
             console.error(`[MCPSafari:${port}] Error:`, err);
