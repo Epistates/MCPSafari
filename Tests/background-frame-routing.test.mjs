@@ -11,8 +11,9 @@ const EMBED = { frameId: 3, parentFrameId: 0, url: "https://embed.example/form" 
 
 // Every message the router sends is recorded with the frame it was aimed at,
 // so the assertions can check routing and not just the returned value.
-function loadBackground({ frames = [TOP, EMBED], respond }) {
+function loadBackground({ frames = [TOP, EMBED], respond, refuseAccess = false }) {
     const sent = [];
+    const listings = [];
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         runtime: {
@@ -20,7 +21,15 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
             onMessage: { addListener() {} },
             sendNativeMessage: async () => ({ tokens: {} }),
         },
-        scripting: { executeScript: async () => [] },
+        scripting: {
+            executeScript: async (options) => {
+                // An ungranted origin refuses the access probe.
+                if (refuseAccess && options.func && options.func.name === "probeTabAccess") {
+                    throw new Error("This extension does not have access to this tab");
+                }
+                return [];
+            },
+        },
         storage: {
             local: { get: async () => ({}), set() {} },
             session: { get: async () => ({}), set() {}, remove: async () => {} },
@@ -41,7 +50,8 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
             onRemoved: { addListener() {} },
         },
         webNavigation: {
-            getAllFrames: async () => {
+            getAllFrames: async ({ tabId }) => {
+                listings.push(tabId);
                 if (frames instanceof Error) throw frames;
                 return frames;
             },
@@ -69,6 +79,7 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
 
     return {
         sent,
+        listings,
         call: (expression) => vm.runInContext(expression, context),
     };
 }
@@ -91,6 +102,29 @@ const embedTree = () => ({
     tag: "body",
     children: [{ uid: "f3e2", tag: "input", role: "textbox" }],
 });
+
+for (const [name, expression] of [
+    ["snapshot", 'dispatchToContent("snapshot", { tabId: 1 })'],
+    ["find", 'dispatchToContent("find", { tabId: 1, text: "Pay" })'],
+    ["a selector click", 'dispatchToContent("click", { tabId: 1, selector: "#go" })'],
+    ["a selector scroll", 'dispatchToContent("scroll", { tabId: 1, selector: "#panel" })'],
+    ["a selector hover", 'dispatchToContent("hover", { tabId: 1, selector: "#menu" })'],
+    ["a selector drag", 'dispatchToContent("drag", { tabId: 1, selector: "#a" })'],
+    ["wait", 'dispatchToContent("wait", { tabId: 1, selector: ".late" })'],
+]) {
+    test(`${name} on an ungranted tab is refused before the frames are listed`, async () => {
+        // Listing frames is a call into the page like any other: on an origin
+        // Safari has not decided it parks on the permission dialog, and the
+        // caller rode the bridge timeout instead of hearing permission_required.
+        const { call, listings, sent } = loadBackground({ refuseAccess: true, respond: () => ok(null) });
+
+        const err = await call(expression).then(() => null, (caught) => caught);
+
+        assert.equal(err.code, "permission_required");
+        assert.deepEqual(listings, [], "the frames were listed before access was checked");
+        assert.equal(sent.length, 0);
+    });
+}
 
 test("a uid routes to the frame that minted it", async () => {
     const { call, sent } = loadBackground({ respond: () => ok("Clicked <input>") });

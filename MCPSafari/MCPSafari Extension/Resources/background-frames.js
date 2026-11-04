@@ -21,6 +21,11 @@ function frameOfUid(value) {
 // being silent: a caller that builds a whole-page answer has to say it only
 // saw the top frame, the same way it says so for a frame that will not answer.
 async function listFrames(tabId) {
+    // Listing frames is a call into the page like any other: on an origin Safari
+    // has not decided it parks on the permission dialog, so the caller waited out
+    // the bridge timeout instead of hearing `permission_required`. Outside the
+    // try below, because a refusal must not read as "frames unavailable".
+    await ensureTabAccess(tabId);
     try {
         const frames = await browser.webNavigation.getAllFrames({ tabId });
         if (frames && frames.length > 0) return { frames, enumerated: true };
