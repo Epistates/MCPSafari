@@ -101,6 +101,39 @@ test("a stopped trace reports its URLs without their credentials", async () => {
     assert.doesNotMatch(JSON.stringify(trace), /LEAK/);
 });
 
+test("a DOM mutation of a link reports the old and new address without their credentials", async () => {
+    // The mutation observer records the attribute's before and after, which for
+    // an href, src or form action is a URL like any other in the trace.
+    const request = loadBackground(() => ({
+        id: "t1",
+        events: [
+            {
+                type: "dom.mutation", mutationType: "attributes", selector: "a#next", attribute: "href",
+                oldValue: "https://app.example/old?access_token=LEAK1&p=1",
+                value: "/cb?reset_token=LEAK2#frag",
+            },
+            { type: "dom.mutation", mutationType: "attributes", selector: "form", attribute: "action", value: "https://user:LEAK3@pay.example/submit" },
+            { type: "dom.mutation", mutationType: "attributes", selector: "img", attribute: "SRC", value: "https://cdn.example/a.png?X-Amz-Signature=LEAK4" },
+            // Not a URL attribute by name, but the value is one.
+            { type: "dom.mutation", mutationType: "attributes", selector: "div", attribute: "data-next", value: "https://app.example/n?token=LEAK5" },
+            // Neither, and so left exactly as it was.
+            { type: "dom.mutation", mutationType: "attributes", selector: "div", attribute: "class", oldValue: "a", value: "a b?token=kept" },
+            { type: "dom.mutation", mutationType: "childList", selector: "ul", added: 1, removed: 0 },
+        ],
+    }));
+
+    const { events } = await request("stop_trace", { id: "t1" });
+
+    assert.equal(events[0].oldValue, "https://app.example/old?access_token=[redacted]&p=1");
+    assert.equal(events[0].value, "/cb?reset_token=[redacted]#frag");
+    assert.equal(events[1].value, "https://[redacted]@pay.example/submit");
+    assert.equal(events[2].value, "https://cdn.example/a.png?X-Amz-Signature=[redacted]");
+    assert.equal(events[3].value, "https://app.example/n?token=[redacted]");
+    assert.equal(events[4].value, "a b?token=kept");
+    assert.equal(events[5].added, 1);
+    assert.doesNotMatch(JSON.stringify(events), /LEAK/);
+});
+
 test("snapshot link hrefs are redacted at any depth, frames included", async () => {
     const tree = () => ({
         uid: "f0e1",

@@ -152,6 +152,28 @@ function redactFields(entry, fields) {
     }
 }
 
+// An attribute mutation reports the attribute's old and new value, and an href
+// or a form action carries a credential as readily as any URL in the trace. The
+// attributes below hold a URL by definition; any other that happens to hold an
+// absolute one (`data-next`, a `content` meta tag) is caught by its shape. The
+// values are already cut to a bounded length and a fragment of a URL redacts
+// the same way.
+const URL_BEARING_ATTRIBUTES = new Set([
+    "href", "src", "action", "formaction", "poster", "data", "cite", "ping", "background", "xlink:href",
+]);
+const ABSOLUTE_URL = /^\s*(?:[a-z][a-z0-9+.-]*:)?\/\//i;
+
+function redactMutationValues(event) {
+    if (!event || typeof event !== "object" || event.type !== "dom.mutation") return;
+    const urlAttribute = URL_BEARING_ATTRIBUTES.has(String(event.attribute).toLowerCase());
+    for (const field of ["value", "oldValue"]) {
+        const value = event[field];
+        if (typeof value === "string" && (urlAttribute || ABSOLUTE_URL.test(value))) {
+            event[field] = redactUrlSecrets(value);
+        }
+    }
+}
+
 function redactSnapshotLinks(node) {
     const pending = [node];
     while (pending.length > 0) {
@@ -169,6 +191,7 @@ const RESULT_REDACTORS = new Map([
         redactFields(trace, ["startUrl", "endUrl"]);
         // `url` on network and history events, `from` and `to` on URL changes.
         redactEachUrl(trace && trace.events, ["url", "from", "to"]);
+        if (trace && Array.isArray(trace.events)) trace.events.forEach(redactMutationValues);
     }],
     ["snapshot", redactSnapshotLinks],
     ["read_page", redactSnapshotLinks],
