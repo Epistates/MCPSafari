@@ -352,15 +352,28 @@ extension SafariMCPServer {
     /// bridge token lives in. Safari would render the token as text, and
     /// `read_page` would hand it to the caller, or to whatever a page script
     /// could then do with a valid token.
+    ///
+    /// WebKit reads a backslash in a `file:` URL as a slash, which Foundation
+    /// does not, so a path that is outside the token directory to the check could
+    /// be inside it to Safari. A backslash, literal or as `%5C`, is refused in
+    /// the path of a `file:` URL rather than interpreted either way.
     nonisolated static func validatedNavigationURL(
         _ url: String,
         protectedRoots: [String] = ProtectedPaths.defaultRoots
     ) throws -> String {
         let normalized = browserNormalizedURL(url)
         guard let scheme = urlScheme(of: normalized),
-              allowedURLSchemes.contains(scheme.lowercased()),
-              let parsed = URL(string: normalized)
+              allowedURLSchemes.contains(scheme.lowercased())
         else {
+            throw ToolInputError("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")
+        }
+        if scheme.lowercased() == "file" {
+            let path = normalized.prefix { $0 != "?" && $0 != "#" }
+            guard !path.contains("\\"), !path.uppercased().contains("%5C") else {
+                throw ToolInputError("Refusing to open a file: URL with a backslash in its path. Safari reads a backslash there as a slash, so the path cannot be checked against the directories MCPSafari protects; write it with slashes.")
+            }
+        }
+        guard let parsed = URL(string: normalized) else {
             throw ToolInputError("Invalid URL or disallowed scheme. Only http, https, about, and file are allowed.")
         }
         if scheme.lowercased() == "file", ProtectedPaths.isProtected(parsed.path, roots: protectedRoots) {

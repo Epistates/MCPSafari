@@ -270,7 +270,7 @@ This uses React-compatible value setting (`nativeInputValueSetter`) so it works 
 { "selector": "#dropzone", "filePaths": ["/tmp/a.pdf", "/tmp/b.pdf"] }
 ```
 
-The server reads only the paths you name, infers each MIME type from the file extension (override with `mimeType`), and sends the bytes to the page. `upload_file` accepts the input itself, its `<label>`, or a wrapper containing it, then fires `input` and `change`; `drop_file` dispatches `dragenter`, `dragover`, and `drop` with a `DataTransfer` holding the files. Up to 10 files and 10 MB total per call. Files inside MCPSafari's own token directories are refused, however the path is spelled or linked, because the token is what authenticates the bridge; `navigate` and `tabs_create` refuse `file:` URLs into them for the same reason.
+The server reads only the paths you name, infers each MIME type from the file extension (override with `mimeType`), and sends the bytes to the page. `upload_file` accepts the input itself, its `<label>`, or a wrapper containing it, then fires `input` and `change`; `drop_file` dispatches `dragenter`, `dragover`, and `drop` with a `DataTransfer` holding the files. Up to 10 files and 10 MB total per call. Files inside MCPSafari's own token directories are refused, however the path is spelled or linked, including through a hard link, because the token is what authenticates the bridge; `navigate` and `tabs_create` refuse `file:` URLs into them for the same reason, and any `file:` URL with a backslash in its path, since Safari reads that as a slash.
 
 ### Smart text matching
 
