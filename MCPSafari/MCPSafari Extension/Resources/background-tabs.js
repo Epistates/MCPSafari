@@ -24,18 +24,32 @@
 // alone it is usually a SKU or coupon.
 const SECRET_NAME_WORDS = new Set([
     "token", "secret", "key", "sig", "signature",
-    "password", "passwd", "pwd", "passcode",
+    "password", "passwd", "pwd", "passcode", "pass",
     "auth", "authorization", "session", "sid", "jwt",
     "otp", "ticket", "verifier", "credential", "credentials",
+    "assertion", "bearer",
 ]);
 // Joined words ending in one of these are caught too, for names run together
 // (`accesstoken`, `clientsecret`). Short words are left out on purpose: `key`
 // would take `monkey`.
-const SECRET_NAME_SUFFIXES = ["token", "secret", "password", "passwd", "signature", "apikey", "sessionid", "credential", "credentials"];
+const SECRET_NAME_SUFFIXES = [
+    "token", "secret", "password", "passwd", "signature", "apikey", "sessionid", "sessid", "credential", "credentials",
+    "samlresponse",
+];
 const DESCRIPTIVE_LAST_WORDS = new Set([
     "type", "hint", "length", "expires", "expiry", "ttl", "algorithm", "alg", "format", "endpoint", "url", "uri", "count", "name", "method",
 ]);
-const USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/i;
+// The authority's userinfo, after a scheme or none (`//user:pw@host`). A browser
+// reads a backslash as a slash in the special schemes, so `https:\\user:pw@host`
+// is the same address.
+const USERINFO = /^((?:[a-z][a-z0-9+.-]*:)?[\\/]{2})[^\\/?#]*@/i;
+
+// A parameter is a name and a value, set off by `?`, `&`, `#` or `;`. The same
+// four characters percent-encoded (`%3F`, `%26`, `%23`, `%3B`, and `%3D` for the
+// equals sign) are read as well, because a URL carried inside another's value
+// is encoded, and its token is no less a token for that. Twice-encoded text is
+// not decoded.
+const PARAMETER_NAME_CHARS = "(?:[^=&#?;%]|%(?!3[DdFfBb]|26|23))*";
 
 function urlNameWords(name) {
     let decoded = name;
@@ -61,20 +75,31 @@ function isSecretUrlName(words) {
 function redactUrlSecrets(url) {
     if (!url) return "";
     const noUserinfo = String(url).replace(USERINFO, "$1[redacted]@");
-    // Only the query and fragment carry parameters; `&` is legal in a path.
+    // The query and fragment carry parameters, and `&` is legal in a path. A
+    // path carries only `;name=value` parameters, handled on their own.
     const start = noUserinfo.search(/[?#]/);
-    if (start === -1) return noUserinfo;
-    const tail = noUserinfo.slice(start);
+    if (start === -1) return redactPathParameters(noUserinfo);
+    return redactPathParameters(noUserinfo.slice(0, start)) + redactQueryParameters(noUserinfo.slice(start));
+}
 
-    // A name follows `?`, `&` or `#`, so a hash-routed callback
+// `/app;jsessionid=ABC/page`: a servlet container's session id travels as a
+// parameter on a path segment, where no query parser looks.
+function redactPathParameters(path) {
+    return path.replace(/;([^=;/\\]*)=([^;/\\]*)/g, (whole, name) =>
+        isSecretUrlName(urlNameWords(name)) ? `;${name}=[redacted]` : whole
+    );
+}
+
+function redactQueryParameters(tail) {
+    // A name follows `?`, `&`, `#` or `;`, so a hash-routed callback
     // (`#/cb?code=x`) is read the same as a plain query.
-    const parameter = /([?&#])([^=&#?]*)=/g;
+    const parameter = new RegExp(`([?&#;]|%3[FfBb]|%26|%23)(${PARAMETER_NAME_CHARS})(?:=|%3[Dd])`, "g");
     const hasState = [...tail.matchAll(parameter)].some((match) => {
         const words = urlNameWords(match[2]);
         return words.length === 1 && words[0] === "state";
     });
     // `state` with no value (`&state`) is still the OAuth state.
-    const bareState = /[?&#]state(?=[&#]|$)/i.test(tail);
+    const bareState = /(?:[?&#;]|%3[FfBb]|%26|%23)state(?=[&#;]|%26|%23|%3[Bb]|$)/i.test(tail);
 
     let redacted = "";
     let copied = 0;
@@ -87,13 +112,13 @@ function redactUrlSecrets(url) {
         // than from the end of the name, keeps a `?token=` nested inside an
         // earlier parameter's value (`?next=/cb?token=x`) in view.
         const valueStart = parameter.lastIndex;
-        const rest = tail.slice(valueStart).search(/[&#]/);
+        const rest = tail.slice(valueStart).search(/[&#;]|%26|%23|%3[Bb]/);
         const valueEnd = rest === -1 ? tail.length : valueStart + rest;
         redacted += `${tail.slice(copied, valueStart)}[redacted]`;
         copied = valueEnd;
         parameter.lastIndex = valueEnd;
     }
-    return noUserinfo.slice(0, start) + redacted + tail.slice(copied);
+    return redacted + tail.slice(copied);
 }
 
 // ─── What a tab may say about itself ─────────────────────────────────
@@ -122,6 +147,14 @@ function tabAccessFields(url) {
     return siteIsGranted(url)
         ? { access: "granted" }
         : { access: "not_granted", accessHint: NOT_GRANTED_HINT };
+}
+
+// A URL as far as the tools may say it, wherever one is reported that is not a
+// tab listing: a granted site's address with its secrets redacted, and for any
+// other only its origin, which is as much as a listing says about it. Null when
+// there is no origin to name (`file:`, `data:`).
+function describeUrl(url) {
+    return siteIsGranted(url) ? redactUrlSecrets(url) : originOfUrl(url);
 }
 
 async function handleTabsQuery() {
@@ -159,21 +192,25 @@ async function handleTabsCreate(params) {
     const tab = await browser.tabs.create(opts);
     const url = tab.url || params.url;
     const access = tabAccessFields(url);
-    // The URL is the one the caller asked for. The title is the page's own.
+    // An address the caller asked for is theirs to be told back. One the browser
+    // chose, the homepage of a tab opened with none, is described like any other
+    // tab's. The title is the page's own either way.
+    const reported = params.url ? redactUrlSecrets(params.url) : describeUrl(tab.url);
     return {
         id: tab.id,
-        url: redactUrlSecrets(url),
+        ...(reported ? { url: reported } : {}),
         ...(access.access === "granted" ? { title: tab.title || "" } : {}),
         ...access,
     };
 }
 
-async function handleTabsClose(params) {
+async function handleTabsClose(params, serverPort) {
     await browser.tabs.remove(params.tabId);
-    // Clear selected tab if it was closed
-    if (selectedTabId === params.tabId) {
-        selectedTabId = null;
-        persistSelectedTab(null);
+    // Clear this server's pin if it was the tab closed. Another server's pin on
+    // the same tab is left to say so itself the next time it is used.
+    if (pinnedTabs.get(serverPort)?.tabId === params.tabId) {
+        pinnedTabs.delete(serverPort);
+        persistPinnedTabs();
     }
     return `Closed tab ${params.tabId}`;
 }
@@ -188,7 +225,7 @@ async function handleTabsClose(params) {
 // up under a deadline for its window and to confirm it exists; a lookup that is
 // parked on a dialog for some other tab does not stop the pin, which is only an
 // id, but then there is no window to bring forward and no URL to describe.
-async function handleSelectTab(params) {
+async function handleSelectTab(params, serverPort) {
     const tabId = params.tabId;
     let tab = null;
     try {
@@ -209,8 +246,8 @@ async function handleSelectTab(params) {
         }
     }
 
-    selectedTabId = tabId;
-    persistSelectedTab(tabId);
+    pinnedTabs.set(serverPort, { tabId, run: await serverRunFingerprint(serverPort) });
+    persistPinnedTabs();
 
     const access = tabAccessFields(tab && tab.url);
     return {
@@ -242,7 +279,7 @@ async function assertTabShowing(tabId, windowId, purpose) {
 }
 
 async function focusTabForNativeInput(tabIdParam) {
-    const tabId = tabIdParam || (await getActiveTabId());
+    const tabId = tabIdParam;
     // Native input needs the page anyway, and this ran before any gating, so a
     // blocked tab spent the whole bridge timeout here and then blamed the bridge.
     await ensureTabAccess(tabId);
@@ -305,12 +342,10 @@ async function handleNativePointer(params) {
     });
 }
 
-function persistSelectedTab(tabId) {
-    try {
-        if (browser.storage && browser.storage.session) {
-            browser.storage.session.set({ selectedTabId: tabId });
-        }
-    } catch (_) { /* storage may not be available */ }
+// Object keys are strings, so ports come back as text and are turned into
+// numbers again on restore.
+function persistPinnedTabs() {
+    writeStorage("session", { pinnedTabs: Object.fromEntries(pinnedTabs) });
 }
 
 // True only while a read that outran its deadline is still in flight. Writing
@@ -319,11 +354,7 @@ let grantedOriginsReadPending = false;
 
 function persistGrantedOrigins() {
     if (grantedOriginsReadPending) return;
-    try {
-        if (browser.storage && browser.storage.local) {
-            browser.storage.local.set({ grantedOrigins: [...grantedOrigins] });
-        }
-    } catch (_) { /* storage may not be available */ }
+    writeStorage("local", { grantedOrigins: [...grantedOrigins] });
 }
 
 // Runs before the bridge connects, so it is ahead of the first `tabs_query`
@@ -332,18 +363,24 @@ function persistGrantedOrigins() {
 // as not granted, and the read is merged in whenever it does arrive. The stored
 // ones go first in the merge: they are older than anything learned meanwhile.
 async function loadGrantedOrigins() {
+    const refused = new Set();
+    refusalsDuringLoads.add(refused);
     const read = (async () => {
         try {
             if (!browser.storage || !browser.storage.local) return;
             const data = await browser.storage.local.get("grantedOrigins");
             if (!Array.isArray(data.grantedOrigins)) return;
-            const merged = new Set([
-                ...data.grantedOrigins.filter((origin) => typeof origin === "string"),
-                ...grantedOrigins,
-            ]);
+            // What was refused while this was out stays refused, and the stored
+            // copy is rewritten without it so a restart does not bring it back.
+            const stored = data.grantedOrigins.filter((origin) => typeof origin === "string");
+            const live = stored.filter((origin) => !refused.has(origin));
+            const merged = new Set([...live, ...grantedOrigins]);
             grantedOrigins.clear();
             for (const origin of [...merged].slice(-MAX_GRANTED_ORIGINS)) grantedOrigins.add(origin);
-        } catch (_) { /* ignore */ }
+            if (live.length < stored.length) persistGrantedOrigins();
+        } catch (_) { /* ignore */ } finally {
+            refusalsDuringLoads.delete(refused);
+        }
     })();
     try {
         await withDeadline(read, PERMISSION_PROBE_TIMEOUT_MS);
@@ -371,18 +408,37 @@ async function restoreSessionState() {
         }
     } catch (_) { /* ignore */ }
 
-    // Restore selected tab (session-only — lost on Safari restart)
+    // Restore pinned tabs (session-only — lost on Safari restart). A pin whose
+    // tab has gone is dropped, and the stored copy is rewritten without it. Which
+    // server run a pin belongs to is not checked here: this runs beside the read
+    // of the tokens, so the port's token may not be in yet. It is checked when a
+    // call arrives (`currentPin`), by which time a connection exists.
     try {
         if (browser.storage && browser.storage.session) {
-            const data = await browser.storage.session.get("selectedTabId");
-            if (data.selectedTabId != null) {
+            const data = await browser.storage.session.get("pinnedTabs");
+            const stored = data.pinnedTabs && typeof data.pinnedTabs === "object" ? data.pinnedTabs : {};
+            let dropped = false;
+            for (const [key, pin] of Object.entries(stored)) {
+                const port = Number(key);
                 try {
-                    await browser.tabs.get(data.selectedTabId);
-                    selectedTabId = data.selectedTabId;
+                    const tabId = pin && pin.tabId;
+                    const run = pin && pin.run;
+                    if (!Number.isInteger(port) || !Number.isInteger(tabId)) throw new Error("not a pin");
+                    if (run !== null && typeof run !== "string") throw new Error("not a pin");
+                    // Startup waits on this before it connects to any server, and
+                    // a tab parked on Safari's dialog never answers. A tab that is
+                    // parked is a tab that exists, so the pin is kept.
+                    try {
+                        await withDeadline(browser.tabs.get(tabId), PERMISSION_PROBE_TIMEOUT_MS);
+                    } catch (err) {
+                        if (!(err instanceof DeadlineExceeded)) throw err;
+                    }
+                    pinnedTabs.set(port, { tabId, run });
                 } catch {
-                    await browser.storage.session.remove("selectedTabId");
+                    dropped = true;
                 }
             }
+            if (dropped) persistPinnedTabs();
         }
     } catch (_) { /* ignore */ }
 

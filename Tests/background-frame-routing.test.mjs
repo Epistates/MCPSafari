@@ -11,8 +11,9 @@ const EMBED = { frameId: 3, parentFrameId: 0, url: "https://embed.example/form" 
 
 // Every message the router sends is recorded with the frame it was aimed at,
 // so the assertions can check routing and not just the returned value.
-function loadBackground({ frames = [TOP, EMBED], respond }) {
+function loadBackground({ frames = [TOP, EMBED], respond, refuseAccess = false }) {
     const sent = [];
+    const listings = [];
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         runtime: {
@@ -20,7 +21,15 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
             onMessage: { addListener() {} },
             sendNativeMessage: async () => ({ tokens: {} }),
         },
-        scripting: { executeScript: async () => [] },
+        scripting: {
+            executeScript: async (options) => {
+                // An ungranted origin refuses the access probe.
+                if (refuseAccess && options.func && options.func.name === "probeTabAccess") {
+                    throw new Error("This extension does not have access to this tab");
+                }
+                return [];
+            },
+        },
         storage: {
             local: { get: async () => ({}), set() {} },
             session: { get: async () => ({}), set() {}, remove: async () => {} },
@@ -34,6 +43,9 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
             update: async () => {},
             sendMessage: async (tabId, message, options) => {
                 const frameId = options ? options.frameId : 0;
+                // Asked before an action that must not run twice, and answered
+                // by any page that has the content script.
+                if (message.action === "ping") return ok({ ready: true });
                 sent.push({ tabId, frameId, action: message.action, params: message.params });
                 return respond(frameId, message);
             },
@@ -41,7 +53,8 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
             onRemoved: { addListener() {} },
         },
         webNavigation: {
-            getAllFrames: async () => {
+            getAllFrames: async ({ tabId }) => {
+                listings.push(tabId);
                 if (frames instanceof Error) throw frames;
                 return frames;
             },
@@ -69,6 +82,7 @@ function loadBackground({ frames = [TOP, EMBED], respond }) {
 
     return {
         sent,
+        listings,
         call: (expression) => vm.runInContext(expression, context),
     };
 }
@@ -91,6 +105,29 @@ const embedTree = () => ({
     tag: "body",
     children: [{ uid: "f3e2", tag: "input", role: "textbox" }],
 });
+
+for (const [name, expression] of [
+    ["snapshot", 'dispatchToContent("snapshot", { tabId: 1 })'],
+    ["find", 'dispatchToContent("find", { tabId: 1, text: "Pay" })'],
+    ["a selector click", 'dispatchToContent("click", { tabId: 1, selector: "#go" })'],
+    ["a selector scroll", 'dispatchToContent("scroll", { tabId: 1, selector: "#panel" })'],
+    ["a selector hover", 'dispatchToContent("hover", { tabId: 1, selector: "#menu" })'],
+    ["a selector drag", 'dispatchToContent("drag", { tabId: 1, selector: "#a" })'],
+    ["wait", 'dispatchToContent("wait", { tabId: 1, selector: ".late" })'],
+]) {
+    test(`${name} on an ungranted tab is refused before the frames are listed`, async () => {
+        // Listing frames is a call into the page like any other: on an origin
+        // Safari has not decided it parks on the permission dialog, and the
+        // caller rode the bridge timeout instead of hearing permission_required.
+        const { call, listings, sent } = loadBackground({ refuseAccess: true, respond: () => ok(null) });
+
+        const err = await call(expression).then(() => null, (caught) => caught);
+
+        assert.equal(err.code, "permission_required");
+        assert.deepEqual(listings, [], "the frames were listed before access was checked");
+        assert.equal(sent.length, 0);
+    });
+}
 
 test("a uid routes to the frame that minted it", async () => {
     const { call, sent } = loadBackground({ respond: () => ok("Clicked <input>") });
@@ -252,7 +289,7 @@ test("a selector target searches frames until one resolves it", async () => {
     assert.deepEqual(sent.map((s) => s.frameId), [0, 3]);
 });
 
-test("a subframe that refuses the content script does not fail the whole read", async () => {
+test("a subframe that refuses the content script does not fail the whole read, and is named", async () => {
     const { call } = loadBackground({
         respond: (frameId) => {
             if (frameId === 0) return ok([{ uid: "f0e6", tag: "h1" }]);
@@ -262,7 +299,37 @@ test("a subframe that refuses the content script does not fail the whole read", 
 
     const results = await call('dispatchToContent("find", { tabId: 1, text: "a" })');
 
+    // A list that is silently short is the failure the snapshot's
+    // unreachableFrames exists for, so find says what it could not search too.
+    assert.deepEqual([...results.matches].map((r) => r.uid), ["f0e6"]);
+    assert.deepEqual(
+        [...results.unreachableFrames].map((f) => ({ ...f })),
+        [{ frameId: 3, origin: "https://embed.example" }]
+    );
+});
+
+test("a find that searched every frame is still a plain list", async () => {
+    const { call } = loadBackground({ respond: (frameId) => ok(frameId === 0 ? [{ uid: "f0e6" }] : []) });
+
+    const results = await call('dispatchToContent("find", { tabId: 1, text: "a" })');
+
+    assert.equal(Array.isArray(results), true);
     assert.deepEqual([...results].map((r) => r.uid), ["f0e6"]);
+});
+
+test("a find on a page whose frames cannot be listed says it searched the top frame only", async () => {
+    const { call } = loadBackground({
+        frames: new Error("webNavigation unavailable"),
+        respond: () => ok([{ uid: "f0e6", tag: "h1" }]),
+    });
+
+    const results = await call('dispatchToContent("find", { tabId: 1, text: "a" })');
+
+    assert.deepEqual([...results.matches].map((r) => r.uid), ["f0e6"]);
+    assert.deepEqual(
+        [...results.unreachableFrames].map((f) => ({ ...f })),
+        [{ frameId: null, origin: null, reason: "frame_enumeration_failed" }]
+    );
 });
 
 test("the content script is told which frame it is answering for", async () => {

@@ -24,6 +24,7 @@ function loadBackground() {
             get: async (id) => ({ id, active: true, windowId: 1, url: "https://ok.example/" }),
             query: async () => [{ id: 1, active: true, windowId: 1 }],
             sendMessage: async (tabId, message) => {
+                if (message.action === "ping") return { data: { ready: true }, error: null };
                 sent.push({ tabId, message });
                 return { data: "ok", error: null };
             },

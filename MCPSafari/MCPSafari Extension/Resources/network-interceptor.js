@@ -109,6 +109,9 @@
         if (this.__mcpMeta) {
             this.__mcpMeta.startTime = Date.now();
 
+            // Once per send. An XHR the page reuses sends again on the same
+            // object, and a listener left behind by the first send recorded
+            // every later one a second time, then a third.
             this.addEventListener("loadend", () => {
                 if (requests.length >= MAX_REQUESTS) requests.shift();
                 const request = {
@@ -125,7 +128,7 @@
                 };
                 requests.push(boundRecord(request));
                 recordTraceEvent("xhr", request);
-            });
+            }, { once: true });
         }
         return XHRSend.call(this, body);
     };
@@ -195,25 +198,42 @@
 
     // ─── API for content script ──────────────────────────────────────
 
+    // Numbers handed out on request, so the extension can name entries it was
+    // shown and later clear exactly those. Assigned when an entry is first
+    // asked about and never reused.
+    const recordIds = new WeakMap();
+    let nextRecordId = 1;
+    function idOf(record) {
+        if (!recordIds.has(record)) recordIds.set(record, nextRecordId++);
+        return recordIds.get(record);
+    }
+
     window.__mcpGetNetworkRequests = (params = {}) => {
+        // A URL filter is not run here. This script holds every URL as it was
+        // requested, secrets included, so a filter run here would tell whoever
+        // chose the pattern which entries match the real URL. The extension
+        // filters the URLs it will report, and it does not send the pattern.
+        // Refusing one outright means nothing can lean on it silently.
+        if (params.urlPattern) {
+            throw new Error("urlPattern is applied by the extension, not by the page capture.");
+        }
         if (resourceObserver) recordResources(resourceObserver.takeRecords());
+
+        if (Array.isArray(params.clearIds)) {
+            const gone = new Set(params.clearIds);
+            for (const list of [requests, resources]) {
+                for (let i = list.length - 1; i >= 0; i--) {
+                    if (recordIds.has(list[i]) && gone.has(recordIds.get(list[i]))) list.splice(i, 1);
+                }
+            }
+            return [];
+        }
+
         const selected = params.type === "resource" ? resources : requests;
         let filtered = [...selected];
 
         if (params.type && params.type !== "all") {
             filtered = filtered.filter((r) => r.type === params.type);
-        }
-
-        if (params.urlPattern) {
-            // Bounded regex subset: no repetitions, groups, or backreferences.
-            // Without these constructs, matching work is bounded by pattern × input.
-            const pattern = String(params.urlPattern);
-            const unescaped = pattern.replace(/\\./g, "");
-            if (pattern.length > 200 || /[()*+?{}]/.test(unescaped) || /\\[1-9k]/.test(pattern)) {
-                throw new Error("Unsupported filter: use at most 200 characters, with literals, dots, anchors, character classes, or alternation; no repetition, groups, or backreferences.");
-            }
-            const regex = new RegExp(pattern);
-            filtered = filtered.filter((entry) => regex.test(entry.url));
         }
 
         if (params.status != null) {
@@ -235,7 +255,7 @@
             }
         }
 
-        return filtered;
+        return params.includeIds ? filtered.map((record) => ({ ...record, id: idOf(record) })) : filtered;
     };
 
     window.addEventListener("message", (event) => {

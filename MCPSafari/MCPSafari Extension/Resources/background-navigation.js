@@ -5,7 +5,7 @@
 // ─── Navigation Handler ─────────────────────────────────────────────
 
 async function handleNavigate(params) {
-    const tabId = params.tabId || (await getActiveTabId());
+    const tabId = params.tabId;
     const action = params.action || "goto";
     // Best effort, and deliberately not gated on access to the page being left.
     // This only tells a real navigation from a same-document one, and
@@ -68,14 +68,15 @@ async function handleNavigate(params) {
     return `${message} ${describeLanding(tab)}`;
 }
 
-// Where a tab ended up, as the tools say it: the URL with its secrets redacted,
-// and the title unless the site has not been granted, because the page's own
-// title is not for a site that has not been granted.
+// Where a tab ended up, as the tools say it. A site that has been granted gets
+// its URL, with the secrets redacted, and its title. Any other gets its origin
+// and neither, the line a tab listing draws: `reload` and `goto` run on tabs the
+// user never granted, and a redirect or a back/forward can land somewhere nobody
+// named, so the landing page's own address and title are not for the caller.
 function describeLanding(tab) {
-    const title = siteIsGranted(tab.url)
-        ? `(${tab.title || ""})`
-        : "(title withheld: MCPSafari has not been granted access to this site)";
-    return `${redactUrlSecrets(tab.url)} ${title}`;
+    if (siteIsGranted(tab.url)) return `${redactUrlSecrets(tab.url)} (${tab.title || ""})`;
+    const origin = originOfUrl(tab.url);
+    return `${origin ? `${origin} ` : ""}(URL and title withheld: MCPSafari has not been granted access to this site)`;
 }
 
 // How long a page load is given to finish, for `navigate` and for the load an
@@ -119,25 +120,58 @@ async function dispatchAndSettle(action, params) {
     let actionReturned;
     const returned = new Promise((resolve) => { actionReturned = resolve; });
     const settled = waitForTabLoad(tabId, beforeTab, LOAD_TIMEOUT_MS, NAVIGATION_START_WINDOW_MS, returned);
+    // Separate from the settle above because it also has to see a load that
+    // lands on the address the tab was already at, which the settle reports
+    // only as a tab.
+    const loadWatch = watchForLoadStart(tabId);
 
-    let result;
     try {
-        result = await dispatchToContent(action, params);
-    } catch (err) {
-        // The action's own failure is the answer. The watcher still has to be
-        // let go, and nothing is left to read what it settles with.
-        settled.catch(() => {});
-        throw err;
-    } finally {
-        actionReturned();
-    }
+        let result;
+        let replyLost = null;
+        try {
+            result = await dispatchToContent(action, params);
+        } catch (err) {
+            // The action's own failure is the answer. The watcher still has to
+            // be let go, and nothing is left to read what it settles with.
+            if (err.code !== REPLY_LOST_CODE) {
+                settled.catch(() => {});
+                throw err;
+            }
+            replyLost = err;
+        } finally {
+            actionReturned();
+        }
 
-    // The click has happened by now, so nothing about waiting for its load may
-    // turn it into a failure: a tab that closed itself, or a final read that
-    // never returned, only costs the report of where the page went.
-    const afterTab = await withDeadline(settled, LOAD_TIMEOUT_MS + PERMISSION_PROBE_TIMEOUT_MS)
-        .catch(() => null);
-    return withNavigationNote(result, beforeTab, afterTab);
+        // The click has happened by now, so nothing about waiting for its load
+        // may turn it into a failure: a tab that closed itself, or a final read
+        // that never returned, only costs the report of where the page went.
+        const afterTab = await withDeadline(settled, LOAD_TIMEOUT_MS + PERMISSION_PROBE_TIMEOUT_MS)
+            .catch(() => null);
+        if (replyLost) return resolveLostReply(replyLost, action, beforeTab, afterTab, loadWatch.sawLoad());
+        return withNavigationNote(result, beforeTab, afterTab);
+    } finally {
+        loadWatch.stop();
+    }
+}
+
+// The page went away without answering. That is what an interaction that
+// navigates looks like from here, so the tab decides which it was. If the tab
+// started a load the interaction did its job and the page it ran in was
+// replaced, which is the ordinary navigating click: report where it landed, with
+// no result of its own to add because the page that held it is gone. If nothing
+// loaded, the document vanished for some other reason, and what the interaction
+// did is unknown. That is the error, and it is not sent again.
+function resolveLostReply(replyLost, action, beforeTab, afterTab, sawLoad) {
+    const moved = sawLoad || Boolean(beforeTab && afterTab && afterTab.url && afterTab.url !== beforeTab.url);
+    if (!moved) throw replyLost;
+
+    const dispatched = `The ${action} was dispatched and the page navigated before it could report a result.`;
+    return afterTab && afterTab.url ? `${dispatched}\n${landingNote(afterTab)}` : dispatched;
+}
+
+function landingNote(tab) {
+    const unfinished = tab.status === "loading" ? "; it was still loading" : "";
+    return `Page navigated to ${describeLanding(tab)}${unfinished}`;
 }
 
 // A string result gets a trailing line, which is how the tools already add
@@ -145,12 +179,9 @@ async function dispatchAndSettle(action, params) {
 function withNavigationNote(result, beforeTab, afterTab) {
     if (!beforeTab || !afterTab || !afterTab.url || afterTab.url === beforeTab.url) return result;
 
-    if (typeof result === "string") {
-        const unfinished = afterTab.status === "loading" ? "; it was still loading" : "";
-        return `${result}\nPage navigated to ${describeLanding(afterTab)}${unfinished}`;
-    }
+    if (typeof result === "string") return `${result}\n${landingNote(afterTab)}`;
     if (result && typeof result === "object" && !Array.isArray(result)) {
-        return { ...result, navigatedTo: redactUrlSecrets(afterTab.url) };
+        return { ...result, navigatedTo: describeUrl(afterTab.url) };
     }
     return result;
 }
@@ -190,28 +221,44 @@ async function waitAcrossNavigations(params, send) {
         if (outcome.error) {
             // A tool error is the content script's own answer, `wait_timeout`
             // included. What is left is the transport failing, and that only
-            // means the document went away if a load explains it.
-            if (typeof outcome.error.code === "string") throw outcome.error;
+            // means the document went away if a load explains it. A lost reply
+            // is the transport failing in just that way, and unlike a click a
+            // wait changes nothing, so asking again is safe.
+            if (typeof outcome.error.code === "string" && outcome.error.code !== REPLY_LOST_CODE) {
+                throw outcome.error;
+            }
             if (!watcher.sawLoad() && !(await tabIsLoading(tabId))) throw outcome.error;
         } else if ("value" in outcome) {
-            return outcome.value;
+            // A sleep resumed after a navigation was asked for the time left,
+            // and says so; the caller asked for all of it.
+            return params.seconds && current !== params ? sleptMessage(params.seconds) : outcome.value;
         }
 
         await waitForLoadComplete(tabId, deadline - Date.now());
         const remainingMs = deadline - Date.now();
-        if (remainingMs <= 0) throw waitInterruptedError(params);
+        // A sleep waits for nothing, so there is nothing for it to time out on:
+        // when the navigation uses up the time, the time has been waited.
+        if (remainingMs <= 0) {
+            if (params.seconds) return sleptMessage(params.seconds);
+            throw waitInterruptedError(params);
+        }
         current = params.seconds
             ? { ...params, seconds: remainingMs / 1000, timeout: remainingMs / 1000 }
             : { ...params, timeout: remainingMs / 1000 };
     }
 }
 
+// What the content script says when a sleep ends (`waitFor` in content-io.js).
+function sleptMessage(seconds) {
+    return `Waited ${seconds} seconds`;
+}
+
 // What the content script would have said for the same wait that ran out,
 // with the reason it ran out added, since the page it started on is gone.
+// Only a wait for a selector or text can run out: a sleep is never interrupted
+// into this.
 function waitInterruptedError(params) {
-    const target = params.selector
-        ? `selector: ${params.selector}`
-        : params.text ? `text: "${params.text}"` : `${params.seconds} seconds`;
+    const target = params.selector ? `selector: ${params.selector}` : `text: "${params.text}"`;
     const error = new Error(
         `Timeout waiting for ${target} (the page navigated while waiting and the time ran out on the new page)`
     );
@@ -284,6 +331,8 @@ async function waitForTabLoad(
     let loadStarted = false;
     let sameDocumentTimer = null;
     let noNavigationTimer = null;
+    // The tab as the last update described it, for when it cannot be read.
+    let lastSeen = beforeTab ? { ...beforeTab } : null;
 
     return new Promise((resolve, reject) => {
         let settled = false;
@@ -300,9 +349,18 @@ async function waitForTabLoad(
             settled = true;
             cleanup();
             try {
-                resolve(await browser.tabs.get(tabId));
+                // On an origin Safari has not decided, this read parks on the
+                // permission dialog like every other call that touches the tab,
+                // and the whole request then rode the bridge timeout. The load
+                // is over by now, so the updates already said what the tab
+                // became; a read that does not come back is answered from those.
+                resolve(await withDeadline(browser.tabs.get(tabId), PERMISSION_PROBE_TIMEOUT_MS));
             } catch (err) {
-                reject(err);
+                if (!(err instanceof DeadlineExceeded)) reject(err);
+                // Nothing was ever seen of this tab, so there is nothing to
+                // answer from: the dialog is the reason, as everywhere else.
+                else if (lastSeen) resolve(lastSeen);
+                else reject(permissionRequiredError(null, true));
             }
         };
 
@@ -313,6 +371,7 @@ async function waitForTabLoad(
 
         const onUpdated = (updatedTabId, changeInfo, tab) => {
             if (updatedTabId !== tabId) return;
+            if (tab) lastSeen = { ...tab };
 
             if (changeInfo.status === "loading") {
                 sawNavigation = true;

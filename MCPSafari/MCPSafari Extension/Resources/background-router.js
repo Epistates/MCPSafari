@@ -22,11 +22,15 @@
 // declaration hoists.
 
 // Served here in the background.
+//
+// A handler is given the port of the server that made the request as well, for
+// the two that keep per-server state: the tab `select_tab` pins is that
+// server's own.
 const BACKGROUND_HANDLERS = new Map([
     ["tabs_query", () => handleTabsQuery()],
     ["tabs_create", (params) => handleTabsCreate(params)],
-    ["tabs_close", (params) => handleTabsClose(params)],
-    ["select_tab", (params) => handleSelectTab(params)],
+    ["tabs_close", (params, serverPort) => handleTabsClose(params, serverPort)],
+    ["select_tab", (params, serverPort) => handleSelectTab(params, serverPort)],
     ["navigate", (params) => handleNavigate(params)],
     ["native_type_text", (params) => handleNativeTypeText(params)],
     ["native_press_key", (params) => handleNativePressKey(params)],
@@ -106,13 +110,14 @@ const LOAD_STARTING_ACTIONS = new Map([
     ["select_option", () => true],
 ]);
 
-async function routeAction(action, params) {
+async function routeAction(action, params, serverPort) {
     const handler = BACKGROUND_HANDLERS.get(action);
-    if (handler) return handler(params);
+    if (handler) return handler(params, serverPort);
 
     if (action === "wait") {
         return waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
     }
+    if (action === "get_network_requests") return readNetworkRequests(params.tabId, params);
     if (CONTENT_ACTIONS.has(action)) {
         const startsLoad = LOAD_STARTING_ACTIONS.get(action);
         return startsLoad && startsLoad(params)
@@ -121,9 +126,79 @@ async function routeAction(action, params) {
     }
 
     const proxy = CONTENT_PROXIES.get(action);
-    if (proxy) return sendToContentScript(params.tabId, proxy(params));
+    if (proxy) {
+        const proxied = proxy(params);
+        return proxied.action === "get_network_requests"
+            ? readNetworkRequests(params.tabId, proxied.params)
+            : sendToContentScript(params.tabId, proxied);
+    }
 
     throw new Error(`Unknown action: ${action}`);
+}
+
+// ─── Network reads ──────────────────────────────────────────────────
+
+// `urlPattern` is applied here, to the URLs as they will be reported, and not in
+// the page. The page holds each URL as it was requested, credentials included,
+// so a filter that ran there answered "does the real URL match" with which
+// entries came back, and a caller could pull a redacted token out one character
+// at a time. Filtering the redacted URL leaves nothing to ask about.
+//
+// The page still does the work that needs no URL (the type and status filters),
+// and numbers what it hands back so that `clear` can remove exactly the entries
+// that survived the filter here.
+async function readNetworkRequests(tabId, params) {
+    if (!params.urlPattern) {
+        return sendToContentScript(tabId, { action: "get_network_requests", params });
+    }
+
+    const pattern = boundedUrlPattern(params.urlPattern);
+    const { urlPattern, maxResults, clear, ...pageFilters } = params;
+    const records = await sendToContentScript(tabId, {
+        action: "get_network_requests",
+        params: { ...pageFilters, includeIds: true },
+    });
+    if (!Array.isArray(records)) return records;
+
+    redactEachUrl(records, ["url"]);
+    let matched = records.filter((record) => record && typeof record.url === "string" && pattern.test(record.url));
+    if (maxResults > 0) matched = matched.slice(-maxResults);
+
+    const ids = matched.map((record) => record.id);
+    for (const record of matched) delete record.id;
+    if (clear && ids.length > 0) {
+        await sendToContentScript(tabId, {
+            action: "get_network_requests",
+            params: { clearIds: ids },
+        });
+    }
+    return matched;
+}
+
+// The same bounded subset the server holds a pattern to before it forwards one
+// (see `validatedFilterPattern`): no repetition, groups or backreferences, so
+// the work done is bounded by the pattern times the input. Checked again here
+// because this is where the pattern now runs.
+function boundedUrlPattern(source) {
+    const pattern = String(source);
+    const unescaped = pattern.replace(/\\./g, "");
+    if (pattern.length > 200 || /[()*+?{}]/.test(unescaped) || /\\[1-9k]/.test(pattern)) {
+        throw invalidFilterError(
+            "Unsupported filter: use at most 200 characters, with literals, dots, anchors, character classes, or alternation; no repetition, groups, or backreferences."
+        );
+    }
+    try {
+        return new RegExp(pattern);
+    } catch {
+        throw invalidFilterError(`Invalid regex urlPattern: ${pattern}`);
+    }
+}
+
+function invalidFilterError(message) {
+    const error = new Error(message);
+    error.code = "invalid_input";
+    error.recoveryAction = "fix_input";
+    return error;
 }
 
 // URLs inside page data are redacted here, on the way out, with the one
@@ -148,6 +223,28 @@ function redactFields(entry, fields) {
     }
 }
 
+// An attribute mutation reports the attribute's old and new value, and an href
+// or a form action carries a credential as readily as any URL in the trace. The
+// attributes below hold a URL by definition; any other that happens to hold an
+// absolute one (`data-next`, a `content` meta tag) is caught by its shape. The
+// values are already cut to a bounded length and a fragment of a URL redacts
+// the same way.
+const URL_BEARING_ATTRIBUTES = new Set([
+    "href", "src", "action", "formaction", "poster", "data", "cite", "ping", "background", "xlink:href",
+]);
+const ABSOLUTE_URL = /^\s*(?:[a-z][a-z0-9+.-]*:)?\/\//i;
+
+function redactMutationValues(event) {
+    if (!event || typeof event !== "object" || event.type !== "dom.mutation") return;
+    const urlAttribute = URL_BEARING_ATTRIBUTES.has(String(event.attribute).toLowerCase());
+    for (const field of ["value", "oldValue"]) {
+        const value = event[field];
+        if (typeof value === "string" && (urlAttribute || ABSOLUTE_URL.test(value))) {
+            event[field] = redactUrlSecrets(value);
+        }
+    }
+}
+
 function redactSnapshotLinks(node) {
     const pending = [node];
     while (pending.length > 0) {
@@ -165,6 +262,7 @@ const RESULT_REDACTORS = new Map([
         redactFields(trace, ["startUrl", "endUrl"]);
         // `url` on network and history events, `from` and `to` on URL changes.
         redactEachUrl(trace && trace.events, ["url", "from", "to"]);
+        if (trace && Array.isArray(trace.events)) trace.events.forEach(redactMutationValues);
     }],
     ["snapshot", redactSnapshotLinks],
     ["read_page", redactSnapshotLinks],
@@ -191,19 +289,21 @@ function actsOnATab(action) {
 // once per frame, once per follow-up. The user can change tabs between any two
 // of those, so one request could act on two pages. The target is decided here,
 // once, and travels as `params.tabId` from then on.
-async function withResolvedTab(action, params) {
+async function withResolvedTab(action, params, serverPort) {
     if (!actsOnATab(action) || params.tabId) return params;
-    return { ...params, tabId: await getActiveTabId() };
+    return { ...params, tabId: await getActiveTabId(serverPort) };
 }
 
-async function handleRequest(request) {
+// `serverPort` is the port of the connection the request arrived on, which is
+// what tells one MCP client's pinned tab from another's.
+async function handleRequest(request, serverPort) {
     const { id, action, params: requested } = request;
     let resolvedTabId = null;
 
     try {
-        const params = await withResolvedTab(action, requested ?? {});
+        const params = await withResolvedTab(action, requested ?? {}, serverPort);
         resolvedTabId = params.tabId ?? null;
-        const data = redactResult(action, await routeAction(action, params));
+        const data = redactResult(action, await routeAction(action, params, serverPort));
         return {
             id,
             success: true,

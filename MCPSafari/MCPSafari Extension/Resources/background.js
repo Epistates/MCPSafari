@@ -8,11 +8,13 @@
 // on either line below puts the whole tool surface back on the 30-second bridge
 // timeout that `handleTabsQuery` is deadlined to avoid. Neither call can be
 // probed first, because the tab they are looking up is the thing being decided.
-async function getActiveTabId() {
-    // Use pinned tab if set via select_tab
-    if (selectedTabId !== null) {
+async function getActiveTabId(serverPort) {
+    // Use the tab this server pinned with select_tab, if any
+    const pin = await currentPin(serverPort);
+    const pinned = pin ? pin.tabId : undefined;
+    if (pinned !== undefined) {
         try {
-            const tab = await withDeadline(browser.tabs.get(selectedTabId), TAB_LISTING_TIMEOUT_MS);
+            const tab = await withDeadline(browser.tabs.get(pinned), TAB_LISTING_TIMEOUT_MS);
             return tab.id;
         } catch (err) {
             // A tab parked on Safari's dialog is not a closed one. Falling
@@ -23,15 +25,35 @@ async function getActiveTabId() {
             // untabbed `type_text` or `click` to whatever they happened to be
             // looking at. A pinned tab that is gone is an error the caller has
             // to hear about; one that failed for any other reason keeps its pin.
-            if (await tabIsGone(selectedTabId)) {
-                const closedId = selectedTabId;
-                selectedTabId = null;
-                persistSelectedTab(null);
-                throw tabClosedError(closedId);
+            if (await tabIsGone(pinned)) {
+                pinnedTabs.delete(serverPort);
+                persistPinnedTabs();
+                throw tabClosedError(pinned);
             }
             throw err;
         }
     }
+    return userActiveTabId();
+}
+
+// The pin on this port, if it was made by the server that is running there now.
+// A pin from an earlier run is dropped, not carried over to a client that never
+// chose it. Checked here, when a call arrives, and not when pins are restored,
+// because a woken background page restores them before it has read the tokens.
+async function currentPin(serverPort) {
+    const pin = pinnedTabs.get(serverPort);
+    if (!pin) return undefined;
+    if (pin.run === await serverRunFingerprint(serverPort)) return pin;
+    // Re-read: another call may have replaced the pin while the digest was out.
+    if (pinnedTabs.get(serverPort) === pin) {
+        pinnedTabs.delete(serverPort);
+        persistPinnedTabs();
+    }
+    return undefined;
+}
+
+// The tab the user is looking at, whatever any server has pinned.
+async function userActiveTabId() {
     let tabs;
     try {
         tabs = await withDeadline(
@@ -93,7 +115,9 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
 async function describeActiveTabAccess() {
     let tabId;
     try {
-        tabId = await getActiveTabId();
+        // The tab in front, not a server's pinned one: the popup answers for
+        // what the user is looking at.
+        tabId = await userActiveTabId();
     } catch {
         return { origin: null, allowed: false, pending: false };
     }
@@ -163,11 +187,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 function persistManualPorts() {
-    try {
-        if (browser.storage && browser.storage.local) {
-            browser.storage.local.set({ manualPorts: [...manualPorts] });
-        }
-    } catch (_) { /* ignore */ }
+    writeStorage("local", { manualPorts: [...manualPorts] });
 }
 
 // ─── Service Worker Keepalive ─────────────────────────────────────────

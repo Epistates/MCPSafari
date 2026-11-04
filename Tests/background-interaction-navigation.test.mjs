@@ -53,6 +53,9 @@ function loadBackground({ onMessage, url = OLD_URL } = {}) {
             },
             query: async () => [...tabs.values()].map((tab) => ({ ...tab })),
             sendMessage: async (tabId, message, options) => {
+                // Asked before an action that must not run twice, and answered
+                // by any page that has the content script.
+                if (message.action === "ping") return { data: { ready: true }, error: null };
                 sent.push({ tabId, message, at: clock.now, loading: tabs.get(tabId).status === "loading" });
                 return onMessage
                     ? onMessage(message, harness, options)
@@ -127,6 +130,7 @@ function loadBackground({ onMessage, url = OLD_URL } = {}) {
             await flush();
         },
         listenerCount: () => listeners.length - loadedListeners,
+        evaluate: (expression) => vm.runInContext(expression, context),
         request(action, params = {}) {
             const outcome = { done: false, response: null };
             vm.runInContext(
@@ -355,7 +359,7 @@ test("a load that never finishes is given 15 seconds and then reported as unfini
     );
 });
 
-test("the reported URL is redacted and a site that was not granted gets no title", async () => {
+test("a landing on a site that was not granted names its origin and nothing else", async () => {
     const harness = loadBackground({
         onMessage: async (message, h) => {
             navigateLater(h, { url: "https://elsewhere.example/cb?token=hunter2&page=1", title: "Private inbox" });
@@ -365,14 +369,30 @@ test("the reported URL is redacted and a site that was not granted gets no title
     const click = harness.request("click", { selector: "a" });
     await harness.advance(2000);
 
-    const data = click.response.data;
-    assert.doesNotMatch(data, /hunter2/);
-    assert.match(data, /Page navigated to https:\/\/elsewhere\.example\/cb\?/);
-    assert.doesNotMatch(data, /Private inbox/);
-    assert.match(data, /title withheld/);
+    assert.equal(
+        click.response.data,
+        "Clicked <a>\nPage navigated to https://elsewhere.example "
+            + "(URL and title withheld: MCPSafari has not been granted access to this site)"
+    );
 });
 
-test("an object result gets the new URL as a field instead of a trailing line", async () => {
+test("a landing on a granted site keeps its redacted URL and title", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            navigateLater(h, { url: "https://ok.example/cb?token=hunter2&page=1", title: "Article" });
+            return { data: "Clicked <a>", error: null };
+        },
+    });
+    const click = harness.request("click", { selector: "a" });
+    await harness.advance(2000);
+
+    assert.equal(
+        click.response.data,
+        "Clicked <a>\nPage navigated to https://ok.example/cb?token=[redacted]&page=1 (Article)"
+    );
+});
+
+test("an object result gets the new origin as a field instead of a trailing line", async () => {
     const harness = loadBackground({
         onMessage: async (message, h) => {
             navigateLater(h, { url: "https://elsewhere.example/?session=abc123" });
@@ -384,8 +404,233 @@ test("an object result gets the new URL as a field instead of a trailing line", 
 
     const data = JSON.parse(click.response.data);
     assert.equal(data.clicked, true);
-    assert.match(data.navigatedTo, /^https:\/\/elsewhere\.example\//);
-    assert.doesNotMatch(data.navigatedTo, /abc123/);
+    assert.equal(data.navigatedTo, "https://elsewhere.example");
+});
+
+test("an object result keeps the redacted URL for a granted site", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            navigateLater(h, { url: "https://ok.example/?session=abc123" });
+            return { data: { clicked: true }, error: null };
+        },
+    });
+    const click = harness.request("click", { selector: "a" });
+    await harness.advance(2000);
+
+    assert.equal(JSON.parse(click.response.data).navigatedTo, "https://ok.example/?session=[redacted]");
+});
+
+test("back and forward name only the origin when they land on a site that was not granted", async () => {
+    const harness = loadBackground({ url: "https://ok.example/results" });
+    for (const action of ["back", "forward"]) {
+        const navigation = harness.request("navigate", { action });
+        await harness.flush();
+        harness.emit({ status: "loading" }, { status: "loading" });
+        harness.emit({ url: "https://elsewhere.example/inbox?token=hunter2" }, { url: "https://elsewhere.example/inbox?token=hunter2", title: "Private inbox" });
+        harness.emit({ status: "complete" }, { status: "complete" });
+        await harness.advance(100);
+
+        assert.match(navigation.response.data, /^Navigated (back|forward) to https:\/\/elsewhere\.example \(URL and title withheld/, action);
+        assert.doesNotMatch(navigation.response.data, /inbox|hunter2|Private/);
+        harness.tabs.get(1).url = "https://ok.example/results";
+    }
+});
+
+// ─── A tab with no content script ────────────────────────────────────
+
+test("a click on a tab with no content script injects it and is delivered exactly once", async () => {
+    // Safari resolves undefined for a message nobody is listening for, the same
+    // as for a reply the page went away before sending. The click must not be
+    // taken for either of them: not skipped for want of an injection, and not
+    // sent twice.
+    const harness = loadBackground();
+    harness.evaluate(`
+        globalThis.__listening = false;
+        globalThis.__clicks = 0;
+        globalThis.__injections = 0;
+        browser.scripting.executeScript = async (options) => {
+            if (options.files) {
+                __injections += 1;
+                if (options.files.includes("content.js")) __listening = true;
+            }
+            return [{ result: true }];
+        };
+        browser.tabs.sendMessage = async (tabId, message) => {
+            if (!__listening) return undefined;
+            if (message.action === "ping") return { data: { ready: true }, error: null };
+            if (message.action === "click") __clicks += 1;
+            return { data: "Clicked <a>", error: null };
+        };
+    `);
+    const click = harness.request("click", { selector: "a" });
+
+    await harness.advance(WINDOW_MS + 500);
+
+    assert.equal(click.response.success, true, click.response.error);
+    assert.equal(click.response.data, "Clicked <a>");
+    assert.equal(harness.evaluate("__clicks"), 1);
+    assert.equal(harness.evaluate("__injections"), 2);
+});
+
+test("a click that a listening page takes and does not answer is not delivered again", async () => {
+    const harness = loadBackground({ onMessage: async () => undefined });
+    harness.evaluate("globalThis.__injections = 0; browser.scripting.executeScript = async (o) => { if (o.files) __injections += 1; return [{ result: true }]; }");
+    const click = harness.request("click", { selector: "a" });
+
+    await harness.advance(WINDOW_MS + 500);
+
+    assert.equal(click.response.errorCode, "reply_lost");
+    assert.equal(clicksSent(harness), 1);
+    assert.equal(harness.evaluate("__injections"), 0, "re-injected into a page that was listening");
+});
+
+// ─── A settle that cannot read the tab ───────────────────────────────
+
+// On an origin Safari has not decided, `tabs.get` parks on the permission dialog
+// like every other call that touches the tab. The load itself is reported by
+// events, which still arrive, so the settle has already seen where the tab went.
+const parkTabReads = (harness) => harness.evaluate("browser.tabs.get = () => new Promise(() => {})");
+
+test("navigate on a tab whose reads are parked on the dialog answers from the last update", async () => {
+    const harness = loadBackground();
+    const navigation = harness.request("navigate", { url: NEW_URL });
+    await harness.flush();
+    parkTabReads(harness);
+    navigateLater(harness);
+
+    await harness.advance(1000);
+    assert.equal(navigation.done, false, "answered before the settle's read had its deadline");
+    await harness.advance(2500);
+
+    assert.equal(navigation.done, true, "the settle rode the bridge timeout");
+    assert.equal(navigation.response.success, true);
+    // No call has reached this site, so it is named by origin.
+    assert.match(navigation.response.data, /^Navigated to https:\/\/ok\.example \(URL and title withheld/);
+    assert.equal(harness.listenerCount(), 0);
+});
+
+test("a click whose settle cannot read the tab still reports where the page went", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            parkTabReads(h);
+            navigateLater(h);
+            return { data: "Clicked <a>", error: null };
+        },
+    });
+    const click = harness.request("click", { selector: "a" });
+
+    await harness.advance(4000);
+
+    assert.equal(click.done, true);
+    assert.match(click.response.data, new RegExp(`\\nPage navigated to ${NEW_URL} `));
+});
+
+test("navigate that never saw the tab and cannot read it names the permission dialog", async () => {
+    const harness = loadBackground();
+    harness.evaluate("browser.tabs.get = () => new Promise(() => {})");
+    const navigation = harness.request("navigate", { url: NEW_URL });
+
+    await harness.advance(15_000);
+
+    assert.equal(navigation.done, true);
+    assert.equal(navigation.response.errorCode, "permission_required");
+});
+
+// ─── A reply that never comes ────────────────────────────────────────
+
+// When a click navigates, the document it ran in goes away before it can answer,
+// and Safari resolves the message with undefined. That says the click was
+// delivered and nothing about whether it did anything, so it is never sent
+// again. Sending it again made a pagination "Next" go two pages on, and a click
+// by uid then failed on the new document with target_not_found.
+
+const clicksSent = (harness) => harness.sent.filter((entry) => entry.message.action === "click").length;
+
+test("a click whose reply is lost to its own navigation reports the landing and is sent once", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            navigateLater(h);
+            return undefined;
+        },
+    });
+    const click = harness.request("click", { uid: "f0e12" });
+
+    await harness.advance(250);
+    assert.equal(click.done, false, "answered while the page was still loading");
+    await harness.advance(1000);
+
+    assert.equal(click.response.success, true);
+    assert.match(click.response.data, /^The click was dispatched/);
+    assert.match(click.response.data, new RegExp(`\\nPage navigated to ${NEW_URL} \\(Article\\)$`));
+    assert.equal(clicksSent(harness), 1);
+    assert.equal(harness.listenerCount(), 0, "a watcher outlived the request");
+});
+
+test("a click whose reply is lost to a navigation that lands on the same address still reports it", async () => {
+    // A form that posts back to its own URL: the address never changes, so the
+    // load itself is what says the click did something.
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            h.emit({ status: "loading" }, { status: "loading" });
+            h.later(200, () => h.emit({ status: "complete" }, { status: "complete" }));
+            return undefined;
+        },
+    });
+    const click = harness.request("click", { selector: "button[type=submit]" });
+    await harness.advance(2000);
+
+    assert.equal(click.response.success, true);
+    assert.match(click.response.data, new RegExp(`Page navigated to ${OLD_URL} `));
+    assert.equal(clicksSent(harness), 1);
+});
+
+test("a click whose reply is lost with no navigation is an error that is not retryable", async () => {
+    const harness = loadBackground({ onMessage: async () => undefined });
+    const click = harness.request("click", { uid: "f0e12" });
+
+    await harness.advance(WINDOW_MS);
+
+    assert.equal(click.done, true);
+    assert.equal(click.response.success, false);
+    assert.equal(click.response.errorCode, "reply_lost");
+    assert.equal(click.response.retryable, false);
+    assert.equal(clicksSent(harness), 1, "the click was sent again");
+    assert.equal(harness.listenerCount(), 0);
+});
+
+for (const [action, params] of [
+    ["press_key", { key: "Enter" }],
+    ["type_text", { selector: "input", text: "query", submitKey: "Enter" }],
+    ["form_input", { selector: "input", value: "x" }],
+    ["select_option", { selector: "select", value: "2" }],
+]) {
+    test(`${action} whose reply is lost to its own navigation reports the landing and is sent once`, async () => {
+        const harness = loadBackground({
+            onMessage: async (message, h) => {
+                navigateLater(h);
+                return undefined;
+            },
+        });
+        const outcome = harness.request(action, params);
+        await harness.advance(2000);
+
+        assert.equal(outcome.response.success, true);
+        assert.match(outcome.response.data, /\nPage navigated to /);
+        assert.equal(harness.sent.filter((entry) => entry.message.action === action).length, 1);
+    });
+}
+
+test("a click whose reply is lost to a navigation never reads the landing page's title when the site is not granted", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            navigateLater(h, { url: "https://elsewhere.example/inbox", title: "Private inbox" });
+            return undefined;
+        },
+    });
+    const click = harness.request("click", { uid: "f0e12" });
+    await harness.advance(2000);
+
+    assert.doesNotMatch(click.response.data, /Private inbox/);
 });
 
 // ─── wait ────────────────────────────────────────────────────────────
@@ -445,6 +690,28 @@ test("a wait whose request fails because the document went away is sent again", 
     assert.equal(waits, 2);
 });
 
+test("a wait whose reply is lost because the document went away is sent again", async () => {
+    // Unlike a click, a wait changes nothing, so asking again is the right answer.
+    let waits = 0;
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            waits += 1;
+            if (waits > 1) return { data: "Text found: \"Done\"", error: null };
+            h.emit({ status: "loading" }, { status: "loading" });
+            h.later(500, () => h.emit({ status: "complete" }, { status: "complete" }));
+            return undefined;
+        },
+    });
+    const wait = harness.request("wait", { text: "Done", timeout: 10 });
+    await harness.advance(2000);
+
+    assert.equal(wait.response.success, true);
+    assert.equal(wait.response.data, "Text found: \"Done\"");
+    // Asked again once by the send itself and once more when the navigation is
+    // noticed. Harmless for a wait, which is why it is allowed to be.
+    assert.ok(waits >= 2);
+});
+
 test("a wait that times out on its own page is not sent again", async () => {
     const harness = loadBackground({
         onMessage: async () => ({
@@ -489,6 +756,40 @@ test("a wait that finishes before any navigation is untouched", async () => {
     assert.equal(wait.response.data, "Element found: #x");
     assert.equal(harness.sent.length, 1);
     assert.equal(harness.listenerCount(), 0);
+});
+
+test("a sleep that a navigation outlasts has still slept, and does not fail as a timeout", async () => {
+    // A sleep waits for nothing, so it has nothing to time out on: when the
+    // navigation uses up the time, the time has been waited.
+    const harness = loadBackground({ onMessage: async () => new Promise(() => {}) });
+    const sleep = harness.request("wait", { seconds: 2 });
+
+    await harness.advance(1000);
+    harness.emit({ status: "loading" }, { status: "loading" });
+    await harness.advance(5000);
+
+    assert.equal(sleep.done, true);
+    assert.equal(sleep.response.success, true, sleep.response.error);
+    assert.equal(sleep.response.data, "Waited 2 seconds");
+    assert.equal(harness.listenerCount(), 0);
+});
+
+test("a sleep resumed after a navigation reports the time it was asked for", async () => {
+    let sleeps = 0;
+    const harness = loadBackground({
+        onMessage: async (message) => {
+            sleeps += 1;
+            if (sleeps === 1) return new Promise(() => {});
+            return { data: `Waited ${message.params.seconds} seconds`, error: null };
+        },
+    });
+    const sleep = harness.request("wait", { seconds: 4 });
+    await harness.advance(1000);
+    harness.emit({ status: "loading" }, { status: "loading" });
+    harness.emit({ status: "complete" }, { status: "complete" });
+    await harness.advance(10);
+
+    assert.equal(sleep.response.data, "Waited 4 seconds", "the remainder leaked into the answer");
 });
 
 test("a timed wait that a navigation interrupts is sent again for the time that is left", async () => {

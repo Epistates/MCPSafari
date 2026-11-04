@@ -34,12 +34,25 @@ function contentHarness(document = {
     });
 }
 
-function backgroundHarness(contentResponse) {
+// `listening` is whether the tab has a content script yet. `silence` is how the
+// browser reports a message nobody is listening for: Safari resolves undefined,
+// other engines throw the no-receiver error. Injecting the content script makes
+// the tab listen, unless `injectionTakes` is false.
+function backgroundHarness(contentResponse, { listening = true, silence = "undefined", injectionTakes = true } = {}) {
     const contentResponses = Array.isArray(contentResponse)
         ? [...contentResponse]
         : [contentResponse];
     const tabUpdates = [];
     const windowUpdates = [];
+    // What the content script was asked, not counting pings, which are counted
+    // on their own.
+    const sends = [];
+    const pings = [];
+    const injections = [];
+    const nobodyListening = () => {
+        if (silence === "throw") throw new Error("Could not establish connection. Receiving end does not exist.");
+        return undefined;
+    };
     const browser = {
         alarms: {
             create() {},
@@ -57,7 +70,19 @@ function backgroundHarness(contentResponse) {
         tabs: {
             get: async () => ({ id: 1, windowId: 7 }),
             query: async () => [{ id: 1, active: true, windowId: 7 }],
-            sendMessage: async () => contentResponses.shift(),
+            // An Error in the list is thrown, as the browser does for a message
+            // that never reached a page; undefined is a reply that never came.
+            sendMessage: async (tabId, message) => {
+                if (message.action === "ping") {
+                    pings.push(message.frameId);
+                    return listening ? { data: { ready: true }, error: null } : nobodyListening();
+                }
+                sends.push(message.action);
+                if (!listening) return nobodyListening();
+                const next = contentResponses.shift();
+                if (next instanceof Error) throw next;
+                return next;
+            },
             update: async (...args) => { tabUpdates.push(args); },
             // Both listeners are registered at load: the access probe cache is
             // cleared when a tab closes and when it navigates, since Safari
@@ -68,7 +93,13 @@ function backgroundHarness(contentResponse) {
         windows: {
             update: async (...args) => { windowUpdates.push(args); },
         },
-        scripting: { executeScript: async () => {} },
+        scripting: {
+            executeScript: async (options) => {
+                if (!options.files) return;
+                injections.push(options.files);
+                if (injectionTakes && options.files.includes("content.js")) listening = true;
+            },
+        },
     };
     const context = vm.createContext({
         browser,
@@ -87,6 +118,10 @@ function backgroundHarness(contentResponse) {
     );
     handleRequest.tabUpdates = tabUpdates;
     handleRequest.windowUpdates = windowUpdates;
+    handleRequest.evaluate = (source) => vm.runInContext(source, context);
+    handleRequest.sends = sends;
+    handleRequest.pings = pings;
+    handleRequest.injections = injections;
     return handleRequest;
 }
 
@@ -136,23 +171,175 @@ test("background preserves content error metadata in bridge responses", async ()
     assert.equal(response.recoveryAction, "take_snapshot");
 });
 
-test("background reinjects when Safari returns no content response", async () => {
-    const handleRequest = backgroundHarness([null, {
-        data: null,
-        error: "UID expired",
-        errorCode: "stale_uid",
-        retryable: false,
-        recoveryAction: "take_snapshot",
-    }]);
+test("background injects the content script and sends again when the browser says nothing is listening", async () => {
+    // The call never reached a page, so sending it again cannot repeat anything.
+    const handleRequest = backgroundHarness([
+        new Error("Could not establish connection. Receiving end does not exist."),
+        { data: "Hovered <button>", error: null },
+    ]);
 
     const response = await handleRequest({
         id: "request-1",
-        action: "click",
-        params: { tabId: 1, uid: "e999" },
+        action: "hover",
+        params: { tabId: 1, selector: "button" },
     });
 
-    assert.equal(response.errorCode, "stale_uid");
-    assert.equal(response.recoveryAction, "take_snapshot");
+    assert.equal(response.success, true);
+    assert.equal(response.data, "Hovered <button>");
+    assert.deepEqual(handleRequest.sends, ["hover", "hover"]);
+    assert.equal(handleRequest.injections.length, 2, "the main-world interceptors and the content script");
+});
+
+test("a reply that never came is reported, and the call is not sent again", async () => {
+    // Safari answers undefined when the document goes away before it replies,
+    // which is what a click that navigates looks like. The click has run, so
+    // injecting and sending it again clicked twice: a pagination "Next" went two
+    // pages on, and a uid click then failed on the new document. The actions
+    // that wait out a navigation are covered in the interaction tests.
+    for (const action of ["hover", "scroll", "drag", "upload_file"]) {
+        // A content script is there (it answers the ping), and drops the reply.
+        const handleRequest = backgroundHarness([undefined, {
+            data: "done",
+            error: null,
+        }]);
+
+        const response = await handleRequest({
+            id: "request-1",
+            action,
+            params: { tabId: 1, uid: "f0e12" },
+        });
+
+        assert.equal(response.success, false, action);
+        assert.equal(response.errorCode, "reply_lost", action);
+        assert.equal(response.retryable, false, action);
+        assert.match(response.error, /not sent again/, action);
+        assert.deepEqual(handleRequest.sends, [action], `${action} was sent a second time`);
+        assert.equal(handleRequest.injections.length, 0, `${action} re-injected the content script`);
+    }
+});
+
+// ─── A tab with no content script ────────────────────────────────────
+
+// Safari's tabs.sendMessage does not throw when nothing is listening: it
+// resolves undefined, the same as when the document goes away before replying.
+// Telling them apart after the fact is guesswork, so an action that must not run
+// twice asks with a ping first.
+
+for (const [how, options] of [
+    ["Safari resolves undefined", { silence: "undefined" }],
+    ["another engine throws the no-receiver error", { silence: "throw" }],
+]) {
+    test(`an action on a tab with no content script injects it and is delivered once (${how})`, async () => {
+        for (const action of ["hover", "scroll", "drag", "upload_file"]) {
+            const handleRequest = backgroundHarness([{ data: "done", error: null }], { listening: false, ...options });
+
+            const response = await handleRequest({
+                id: "request-1",
+                action,
+                params: { tabId: 1, uid: "f0e12" },
+            });
+
+            assert.equal(response.success, true, `${action}: ${response.error}`);
+            assert.equal(response.data, "done", action);
+            assert.deepEqual(handleRequest.sends, [action], `${action} was delivered other than once`);
+            assert.equal(handleRequest.injections.length, 2, `${action}: the interceptors and the content script`);
+            assert.equal(handleRequest.pings.length, 2, `${action}: asked before and after injecting`);
+        }
+    });
+}
+
+test("a tab that still has no content script after injection fails without the action being sent", async () => {
+    const handleRequest = backgroundHarness([{ data: "done", error: null }], { listening: false, injectionTakes: false });
+
+    const response = await handleRequest({ id: "request-1", action: "hover", params: { tabId: 1, uid: "f0e12" } });
+
+    assert.equal(response.success, false);
+    assert.match(response.error, /did not respond after injection/);
+    assert.deepEqual(handleRequest.sends, [], "the action was sent to a page that could not take it");
+});
+
+test("a tab that has the content script is not injected into for an action that must not repeat", async () => {
+    const handleRequest = backgroundHarness([{ data: "done", error: null }]);
+
+    await handleRequest({ id: "request-1", action: "hover", params: { tabId: 1, uid: "f0e12" } });
+
+    assert.equal(handleRequest.injections.length, 0);
+    assert.equal(handleRequest.pings.length, 1);
+});
+
+test("an action that is safe to repeat recovers from a lost reply by injecting, with no ping", async () => {
+    for (const action of ["snapshot", "read_page", "find", "get_page_text"]) {
+        const handleRequest = backgroundHarness([undefined, { data: "done", error: null }]);
+
+        const response = await handleRequest({ id: "request-1", action, params: { tabId: 1, uid: "f0e12" } });
+
+        assert.equal(response.success, true, `${action}: ${response.error}`);
+        assert.deepEqual(handleRequest.sends, [action, action], action);
+        assert.equal(handleRequest.injections.length, 2, action);
+        assert.equal(handleRequest.pings.length, 0, `${action} pinged before a send it can repeat`);
+    }
+});
+
+test("only actions that change nothing are sent a second time", () => {
+    const handleRequest = backgroundHarness([]);
+    const repeatable = (action, params = {}) =>
+        handleRequest.evaluate(`isRepeatSafe(${JSON.stringify({ action, params })})`);
+
+    for (const action of [
+        "read_page", "get_page_text", "snapshot", "find", "element_rect", "native_pointer_points",
+        "prepare_native_input", "prepare_native_key", "wait", "get_console_messages", "get_network_requests", "ping",
+    ]) {
+        assert.equal(repeatable(action), true, action);
+    }
+    for (const action of [
+        "click", "type_text", "form_input", "select_option", "scroll", "press_key", "hover", "drag",
+        "upload_file", "drop_file", "start_trace", "stop_trace", "handle_dialog",
+    ]) {
+        assert.equal(repeatable(action), false, action);
+    }
+    assert.equal(repeatable("get_console_messages", { clear: true }), false);
+    assert.equal(repeatable("get_network_requests", { clearIds: [1] }), false);
+});
+
+test("a read that clears what it read is not repeated", async () => {
+    // A second read would answer with whatever the first had not already taken.
+    for (const [action, params] of [
+        ["read_console", { clear: true }],
+        ["read_network", { clear: true }],
+    ]) {
+        const handleRequest = backgroundHarness([undefined, { data: [], error: null }]);
+
+        const response = await handleRequest({ id: "request-1", action, params: { tabId: 1, ...params } });
+
+        assert.equal(response.errorCode, "reply_lost", action);
+        assert.equal(handleRequest.sends.length, 1, `${action} was sent a second time`);
+    }
+});
+
+test("the content script answers a ping", async () => {
+    const reply = await contentHarness()("ping", {});
+
+    assert.deepEqual({ ...reply.data }, { ready: true });
+    assert.equal(reply.error, null);
+});
+
+test("a reply that is lost after an injection is reported the same way", async () => {
+    // The first send never arrived, so the injection was right. The second one
+    // did arrive, and what happened to it is as unknown as anywhere else.
+    const handleRequest = backgroundHarness([
+        new Error("Could not establish connection. Receiving end does not exist."),
+        undefined,
+        { data: "Hovered <button>", error: null },
+    ]);
+
+    const response = await handleRequest({
+        id: "request-1",
+        action: "hover",
+        params: { tabId: 1, selector: "button" },
+    });
+
+    assert.equal(response.errorCode, "reply_lost");
+    assert.deepEqual(handleRequest.sends, ["hover", "hover"]);
 });
 
 test("native input preparation focuses only editable text targets", async () => {

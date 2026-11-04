@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 
+import { handshakeGlobals } from "./helpers/bridge-handshake.mjs";
 import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
 
 const source = backgroundScriptSource();
@@ -9,9 +10,13 @@ const source = backgroundScriptSource();
 // The tab in these tests sits on a site the user has not granted: the access
 // probe is refused. Selecting it only records which tab later calls mean, so it
 // must work anyway, and the first call that reads the page must still refuse.
-function loadBackground({ granted = false, getTab, activeCalls = [] } = {}) {
+function loadBackground({ granted = false, getTab, activeCalls = [], session = {}, rejectWrites = false } = {}) {
     const stored = {};
     const tab = { id: 7, windowId: 3, active: false, url: "https://ungranted.example/account?token=abc", title: "Your account" };
+    // The one the user is looking at, which no pin is on.
+    const front = { id: 1, windowId: 3, active: true, url: "https://front.example/", title: "Front" };
+    const tabs = [tab, front];
+    const sent = [];
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         runtime: {
@@ -28,17 +33,29 @@ function loadBackground({ granted = false, getTab, activeCalls = [] } = {}) {
             },
         },
         storage: {
-            local: { get: async () => ({}), set() {} },
-            session: { get: async () => ({}), set: (values) => { Object.assign(stored, values); }, remove: async () => {} },
+            local: { get: async () => ({}), set: () => (rejectWrites ? Promise.reject(new Error("quota exceeded")) : undefined) },
+            session: {
+                get: async () => session,
+                set: (values) => {
+                    if (rejectWrites) return Promise.reject(new Error("quota exceeded"));
+                    Object.assign(stored, values);
+                },
+                remove: async () => {},
+            },
         },
         tabs: {
             get: getTab || (async (id) => {
-                if (id !== tab.id) throw new Error(`No tab with id: ${id}`);
-                return tab;
+                const found = tabs.find((candidate) => candidate.id === id);
+                if (!found) throw new Error(`No tab with id: ${id}`);
+                return found;
             }),
-            query: async () => [tab],
+            query: async (filter = {}) => (filter.active ? tabs.filter((candidate) => candidate.active) : tabs),
             update: async (id, info) => { activeCalls.push(["tabs.update", id, { ...info }]); },
-            sendMessage: async () => ({ data: "page text", error: null }),
+            sendMessage: async (tabId, message) => {
+                if (message.action === "ping") return { data: { ready: true }, error: null };
+                sent.push(tabId);
+                return { data: "page text", error: null };
+            },
             onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },
@@ -47,6 +64,8 @@ function loadBackground({ granted = false, getTab, activeCalls = [] } = {}) {
     };
 
     const context = vm.createContext({
+        // The digest a pin carries of the server's token needs WebCrypto.
+        ...handshakeGlobals,
         browser,
         clearTimeout() {},
         console: { error() {}, log() {}, warn() {} },
@@ -61,10 +80,13 @@ function loadBackground({ granted = false, getTab, activeCalls = [] } = {}) {
 
     return {
         stored,
+        sent,
         activeCalls,
         evaluate: (expression) => vm.runInContext(expression, context),
-        request: (action, params) => vm.runInContext(
-            `handleRequest(${JSON.stringify({ id: "r1", action, params })})`,
+        // `port` is the server the request arrives from. One server unless a
+        // test is about two.
+        request: (action, params, port = 8089) => vm.runInContext(
+            `handleRequest(${JSON.stringify({ id: "r1", action, params })}, ${port})`,
             context
         ),
     };
@@ -86,8 +108,8 @@ test("selecting a tab on an ungranted site pins it and reports success with the 
     assert.equal("url" in tab, false);
     assert.equal("title" in tab, false);
     assert.doesNotMatch(response.data, /ungranted\.example|Your account|abc/);
-    assert.equal(harness.evaluate("selectedTabId"), 7);
-    assert.equal(harness.stored.selectedTabId, 7, "and it survives the background page being suspended");
+    assert.equal(harness.evaluate("pinnedTabs.get(8089)?.tabId ?? null"), 7);
+    assert.equal(harness.stored.pinnedTabs[8089].tabId, 7, "and it survives the background page being suspended");
 });
 
 test("the pinned ungranted tab still refuses the first call that reads the page", async () => {
@@ -134,7 +156,7 @@ test("bringToFront: false pins without moving anything", async () => {
 
     assert.equal(response.success, true);
     assert.deepEqual(calls, []);
-    assert.equal(harness.evaluate("selectedTabId"), 7);
+    assert.equal(harness.evaluate("pinnedTabs.get(8089)?.tabId ?? null"), 7);
 });
 
 test("a tab that does not exist is refused and not pinned", async () => {
@@ -144,7 +166,7 @@ test("a tab that does not exist is refused and not pinned", async () => {
 
     assert.equal(response.success, false);
     assert.match(response.error, /No tab with id/);
-    assert.equal(harness.evaluate("selectedTabId"), null);
+    assert.equal(harness.evaluate("pinnedTabs.get(8089)?.tabId ?? null"), null);
 });
 
 test("a lookup parked behind a dialog does not stop the pin", async () => {
@@ -164,5 +186,196 @@ test("a lookup parked behind a dialog does not stop the pin", async () => {
 
     assert.equal(response.success, true);
     assert.equal(JSON.parse(response.data).access, "not_granted");
-    assert.equal(harness.evaluate("selectedTabId"), 7);
+    assert.equal(harness.evaluate("pinnedTabs.get(8089)?.tabId ?? null"), 7);
+});
+
+test("restoring a pin does not hold startup on a tab parked behind a dialog, and keeps the pin", async () => {
+    // Startup restores the pins before it connects to any server, so a tab.get
+    // that never answers would keep every server waiting. A tab that is parked
+    // is a tab that exists.
+    const harness = loadBackground({
+        granted: true,
+        session: { pinnedTabs: { 8089: { tabId: 7, run: null } } },
+        getTab: () => new Promise(() => {}),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.evaluate("setTimeout = (callback) => { globalThis.__fire = callback; return 1; }");
+
+    const restoring = harness.evaluate("restoreSessionState()");
+    for (let attempt = 0; attempt < 50 && !harness.evaluate("globalThis.__fire"); attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    harness.evaluate("globalThis.__fire()");
+    await restoring;
+
+    assert.equal(harness.evaluate("pinnedTabs.get(8089)?.tabId"), 7);
+});
+
+// ─── A pin belongs to one run of a server ────────────────────────────
+
+// A server writes a new token each time it starts, so the token on a port says
+// which run is there. Without it, a new server on a port inherited whatever the
+// last one pinned, and an untabbed call from a client that never chose a tab
+// landed in the previous client's.
+
+const ticks = async (count = 6) => {
+    for (let i = 0; i < count; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+
+// Startup loads tokens of its own; a test sets the server's after that has landed.
+async function withServer(token, options = {}) {
+    const harness = loadBackground({ granted: true, ...options });
+    await ticks();
+    harness.evaluate(`authTokensByPort.set(8089, ${JSON.stringify(token)})`);
+    return harness;
+}
+
+test("a new server on the same port does not inherit the previous run's pin", async () => {
+    const harness = await withServer("token-of-the-first-run");
+    await harness.request("select_tab", { tabId: 7, bringToFront: false });
+    assert.equal((await harness.request("hover", { uid: "f0e1" })).resolvedTabId, 7);
+
+    // The server restarts: same port, new token.
+    harness.evaluate('authTokensByPort.set(8089, "token-of-the-second-run")');
+    const untabbed = await harness.request("hover", { uid: "f0e1" });
+
+    assert.equal(untabbed.resolvedTabId, 1, "the new server's call landed in the old server's pinned tab");
+    assert.equal(harness.evaluate("pinnedTabs.has(8089)"), false, "the stale pin was kept");
+    assert.deepEqual(Object.keys(harness.stored.pinnedTabs), [], "and its stored copy");
+});
+
+test("the new run can pin its own tab after the old pin is dropped", async () => {
+    const harness = await withServer("first");
+    await harness.request("select_tab", { tabId: 7, bringToFront: false });
+    harness.evaluate('authTokensByPort.set(8089, "second")');
+
+    await harness.request("select_tab", { tabId: 1, bringToFront: false });
+
+    assert.equal((await harness.request("hover", { uid: "f0e1" })).resolvedTabId, 1);
+    assert.equal(harness.evaluate("pinnedTabs.get(8089).tabId"), 1);
+});
+
+test("the same server keeps its pin across a background suspension", async () => {
+    const first = await withServer("token-of-this-run");
+    await first.request("select_tab", { tabId: 7, bringToFront: false });
+
+    // A new background page, restoring from what the old one stored.
+    const woken = loadBackground({ granted: true, session: first.stored });
+    await ticks();
+    woken.evaluate('authTokensByPort.set(8089, "token-of-this-run")');
+
+    assert.equal(woken.evaluate("pinnedTabs.get(8089).tabId"), 7);
+    assert.equal((await woken.request("hover", { uid: "f0e1" })).resolvedTabId, 7);
+});
+
+test("a pin restored after the server restarted is not honoured", async () => {
+    const first = await withServer("token-of-the-old-run");
+    await first.request("select_tab", { tabId: 7, bringToFront: false });
+
+    const woken = loadBackground({ granted: true, session: first.stored });
+    await ticks();
+    woken.evaluate('authTokensByPort.set(8089, "token-of-the-new-run")');
+
+    assert.equal((await woken.request("hover", { uid: "f0e1" })).resolvedTabId, 1);
+});
+
+test("a pin records a digest of the token, never the token", async () => {
+    const harness = await withServer("super-secret-bridge-token-value");
+    await harness.request("select_tab", { tabId: 7, bringToFront: false });
+
+    const stored = JSON.stringify(harness.stored);
+    const held = JSON.stringify([...harness.evaluate("[...pinnedTabs]")]);
+
+    assert.doesNotMatch(stored, /super-secret/);
+    assert.doesNotMatch(held, /super-secret/);
+    assert.match(harness.stored.pinnedTabs[8089].run, /^[A-Za-z0-9_-]{16}$/);
+});
+
+test("servers with different tokens keep separate pins", async () => {
+    const harness = await withServer("token-a");
+    harness.evaluate('authTokensByPort.set(8090, "token-b")');
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8089);
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8090);
+
+    // Only 8089 restarts.
+    harness.evaluate('authTokensByPort.set(8089, "token-a-restarted")');
+
+    assert.equal((await harness.request("hover", { uid: "f0e1" }, 8089)).resolvedTabId, 1);
+    assert.equal((await harness.request("hover", { uid: "f0e1" }, 8090)).resolvedTabId, 7, "an unrelated server lost its pin");
+});
+
+// ─── Storage that refuses a write ────────────────────────────────────
+
+test("a storage write that is rejected does not become an unhandled rejection", async () => {
+    // `storage.*.set` returns a promise, so the try/catch around the call saw
+    // nothing of a quota or an I/O failure. The write is a convenience across a
+    // suspension; losing it must not be an error that surfaces anywhere else.
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+        const harness = loadBackground({ granted: true, rejectWrites: true });
+
+        const response = await harness.request("select_tab", { tabId: 7, bringToFront: false });
+        harness.evaluate("persistManualPorts()");
+        harness.evaluate('rememberOriginAccess("https://granted.example", true)');
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+
+        assert.equal(response.success, true, "the pin itself still worked");
+        assert.deepEqual(unhandled.map(String), []);
+    } finally {
+        process.off("unhandledRejection", onUnhandled);
+    }
+});
+
+// ─── Two servers ─────────────────────────────────────────────────────
+
+// Each MCP client has its own server on its own port, and the extension is
+// connected to all of them. The pin used to be one global, so a second client's
+// untabbed calls landed on the first client's tab.
+
+test("a pin belongs to the server that made it", async () => {
+    const harness = loadBackground({ granted: true });
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8089);
+
+    const pinned = await harness.request("hover", { uid: "f0e1" }, 8089);
+    const other = await harness.request("hover", { uid: "f0e1" }, 8090);
+
+    assert.equal(pinned.resolvedTabId, 7);
+    assert.equal(other.resolvedTabId, 1, "the second server's call went to the first server's tab");
+    assert.deepEqual(harness.sent, [7, 1]);
+});
+
+test("two servers pin different tabs without disturbing each other", async () => {
+    const harness = loadBackground({ granted: true });
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8089);
+    await harness.request("select_tab", { tabId: 1, bringToFront: false }, 8090);
+
+    assert.equal((await harness.request("hover", { uid: "f0e1" }, 8089)).resolvedTabId, 7);
+    assert.equal((await harness.request("hover", { uid: "f0e1" }, 8090)).resolvedTabId, 1);
+    assert.deepEqual(Object.entries(harness.stored.pinnedTabs).map(([port, pin]) => [port, pin.tabId]), [["8089", 7], ["8090", 1]]);
+});
+
+test("closing a tab clears the pin of the server that closed it", async () => {
+    const harness = loadBackground({ granted: true });
+    harness.evaluate("browser.tabs.remove = async () => {}");
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8089);
+    await harness.request("select_tab", { tabId: 7, bringToFront: false }, 8090);
+
+    await harness.request("tabs_close", { tabId: 7 }, 8089);
+
+    assert.equal(harness.evaluate("pinnedTabs.has(8089)"), false);
+    assert.equal(harness.evaluate("pinnedTabs.get(8090)?.tabId"), 7, "another server's pin was cleared");
+    assert.deepEqual(Object.keys(harness.stored.pinnedTabs), ["8090"]);
+});
+
+test("pins are restored per server, and one whose tab has gone is dropped", async () => {
+    const harness = loadBackground({ granted: true, session: { pinnedTabs: { 8089: { tabId: 7, run: null }, 8090: { tabId: 99, run: null } } } });
+
+    await harness.evaluate("restoreSessionState()");
+
+    assert.equal(harness.evaluate("pinnedTabs.get(8089)?.tabId"), 7);
+    assert.equal(harness.evaluate("pinnedTabs.has(8090)"), false);
+    assert.deepEqual(Object.keys(harness.stored.pinnedTabs), ["8089"], "the stored copy still names a tab that is gone");
 });

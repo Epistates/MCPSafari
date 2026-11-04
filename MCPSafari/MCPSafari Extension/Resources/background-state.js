@@ -14,7 +14,22 @@
 const connections = new Map();
 /** @type {Set<number>} Manually added ports (persisted across restarts) */
 const manualPorts = new Set();
-let selectedTabId = null;
+/**
+ * The tab each server's `select_tab` pinned, by the port that server listens on.
+ *
+ * One pin shared by every connection sent a second client's untabbed calls to
+ * the first client's tab. A pin belongs to the MCP client that made it, and the
+ * port is what tells its server from another.
+ *
+ * A port is reused by the next server to start on it, though, and a pin must not
+ * pass to a client that never chose it. `run` is a fingerprint of the token the
+ * server held when the pin was made (see `serverRunFingerprint`); a pin whose
+ * fingerprint is not the port's current one is from an earlier run and is
+ * dropped when it is next looked up.
+ *
+ * @type {Map<number, {tabId: number, run: string|null}>}
+ */
+const pinnedTabs = new Map();
 // Safari runs a separate instance of this extension per profile, each with its own
 // background page reading the same tokens. Without an identity in the handshake every
 // instance looks like the same client, and the server evicts whichever one connected
@@ -22,6 +37,18 @@ let selectedTabId = null;
 let profileId = DEFAULT_PROFILE_ID;
 const authTokensByPort = new Map();
 const staleTokensByPort = new Map();
+
+// Which run of the server on `port` this is. A server writes a new token each
+// time it starts, so the token changes exactly when the run does, and a pin made
+// under one is not for the next. What is kept is a short digest of the token, not
+// the token: it is stored with the pin, and a digest says "the same run" without
+// being a way to authenticate as it. Null when there is no token for the port.
+async function serverRunFingerprint(port) {
+    const token = authTokensByPort.get(port);
+    if (!token) return null;
+    const digest = await crypto.subtle.digest("SHA-256", utf8(`mcpsafari-pin|${port}|${token}`));
+    return base64UrlEncode(new Uint8Array(digest).slice(0, 12));
+}
 
 function toolErrorFromResponse(response) {
     const error = new Error(response.error);
@@ -60,16 +87,39 @@ function permissionRequiredError(origin, pending) {
     return error;
 }
 
-// The tab `select_tab` pinned is gone. Not retryable as it stands: repeating the
-// call finds the same absence, and the caller has to choose a tab again.
-function tabClosedError(tabId) {
+// The tab is gone: the one `select_tab` pinned, or the one a call named. Not
+// retryable as it stands: repeating the call finds the same absence, and the
+// caller has to choose a tab again.
+function tabClosedError(tabId, pinned = true) {
     const error = new Error(
-        `The tab pinned with select_tab (id ${tabId}) no longer exists, so this call was not run. `
-        + `Call tabs_context to list the open tabs, then select_tab again.`
+        pinned
+            ? `The tab pinned with select_tab (id ${tabId}) no longer exists, so this call was not run. `
+              + `Call tabs_context to list the open tabs, then select_tab again.`
+            : `Tab ${tabId} no longer exists, so this call was not run. `
+              + `Call tabs_context to list the open tabs.`
     );
     error.code = "tab_closed";
     error.retryable = false;
     error.recoveryAction = "call_tabs_context";
+    return error;
+}
+
+// The content script took the message and the document went away before it
+// answered, which is what a click that navigates looks like. Whether the action
+// ran is not known, so this is not retryable: sending it again is how a
+// pagination "Next" went two pages on. `dispatchAndSettle` turns it into a
+// normal result when a navigation explains it.
+const REPLY_LOST_CODE = "reply_lost";
+
+function replyLostError(action) {
+    const error = new Error(
+        `The page went away before it answered ${action}, so the result is not known. The call `
+        + `may already have run, so it was not sent again. Read the page (snapshot or read_page) `
+        + `to see where things stand before repeating it.`
+    );
+    error.code = REPLY_LOST_CODE;
+    error.retryable = false;
+    error.recoveryAction = "inspect_error";
     return error;
 }
 
@@ -119,6 +169,16 @@ function probeTabAccess() {
     return true;
 }
 
+// What Safari says when a decision exists and it is no. A probe that fails any
+// other way (the tab closed, the page is mid-teardown) says nothing about
+// access, and reading it as a refusal was how a closed tab got reported as "not
+// allowed on this tab" and a slow granted page lost its stored grant.
+const SAFARI_ACCESS_REFUSAL =
+    /does not have access|do(?:es)? not have permission|missing host permission|cannot access|can't access|not allowed/i;
+
+/** tabId to the probe running for it, so concurrent callers share one. @type {Map<number, Promise<void>>} */
+const tabAccessProbesInFlight = new Map();
+
 // Cheapest call that proves the extension can actually reach this tab. It also
 // raises Safari's dialog when there is no decision yet, which is wanted: the
 // user cannot answer a question nobody asked.
@@ -129,25 +189,55 @@ async function ensureTabAccess(tabId) {
         return;
     }
 
+    // A frame search asks for every frame at once, and each caller used to start
+    // a probe of its own, so a page with eight frames raised eight.
+    let running = tabAccessProbesInFlight.get(tabId);
+    if (!running) {
+        running = probeAccess(tabId).finally(() => tabAccessProbesInFlight.delete(tabId));
+        tabAccessProbesInFlight.set(tabId, running);
+    }
+    return running;
+}
+
+async function probeAccess(tabId) {
     // Read the origin first. The probe below is what raises Safari's dialog, and
     // once that dialog is up `tabs.get` blocks on it as well, so asking
     // afterwards returns nothing and the refusal cannot name the site it is
     // about. Measured against real Safari, which is the only place this shows.
     const origin = await originOfTab(tabId);
 
+    let refusal = null;
     try {
         await withDeadline(
             browser.scripting.executeScript({ target: { tabId }, func: probeTabAccess }),
             PERMISSION_PROBE_TIMEOUT_MS
         );
-        tabAccessProbes.set(tabId, { at: Date.now(), error: null });
-        rememberOriginAccess(origin, true);
     } catch (err) {
-        const refusal = permissionRequiredError(origin, err instanceof DeadlineExceeded);
-        tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
-        rememberOriginAccess(origin, false);
-        throw refusal;
+        if (err instanceof DeadlineExceeded) {
+            // The dialog is open. Nothing has been decided, so nothing stored
+            // about this site changes either way.
+            refusal = permissionRequiredError(origin, true);
+            tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
+            throw refusal;
+        }
+        if (!SAFARI_ACCESS_REFUSAL.test(String(err && err.message))) {
+            if (await tabIsGone(tabId)) throw tabClosedError(tabId, false);
+            throw err;
+        }
+        refusal = permissionRequiredError(origin, false);
     }
+
+    // The tab can navigate while the probe is out, and the probe then ran on
+    // some other origin than the one read above. What it proved cannot be
+    // attributed, so it is answered for this call and neither cached nor stored.
+    // Safe to ask now: with no dialog open, `tabs.get` answers.
+    if (await originOfTab(tabId) !== origin) {
+        if (refusal) throw refusal;
+        return;
+    }
+    tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
+    rememberOriginAccess(origin, refusal === null);
+    if (refusal) throw refusal;
 }
 
 /**
@@ -171,12 +261,25 @@ async function ensureTabAccess(tabId) {
 const grantedOrigins = new Set();
 const MAX_GRANTED_ORIGINS = 500;
 
+/**
+ * One set per read of the stored origins that is still out, each holding the
+ * origins refused since that read began. The read is merged underneath what was
+ * learned in the meantime, and a refusal leaves nothing in memory to win that
+ * merge, so without these the stored copy of a site that had just been refused
+ * brought it back.
+ *
+ * @type {Set<Set<string>>}
+ */
+const refusalsDuringLoads = new Set();
+
 function rememberOriginAccess(origin, granted) {
     if (!origin) return;
     if (!granted) {
+        for (const refused of refusalsDuringLoads) refused.add(origin);
         if (grantedOrigins.delete(origin)) persistGrantedOrigins();
         return;
     }
+    for (const refused of refusalsDuringLoads) refused.delete(origin);
     // Re-adding moves it to the recent end. Only a change in what is stored is
     // written: a probe lands on most calls, and its order alone is not worth a
     // storage write.
@@ -188,6 +291,17 @@ function rememberOriginAccess(origin, granted) {
         evicted = true;
     }
     if (!known || evicted) persistGrantedOrigins();
+}
+
+// What is kept in storage is a convenience across a suspension, so a write that
+// fails (a quota, an I/O error, no storage at all) is dropped. `set` returns a
+// promise, so a try/catch around the call sees none of that; the rejection has
+// to be caught on the promise or it surfaces as an unhandled one.
+function writeStorage(area, values) {
+    try {
+        const storage = browser.storage && browser.storage[area];
+        if (storage) Promise.resolve(storage.set(values)).catch(() => {});
+    } catch (_) { /* storage may not be available */ }
 }
 
 function failureResponse(id, error, resolvedTabId = null) {

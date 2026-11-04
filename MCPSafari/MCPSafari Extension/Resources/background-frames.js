@@ -21,6 +21,11 @@ function frameOfUid(value) {
 // being silent: a caller that builds a whole-page answer has to say it only
 // saw the top frame, the same way it says so for a frame that will not answer.
 async function listFrames(tabId) {
+    // Listing frames is a call into the page like any other: on an origin Safari
+    // has not decided it parks on the permission dialog, so the caller waited out
+    // the bridge timeout instead of hearing `permission_required`. Outside the
+    // try below, because a refusal must not read as "frames unavailable".
+    await ensureTabAccess(tabId);
     try {
         const frames = await browser.webNavigation.getAllFrames({ tabId });
         if (frames && frames.length > 0) return { frames, enumerated: true };
@@ -30,11 +35,23 @@ async function listFrames(tabId) {
     return { frames: [{ frameId: 0, parentFrameId: -1, url: "" }], enumerated: false };
 }
 
+// How a whole-page answer says what it could not read: one entry per frame that
+// would not answer, and one for a frame list that could not be read at all.
+// Not a frame, so the second has no id or origin to give. It takes the same list
+// because the caller's question is the same: is this the whole page?
+function unreachableFrame(frame) {
+    return { frameId: frame.frameId, origin: originOfUrl(frame.url) };
+}
+
+const FRAME_ENUMERATION_FAILED = { frameId: null, origin: null, reason: "frame_enumeration_failed" };
+
 // A frame whose document refuses the content script (a sandboxed or already
-// unloaded one) must not fail the whole call, so misses are dropped.
+// unloaded one) must not fail the whole call, so a miss is set aside, but not
+// forgotten: the caller is told which frames were not searched.
 async function collectFromFrames(tabId, message) {
-    const { frames } = await listFrames(tabId);
+    const { frames, enumerated } = await listFrames(tabId);
     const collected = [];
+    const unreachable = enumerated ? [] : [{ ...FRAME_ENUMERATION_FAILED }];
     for (const frame of frames) {
         try {
             collected.push({
@@ -43,9 +60,10 @@ async function collectFromFrames(tabId, message) {
             });
         } catch (err) {
             if (frame.frameId === 0) throw err;
+            unreachable.push(unreachableFrame(frame));
         }
     }
-    return collected;
+    return { collected, unreachable };
 }
 
 // The only failures that mean "the target is not in this frame". Anything else
@@ -107,12 +125,7 @@ async function waitInAnyFrame(tabId, message, frames) {
 async function snapshotAcrossFrames(tabId, params) {
     const { frames, enumerated } = await listFrames(tabId);
     const trees = new Map();
-    const unreachable = [];
-    // Not a frame, so there is no id or origin to give. It takes the same list
-    // because the caller's question is the same: is this tree the whole page?
-    if (!enumerated) {
-        unreachable.push({ frameId: null, origin: null, reason: "frame_enumeration_failed" });
-    }
+    const unreachable = enumerated ? [] : [{ ...FRAME_ENUMERATION_FAILED }];
     for (const frame of frames) {
         try {
             const tree = await sendToContentScript(
@@ -128,10 +141,7 @@ async function snapshotAcrossFrames(tabId, params) {
             // built to avoid. Safari grants "Always Allow on This Website" for
             // the top level only, so this is the ordinary case on a page with
             // third-party frames, not an exotic one.
-            unreachable.push({
-                frameId: frame.frameId,
-                origin: originOfUrl(frame.url),
-            });
+            unreachable.push(unreachableFrame(frame));
         }
     }
 
@@ -205,8 +215,12 @@ async function dispatchToContent(action, params, message) {
     }
 
     if (action === "find") {
-        const collected = await collectFromFrames(params.tabId, payload);
-        return collected.flatMap((entry) => entry.data || []);
+        const { collected, unreachable } = await collectFromFrames(params.tabId, payload);
+        const matches = collected.flatMap((entry) => entry.data || []);
+        // A list that is silently short looks complete, so a search that left
+        // frames out says which, as a snapshot does. A complete one stays a
+        // plain list.
+        return unreachable.length > 0 ? { matches, unreachableFrames: unreachable } : matches;
     }
 
     if (FRAME_SEARCHING_ACTIONS.has(action) && (params.selector || params.text)) {
@@ -232,43 +246,119 @@ const FRAME_SEARCHING_ACTIONS = new Set([
 ]);
 
 async function sendToContentScript(tabId, message, frameId = 0) {
-    const resolvedTabId = tabId || (await getActiveTabId());
+    // The router has named the tab by now (`withResolvedTab`). Not defaulted to
+    // the active tab here: a path that arrived without one would act on a page
+    // nobody chose, and ignore the tab a server pinned.
+    const resolvedTabId = tabId;
     // Before anything that can block on Safari's permission dialog. `wait` and
     // other long actions are unaffected: the probe is separate and short, and
     // the action keeps its own timing once access is established.
     await ensureTabAccess(resolvedTabId);
     // The frame learns its own id from the request it is answering.
     message = { ...message, frameId };
-    const options = { frameId };
+    const ask = () => browser.tabs.sendMessage(resolvedTabId, message, { frameId });
 
+    // Safari's `tabs.sendMessage` does not throw when no content script is
+    // listening: it resolves undefined, exactly as it does when the document
+    // goes away before replying. After the fact the two cannot be told apart,
+    // and guessing wrong either never injects (a tab opened before the extension
+    // was enabled fails every action) or sends a click twice. So an action that
+    // must not run twice asks first, with a message that changes nothing.
+    const repeatable = isRepeatSafe(message);
+    if (!repeatable) await ensureListener(resolvedTabId, frameId);
+
+    let response;
     try {
-        const response = await browser.tabs.sendMessage(resolvedTabId, message, options);
-        if (!response) throw new Error("Receiving end does not exist");
-        if (response && response.error) {
-            throw toolErrorFromResponse(response);
-        }
-        return response ? response.data : null;
-    } catch (err) {
-        // Content script might not be injected yet
-        if (
-            err.message &&
-            (err.message.includes("Could not establish connection") ||
-                err.message.includes("Receiving end does not exist"))
-        ) {
+        response = await ask();
+        // Cheaper than a ping for an action that can simply be asked again.
+        if (!response && repeatable) {
             await injectContentScripts(resolvedTabId);
-            const response = await browser.tabs.sendMessage(
-                resolvedTabId,
-                message,
-                options
-            );
-            if (!response) throw new Error("Content script did not respond after injection");
-            if (response && response.error) {
-                throw toolErrorFromResponse(response);
-            }
-            return response ? response.data : null;
+            response = await ask();
         }
+    } catch (err) {
+        // The thrown form, which other engines use and the test fake does too.
+        // The message never reached a page, so a second send repeats nothing.
+        if (!isNoReceiverError(err)) throw err;
+        await injectContentScripts(resolvedTabId);
+        response = await ask();
+    }
+    return unpackReply(response, message);
+}
+
+// Actions that change nothing, or that leave the page as one run leaves it, so
+// that asking twice is harmless. Everything else is sent once and only once.
+//   - read_page, get_page_text, snapshot, find: read the page. A snapshot may
+//     mint uids, and asking again mints or reuses them, which no caller can see.
+//   - element_rect, native_pointer_points: measure, scrolling the target into
+//     view, which a second scroll to the same place does not change.
+//   - prepare_native_input, prepare_native_key: focus the target, and focusing
+//     what is already focused does nothing.
+//   - wait: polls or sleeps. `waitAcrossNavigations` already asks it again.
+//   - get_console_messages, get_network_requests: reads, but see below.
+//   - ping: answers and nothing else.
+// Not here: click, type_text, form_input, select_option, press_key, hover, drag
+// and the file actions dispatch events, scroll is relative, start_trace,
+// stop_trace and handle_dialog hold state that a second call would reset or
+// consume.
+const REPEAT_SAFE_ACTIONS = new Set([
+    "read_page",
+    "get_page_text",
+    "snapshot",
+    "find",
+    "element_rect",
+    "native_pointer_points",
+    "prepare_native_input",
+    "prepare_native_key",
+    "wait",
+    "get_console_messages",
+    "get_network_requests",
+    "ping",
+]);
+
+function isRepeatSafe(message) {
+    if (!REPEAT_SAFE_ACTIONS.has(message.action)) return false;
+    // A read that clears what it read empties the buffer, so a second one would
+    // answer with nothing the first had not already taken.
+    const params = message.params || {};
+    return !params.clear && !params.clearIds;
+}
+
+// Makes sure a content script is listening in this frame, injecting it if not.
+// Safari reports a tab with nothing listening as undefined, not as an error, so
+// the question is put as a ping: no answer means nobody is there.
+async function ensureListener(tabId, frameId) {
+    if (await contentScriptAnswers(tabId, frameId)) return;
+    await injectContentScripts(tabId);
+    if (!(await contentScriptAnswers(tabId, frameId))) {
+        throw new Error("Content script did not respond after injection");
+    }
+}
+
+async function contentScriptAnswers(tabId, frameId) {
+    try {
+        const response = await browser.tabs.sendMessage(tabId, { action: "ping", frameId }, { frameId });
+        return Boolean(response) && !response.error;
+    } catch (err) {
+        if (isNoReceiverError(err)) return false;
         throw err;
     }
+}
+
+function isNoReceiverError(err) {
+    return Boolean(err && err.message
+        && (err.message.includes("Could not establish connection")
+            || err.message.includes("Receiving end does not exist")));
+}
+
+// The content script answers every message it takes with an object, so by now
+// no answer at all means the document went away before replying, and the
+// message was delivered: a click that navigates has clicked. It used to be
+// turned into a no-receiver error here, which injected the scripts and sent the
+// click a second time.
+function unpackReply(response, message) {
+    if (!response) throw replyLostError(message.action);
+    if (response.error) throw toolErrorFromResponse(response);
+    return response.data;
 }
 
 // Must stay in step with `content_scripts` in the manifest, in this order:

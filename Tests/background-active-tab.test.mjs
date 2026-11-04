@@ -37,6 +37,7 @@ function loadBackground({
             }),
             query: async (filter = {}) => (filter.active ? tabs.filter((tab) => tab.active) : tabs),
             sendMessage: async (tabId, message, options) => {
+                if (message.action === "ping") return { data: { ready: true }, error: null };
                 sent.push({ tabId, frameId: options ? options.frameId : 0, action: message.action });
                 afterSend(tabs);
                 return { data: [], error: null };
@@ -82,23 +83,23 @@ async function rejection(promise) {
 test("a pinned tab that was closed is an error, not a quiet switch to the active tab", async () => {
     // The user is looking at tab 1. The agent pinned tab 7, which has since closed.
     const harness = loadBackground({ tabs: [{ id: 1, active: true, windowId: 1 }] });
-    harness.call("selectedTabId = 7");
+    harness.call("pinnedTabs.set(8089, { tabId: 7, run: null })");
 
-    const err = await rejection(harness.call("getActiveTabId()"));
+    const err = await rejection(harness.call("getActiveTabId(8089)"));
 
     assert.equal(err.code, "tab_closed");
     assert.equal(err.retryable, false);
     assert.equal(err.recoveryAction, "call_tabs_context");
     assert.match(err.message, /select_tab/);
-    assert.equal(harness.call("selectedTabId"), null, "the dead pin is cleared so the next call is not stuck");
+    assert.equal(harness.call("pinnedTabs.get(8089)?.tabId ?? null"), null, "the dead pin is cleared so the next call is not stuck");
 });
 
 test("an untabbed type_text after the pinned tab closed does not land on the user's tab", async () => {
     const harness = loadBackground({ tabs: [{ id: 1, active: true, windowId: 1 }] });
-    harness.call("selectedTabId = 7");
+    harness.call("pinnedTabs.set(8089, { tabId: 7, run: null })");
 
     const response = await harness.call(
-        'handleRequest({ id: "r1", action: "type_text", params: { text: "hunter2" } })'
+        'handleRequest({ id: "r1", action: "type_text", params: { text: "hunter2" } }, 8089)'
     );
 
     assert.equal(response.success, false);
@@ -108,11 +109,11 @@ test("an untabbed type_text after the pinned tab closed does not land on the use
 
 test("the call after a tab_closed refusal resolves normally again", async () => {
     const harness = loadBackground({ tabs: [{ id: 1, active: true, windowId: 1 }] });
-    harness.call("selectedTabId = 7");
+    harness.call("pinnedTabs.set(8089, { tabId: 7, run: null })");
 
-    await rejection(harness.call("getActiveTabId()"));
+    await rejection(harness.call("getActiveTabId(8089)"));
 
-    assert.equal(await harness.call("getActiveTabId()"), 1);
+    assert.equal(await harness.call("getActiveTabId(8089)"), 1);
 });
 
 test("a pinned tab whose lookup fails for another reason keeps its pin", async () => {
@@ -121,24 +122,24 @@ test("a pinned tab whose lookup fails for another reason keeps its pin", async (
         tabs: [{ id: 1, active: true, windowId: 1 }, { id: 7, active: false, windowId: 1 }],
         getTab: async () => { throw new Error("transient failure"); },
     });
-    harness.call("selectedTabId = 7");
+    harness.call("pinnedTabs.set(8089, { tabId: 7, run: null })");
 
-    const err = await rejection(harness.call("getActiveTabId()"));
+    const err = await rejection(harness.call("getActiveTabId(8089)"));
 
     assert.match(err.message, /transient failure/);
     assert.notEqual(err.code, "tab_closed");
-    assert.equal(harness.call("selectedTabId"), 7);
+    assert.equal(harness.call("pinnedTabs.get(8089)?.tabId ?? null"), 7);
 });
 
 test("a pinned tab is kept when the listing that would confirm its absence fails too", async () => {
     const harness = loadBackground({ getTab: async () => { throw new Error("transient failure"); } });
     harness.call("browser.tabs.query = async () => { throw new Error('listing failed'); }");
-    harness.call("selectedTabId = 7");
+    harness.call("pinnedTabs.set(8089, { tabId: 7, run: null })");
 
-    const err = await rejection(harness.call("getActiveTabId()"));
+    const err = await rejection(harness.call("getActiveTabId(8089)"));
 
     assert.match(err.message, /transient failure/);
-    assert.equal(harness.call("selectedTabId"), 7);
+    assert.equal(harness.call("pinnedTabs.get(8089)?.tabId ?? null"), 7);
 });
 
 // An untabbed call used to look the active tab up again at every step, once per
@@ -188,6 +189,28 @@ test("a failed request still reports the tab it resolved", async () => {
 
     assert.equal(response.success, false);
     assert.equal(response.resolvedTabId, 4);
+});
+
+test("a handler reached without a resolved tab does not pick the active tab on its own", async () => {
+    // The router names the tab before any handler runs, so a handler that
+    // defaulted to the active tab itself was only ever reachable by a path that
+    // skipped the router, and would have ignored the tab a server pinned.
+    const harness = loadBackground({ tabs: [{ id: 1, active: true, windowId: 1 }] });
+    harness.call("globalThis.__activeLookups = 0");
+    harness.call("const real = browser.tabs.query; browser.tabs.query = async (filter) => { if (filter && filter.active) __activeLookups += 1; return real(filter); }");
+
+    for (const expression of [
+        "handleScreenshot({})",
+        "handleJavaScript({ code: '1' })",
+        "handleResizeWindow({ width: 800, height: 600 })",
+        "handleNavigate({ action: 'reload' })",
+        "focusTabForNativeInput(undefined)",
+        "sendToContentScript(undefined, { action: 'snapshot' })",
+    ]) {
+        await rejection(harness.call(expression));
+    }
+
+    assert.equal(harness.call("__activeLookups"), 0, "a handler looked the active tab up itself");
 });
 
 test("tools that act on no tab report none and never default to the active one", async () => {
