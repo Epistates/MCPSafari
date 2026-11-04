@@ -17,10 +17,9 @@ struct BridgeLifecycleTests {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
-        let first: UInt16 = 8301
-        var held = holdPorts(from: first, count: 10)
+        let (first, initial) = try #require(holdFreePorts(count: 10), "no run of ten free ports to occupy")
+        var held = initial
         defer { for descriptor in held { Darwin.close(descriptor) } }
-        try #require(held.count == 10, "every port in the sweep has to be occupied for this to test anything")
 
         let bridge = try WebSocketBridge(
             port: first,
@@ -55,10 +54,8 @@ struct BridgeLifecycleTests {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
-        let first: UInt16 = 8401
-        let held = holdPorts(from: first, count: 10)
+        let (first, held) = try #require(holdFreePorts(count: 10), "no run of ten free ports to occupy")
         defer { for descriptor in held { Darwin.close(descriptor) } }
-        try #require(held.count == 10, "every port in the sweep has to be occupied for this to test anything")
 
         let bridge = try WebSocketBridge(
             port: first,
@@ -87,10 +84,9 @@ struct BridgeLifecycleTests {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
-        let first: UInt16 = 8411
-        var held = holdPorts(from: first, count: 10)
+        let (first, initial) = try #require(holdFreePorts(count: 10), "no run of ten free ports to occupy")
+        var held = initial
         defer { for descriptor in held { Darwin.close(descriptor) } }
-        try #require(held.count == 10, "every port in the sweep has to be occupied for this to test anything")
 
         let bridge = try WebSocketBridge(
             port: first,
@@ -123,9 +119,8 @@ struct BridgeLifecycleTests {
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
         let (gateStream, gate) = AsyncStream<Void>.makeStream()
-        let port: UInt16 = 8391
         let bridge = try WebSocketBridge(
-            port: port,
+            port: 0,
             logger: Logger(label: "BridgeLifecycleTests"),
             tokenRoot: tokenRoot,
             beforeTokenPublication: { for await _ in gateStream { break } }
@@ -134,10 +129,14 @@ struct BridgeLifecycleTests {
         defer { gate.finish(); Task { await bridge.stop() } }
 
         // The listener accepts TCP as soon as it is ready, which is before the
-        // hook above returns, so this connects inside the gap.
+        // hook above returns, so this connects inside the gap. The port is the one
+        // the system chose, known once the listener is up.
         var dialled: RawSocket?
         let deadline = Date().addingTimeInterval(10)
-        while dialled == nil, Date() < deadline { dialled = RawSocket.dial(port: port) }
+        while dialled == nil, Date() < deadline {
+            let port = await bridge.port
+            if port != 0 { dialled = RawSocket.dial(port: port) }
+        }
         let socket = try #require(dialled, "the listener never came up")
 
         // Held means silent. A cancelled socket instead reads end-of-file or is reset.
@@ -149,14 +148,15 @@ struct BridgeLifecycleTests {
         #expect(socket.reply() == .upgraded)
     }
 
-    /// A listener left in place by one failed attempt would also make `stop()`
-    /// the only way back, so check the ordinary restart path stays intact.
-    @Test func aStoppedBridgeCanBeStartedAgain() async throws {
+    /// `start()` is launched from an unstructured task, so it can be scheduled after
+    /// the `stop()` that follows it, and that wrote a token file and a pid file just
+    /// before the process exited. Stopping is final.
+    @Test func aStoppedBridgeStaysStopped() async throws {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
         let bridge = try WebSocketBridge(
-            port: 8311,
+            port: 0,
             logger: Logger(label: "BridgeLifecycleTests"),
             tokenRoot: tokenRoot
         )
@@ -167,7 +167,24 @@ struct BridgeLifecycleTests {
         #expect(await bridge.status().listener == .stopped)
 
         await bridge.start()
-        #expect(await bridge.status().listener == .listening)
+        #expect(await bridge.status().listener == .stopped)
+        let written = (try? FileManager.default.contentsOfDirectory(atPath: tokenRoot.appendingPathComponent("tokens").path)) ?? []
+        #expect(written.isEmpty, "a start after stop published \(written)")
+    }
+
+    @Test func aStartThatNeverRanBeforeStopPublishesNothing() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let bridge = try WebSocketBridge(
+            port: 0,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoot: tokenRoot
+        )
         await bridge.stop()
+        await bridge.start()
+
+        #expect(await bridge.status().listener == .stopped)
+        #expect(!FileManager.default.fileExists(atPath: tokenRoot.appendingPathComponent("tokens").path))
     }
 }

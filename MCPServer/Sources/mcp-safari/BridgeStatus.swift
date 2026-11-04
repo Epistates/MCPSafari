@@ -82,6 +82,10 @@ extension WebSocketBridge {
         let bridge: ConnectionStatus
         let tokenFileExists: Bool
         let tokenFileSecure: Bool?
+        /// Where this server writes its token when that is not the standard location,
+        /// which is set by `MCP_SAFARI_TOKEN_ROOT` and meant for tests. The Safari
+        /// extension reads only the standard one, so it cannot find this server.
+        let tokenRootOverride: String?
         let extensionVersion: String?
         let extensionProtocolVersion: Int?
         let profiles: [ProfileStatus]
@@ -97,6 +101,7 @@ extension WebSocketBridge {
             case bridge
             case tokenFileExists
             case tokenFileSecure
+            case tokenRootOverride
             case extensionVersion
             case extensionProtocolVersion
             case profiles
@@ -117,6 +122,11 @@ extension WebSocketBridge {
                 try container.encode(tokenFileSecure, forKey: .tokenFileSecure)
             } else {
                 try container.encodeNil(forKey: .tokenFileSecure)
+            }
+            if let tokenRootOverride {
+                try container.encode(tokenRootOverride, forKey: .tokenRootOverride)
+            } else {
+                try container.encodeNil(forKey: .tokenRootOverride)
             }
             if let extensionVersion {
                 try container.encode(extensionVersion, forKey: .extensionVersion)

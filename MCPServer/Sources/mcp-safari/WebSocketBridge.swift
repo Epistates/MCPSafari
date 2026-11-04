@@ -36,7 +36,7 @@ actor WebSocketBridge {
     private var authenticatingConnections: [BridgeConnection] = []
     /// Challenges sent and not yet answered, by connection. A connection in
     /// `authenticatingConnections` without an entry here is still waiting to say hello.
-    private var pendingHandshakes: [UInt64: PendingHandshake] = [:]
+    private(set) var pendingHandshakes: [UInt64: PendingHandshake] = [:]
     /// Sockets that arrived after the listener was ready but before its token was on
     /// disk. They are not started, so the peer's upgrade waits in the kernel, until
     /// `start()` either goes live and admits them or fails and drops them. Refusing
@@ -46,6 +46,11 @@ actor WebSocketBridge {
     /// in the middle of one, and without this the sweep would carry on and open a
     /// listener on a bridge that has just been shut down.
     private var lifecycleGeneration = 0
+    /// Set by `stop()` and never cleared. The generation above only catches a `stop()`
+    /// that lands mid-sweep. A `start()` that was queued behind `stop()`, from the
+    /// unstructured task that launches it or from a retry that had already woken, ran
+    /// afterwards and wrote a token file and a pid file just before the process exited.
+    private var stopped = false
     /// The pending retry after a failed start, and how many have failed in a row.
     private var rebindTask: Task<Void, Never>?
     private var rebindAttempts = 0
@@ -56,6 +61,12 @@ actor WebSocketBridge {
     }
 
     private var pendingRequests: [String: PendingRequest] = [:]
+    /// The lock on this bridge's `<port>.pid` file while it owns a token. See
+    /// `BridgeOwnerRecord`.
+    private var ownerLock: Int32?
+    /// A process that opens sockets in a loop would otherwise write a warning per
+    /// socket to the one channel the MCP client shows its user.
+    private var refusalLog = LogThrottle(interval: .seconds(30))
     private let logger: Logger
     private let tokenRoot: URL
     private let requestedPort: UInt16
@@ -118,7 +129,43 @@ actor WebSocketBridge {
     /// created the directory before the first read. They are compared for
     /// equality in tests, and two URLs differing only by that slash are not
     /// equal.
-    static let applicationSupportDirectoryURL: URL = {
+    static let applicationSupportDirectoryURL: URL = applicationSupportDirectory()
+
+    /// The one place that location is decided, which is why `ProtectedPaths` and the
+    /// doctor follow the override below without knowing about it.
+    ///
+    /// `MCP_SAFARI_TOKEN_ROOT` moves it, and exists for tests that start the real
+    /// server. Without it such a test writes into the directory a running Safari
+    /// extension reads, which then dials the test's server, and a test can end up
+    /// driving the user's actual browser. The extension reads only the standard
+    /// location, so a server started with this set is one it cannot see, and
+    /// `status` and `doctor` say so. A relative path is ignored here and refused by
+    /// `parseCommand`: it would mean a different directory depending on where the
+    /// server happened to be started.
+    static func applicationSupportDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        if let override = tokenRootOverride(in: environment) {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return standardApplicationSupportDirectoryURL
+    }
+
+    static let tokenRootEnvironmentVariable = "MCP_SAFARI_TOKEN_ROOT"
+
+    /// The override, when one is set to an absolute path.
+    static func tokenRootOverride(
+        in environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        guard let value = environment[tokenRootEnvironmentVariable]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              value.hasPrefix("/")
+        else { return nil }
+        return value
+    }
+
+    /// Where the extension looks, whatever the environment says.
+    static let standardApplicationSupportDirectoryURL: URL = {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Application Support", isDirectory: true)
@@ -186,8 +233,14 @@ actor WebSocketBridge {
         // to a rejected build only when nothing is connected to report instead.
         let reported = activeProfileID.flatMap { metadataByProfile[$0] } ?? rejectedExtension
         let fileManager = FileManager.default
-        let tokenFileExists = fileManager.fileExists(atPath: tokenFilePath)
-        let permissions = (try? fileManager.attributesOfItem(atPath: tokenFilePath)[.posixPermissions] as? NSNumber)?.intValue
+        // Only while listening, because only then is the file at `port` this bridge's.
+        // After a failed bind `port` goes back to the requested one, and the file
+        // there belongs to whichever other server holds it: reporting that one's
+        // token as ours is a healthy answer to an unhealthy bridge.
+        let tokenFileExists = listenerStatus == .listening && fileManager.fileExists(atPath: tokenFilePath)
+        let permissions = tokenFileExists
+            ? (try? fileManager.attributesOfItem(atPath: tokenFilePath)[.posixPermissions] as? NSNumber)?.intValue
+            : nil
         let connectionStatus: ConnectionStatus = !connections.isEmpty
             ? .authenticated
             : authenticatingConnections.isEmpty ? .disconnected : .authenticating
@@ -202,6 +255,9 @@ actor WebSocketBridge {
             bridge: connectionStatus,
             tokenFileExists: tokenFileExists,
             tokenFileSecure: tokenFileExists ? permissions == 0o600 : nil,
+            tokenRootOverride: tokenRoot.standardizedFileURL == Self.standardApplicationSupportDirectoryURL.standardizedFileURL
+                ? nil
+                : tokenRoot.path,
             extensionVersion: reported?.version,
             extensionProtocolVersion: reported?.protocolVersion,
             profiles: profileStatuses(),
@@ -218,6 +274,10 @@ actor WebSocketBridge {
     /// (`MAX_DISCOVERED_PORTS` in `background-config.js`), so a range this server
     /// can use is never wider than what the extension will dial.
     static let defaultPortCount: UInt16 = 10
+    /// The lowest port a server is started on. The extension dials no port below
+    /// this (`MIN_BRIDGE_PORT` in `background-bridge.js`), so a server on one would
+    /// be running and unreachable.
+    static let minPort: UInt16 = 1024
     static let maxPortCount: UInt16 = 64
 
     /// The last port of a sweep of `count` ports from `first`, held at 65535 so a
@@ -313,10 +373,9 @@ actor WebSocketBridge {
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tokenDirectory.path)
 
         // The owner goes first, so a token never exists on disk without a record of
-        // whose it is.
-        let ownerFilePath = ownerFile(for: port).path
-        try String(getpid()).write(toFile: ownerFilePath, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ownerFilePath)
+        // whose it is. The record stays locked until this bridge lets go of the token.
+        if let held = ownerLock { close(held) }
+        ownerLock = try BridgeOwnerRecord.claim(at: ownerFile(for: port), pid: getpid())
 
         let tokenFilePath = tokenFile(for: port).path
         try authToken.write(toFile: tokenFilePath, atomically: true, encoding: .utf8)
@@ -324,7 +383,7 @@ actor WebSocketBridge {
     }
 
     func start() async {
-        guard listener == nil else { return }
+        guard !stopped, listener == nil else { return }
         // Whoever called this has superseded a retry that was still waiting.
         rebindTask?.cancel()
         rebindTask = nil
@@ -457,6 +516,12 @@ actor WebSocketBridge {
         if (try? String(contentsOf: owner, encoding: .utf8)) == String(getpid()) {
             try? FileManager.default.removeItem(at: owner)
         }
+        // After the removals, so the record is never unlocked while it still names
+        // a token that is about to be deleted.
+        if let held = ownerLock {
+            close(held)
+            ownerLock = nil
+        }
     }
 
     /// Deletes per-port tokens whose owning process is gone.
@@ -473,13 +538,16 @@ actor WebSocketBridge {
         for name in names where name.hasSuffix(".pid") {
             guard let port = UInt16(name.dropLast(".pid".count)) else { continue }
             let owner = ownerFile(for: port)
-            guard let text = try? String(contentsOf: owner, encoding: .utf8),
-                  let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  pid > 1, pid != getpid(), !Self.isProcessAlive(pid)
-            else { continue }
-            logger.info("Removing the token for port \(port): its server (pid \(pid)) is gone")
-            try? fileManager.removeItem(at: tokenFile(for: port))
-            try? fileManager.removeItem(at: owner)
+            // Under the record's lock, so a server that claims this port between the
+            // read and the removal is not left without its files. A record whose lock
+            // is held belongs to a live server and is skipped without being read.
+            BridgeOwnerRecord.withAbandonedRecord(at: owner) { recordedPID in
+                guard let pid = recordedPID, pid > 1, pid != getpid(), !Self.isProcessAlive(pid)
+                else { return }
+                logger.info("Removing the token for port \(port): its server (pid \(pid)) is gone")
+                try? FileManager.default.removeItem(at: tokenFile(for: port))
+                try? FileManager.default.removeItem(at: owner)
+            }
         }
     }
 
@@ -505,6 +573,7 @@ actor WebSocketBridge {
 
     func stop() {
         // Remove only owned per-port tokens while this listener still owns its port.
+        stopped = true
         removeOwnedTokenFiles(for: port)
         lifecycleGeneration += 1
         rebindTask?.cancel()
@@ -759,7 +828,13 @@ actor WebSocketBridge {
         // loop could keep Safari from ever authenticating. That is the invariant
         // stated above `authenticatingConnections`.
         if authenticatingConnections.count >= Self.maxAuthenticatingConnections {
-            logger.warning("Refusing a connection: \(Self.maxAuthenticatingConnections) others are still mid-handshake")
+            // Once per interval. Whatever is holding the slots can refuse itself
+            // faster than anyone reads this, and each line is one the MCP client
+            // shows its user.
+            if let held = refusalLog.admit() {
+                let earlier = held > 0 ? " (\(held) more refused since this was last reported)" : ""
+                logger.warning("Refusing a connection: \(Self.maxAuthenticatingConnections) others are still mid-handshake\(earlier)")
+            }
             socket.cancel()
             return
         }
@@ -877,7 +952,14 @@ actor WebSocketBridge {
             || authenticatingConnections.contains { $0.id == conn.id }
     }
 
-    private func handleTextMessage(_ data: Data, from conn: BridgeConnection) {
+    /// Internal so a test can deliver a frame the way a queued receive would.
+    func handleTextMessage(_ data: Data, from conn: BridgeConnection) {
+        // A frame can reach here after its connection was dropped: the receive that
+        // read it queued this call, and the handshake deadline ran in between. A
+        // hello taken then left a `pendingHandshakes` entry nothing would ever
+        // remove, and answered on a socket that was already cancelled.
+        guard isKnownConnection(conn) else { return }
+
         // A handshake only means anything before this connection has one. Taking
         // a second one re-registered the same socket under a new profile id and
         // left the first `connections` entry pointing at it forever, so
@@ -905,7 +987,20 @@ actor WebSocketBridge {
             }
         } catch {
             logger.error("Failed to decode bridge response: \(error)")
+            failUndecodableReply(data, from: conn)
         }
+    }
+
+    /// A reply that cannot be read still says which request it answers, and the
+    /// action it reports on has already run. Leaving the request to its timeout told
+    /// the caller nothing for thirty seconds and then that it may have timed out.
+    /// Only the connection the request went out on may fail it, as with a decoded reply.
+    private func failUndecodableReply(_ data: Data, from conn: BridgeConnection) {
+        guard let id = BridgeResponse.recoverID(from: data),
+              let pending = pendingRequests[id],
+              pending.connectionID == conn.id
+        else { return }
+        removePendingAndResume(id: id, error: BridgeError.malformedResponse)
     }
 
     /// One frame from a connection that has not finished its handshake. Which step

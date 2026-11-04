@@ -50,6 +50,20 @@ func holdPorts(from first: UInt16, count: UInt16) -> [Int32] {
     return held
 }
 
+/// Occupies `count` consecutive loopback ports that were free when asked, chosen at
+/// run time. Fixed numbers collide with another copy of the suite, with a developer's
+/// own server, and with whatever else happens to listen on the machine; this
+/// retries elsewhere instead. The caller closes the descriptors.
+func holdFreePorts(count: UInt16) -> (first: UInt16, descriptors: [Int32])? {
+    for _ in 0..<100 {
+        let first = UInt16.random(in: 20_000...60_000)
+        let held = holdPorts(from: first, count: count)
+        if held.count == Int(count) { return (first, held) }
+        for descriptor in held { Darwin.close(descriptor) }
+    }
+    return nil
+}
+
 /// Runs `body` against a started bridge and stops it afterwards, with its token
 /// files in a directory of its own. `port` 0 takes any free port, which keeps
 /// tests from colliding; the port it bound is passed to `body`.
