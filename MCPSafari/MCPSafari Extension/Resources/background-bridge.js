@@ -54,12 +54,95 @@ function handshakeMessage(role, port, first, second) {
     return utf8(`mcpsafari-v${BRIDGE_PROTOCOL_VERSION}-${role}|${port}|${first}|${second}`);
 }
 
+// ─── Limits shared with the server ───────────────────────────────────
+//
+// Each of these has a twin in the Swift sources, and `Tests/bridge-constants.test.mjs`
+// reads them from there and fails when the two drift apart.
+
+// The lowest port the server will bind and the extension will dial. A lower one
+// needs privileges the server does not have, so a token file naming one is not ours.
+const MIN_BRIDGE_PORT = 1024;
+// The most a reply may weigh once serialised. The server drops the whole connection
+// at 32 MiB (`WebSocketBridge.maxMessageBytes`), failing every other request in
+// flight on it, so a reply that would cross that is answered with an error instead.
+// The margin is for the framing and for the error reply that takes its place.
+const MAX_REPLY_BYTES = 31 * 1024 * 1024;
+// How long a socket may take to finish the handshake. The server's own deadline is
+// shorter, and answers a bad token; this is for a listener that accepts and then
+// says nothing, which would otherwise leave the connection looking busy for good.
+const HANDSHAKE_TIMEOUT_MS = 5000;
+
+// ─── Replies ─────────────────────────────────────────────────────────
+
+/**
+ * `response` as JSON the server's decoder accepts.
+ *
+ * `JSON.stringify` writes a lone surrogate, such as the half of an emoji a string
+ * was cut through, as a `\ud83d` escape. That is valid JSON text, and Swift's
+ * `JSONDecoder` refuses it, which dropped the whole reply and left the request
+ * waiting out its timeout for an action that had already run. Replacing each one
+ * with U+FFFD here means every string the server reads is well formed. Keys count:
+ * they are strings too, and the replacer only sees values.
+ */
+function stringifyWellFormed(response) {
+    return JSON.stringify(response, function (key, value) {
+        if (typeof value === "string") return value.toWellFormed();
+        if (value && typeof value === "object" && !Array.isArray(value)
+            && Object.keys(value).some((name) => !name.isWellFormed())) {
+            return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name.toWellFormed(), entry]));
+        }
+        return value;
+    });
+}
+
+/** UTF-8 bytes of `text`, without copying it unless it could be large. */
+function utf8ByteLength(text) {
+    // A UTF-16 unit is at most three bytes, so most replies are settled by length alone.
+    return text.length * 3 <= MAX_REPLY_BYTES ? text.length * 3 : utf8(text).length;
+}
+
+/** The text of the frame that answers with `response`, or an error for the same id when it is too large to send. */
+function replyFrame(response) {
+    const text = stringifyWellFormed(response);
+    if (utf8ByteLength(text) <= MAX_REPLY_BYTES) return text;
+
+    const error = new Error(
+        `The result is larger than the ${MAX_REPLY_BYTES / (1024 * 1024)} MiB the bridge can carry. `
+        + "Ask for less: a smaller region, a lower limit, or a narrower selector."
+    );
+    error.code = "response_too_large";
+    error.retryable = false;
+    error.recoveryAction = "fix_input";
+    return stringifyWellFormed(failureResponse(response.id, error, response.resolvedTabId ?? null));
+}
+
+/**
+ * The one place a reply leaves this extension. A socket that closed while the
+ * request ran has nothing to receive it, and a `send` on it throws, so neither is
+ * left to surface as an unhandled rejection from the message handler.
+ */
+function sendReply(socket, port, response) {
+    if (socket.readyState !== WebSocket.OPEN) {
+        console.warn(`[MCPSafari:${port}] Dropping the reply to ${response.id}: the connection closed first`);
+        return;
+    }
+    try {
+        socket.send(replyFrame(response));
+    } catch (err) {
+        console.error(`[MCPSafari:${port}] Could not send the reply to ${response.id}:`, err);
+    }
+}
+
 // ─── WebSocket Connection ────────────────────────────────────────────
 
 function connectToPort(port) {
     const conn = connections.get(port);
     if (!conn) return;
-    if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) return;
+    // A socket on its way out still holds the slot. Dialling over it orphaned the
+    // live one when the old close arrived: see the identity check in `onclose`.
+    if (conn.ws && (conn.ws.readyState === WebSocket.OPEN
+        || conn.ws.readyState === WebSocket.CONNECTING
+        || conn.ws.readyState === WebSocket.CLOSING)) return;
 
     // Security: every server instance requires its per-port auth token.
     const authToken = authTokensByPort.get(port);
@@ -92,6 +175,13 @@ function connectToPort(port) {
         stage = "refused";
         socket.close();
     };
+
+    // A listener that accepts the connection and then never speaks leaves this
+    // socket waiting, and every redial returns early while one is in progress, so
+    // without a limit the port stays stuck until Safari suspends the page.
+    const handshakeTimer = setTimeout(() => {
+        if (stage !== "ready" && stage !== "refused") refuse("The server did not finish the handshake in time");
+    }, HANDSHAKE_TIMEOUT_MS);
 
     socket.onopen = () => {
         clientNonce = randomNonce();
@@ -168,6 +258,7 @@ function connectToPort(port) {
                 return refuse(`Protocol mismatch: extension=${BRIDGE_PROTOCOL_VERSION}, server=${msg.protocolVersion}`);
             }
             stage = "ready";
+            clearTimeout(handshakeTimer);
             authenticated = true;
             conn.lastConnected = Date.now();
             conn.state = "connected";
@@ -203,14 +294,21 @@ function connectToPort(port) {
 
         try {
             const response = await handleRequest(request);
-            socket.send(JSON.stringify(response));
+            sendReply(socket, port, response);
         } catch (err) {
             console.error(`[MCPSafari:${port}] Error:`, err);
-            socket.send(JSON.stringify(failureResponse(request.id, err)));
+            sendReply(socket, port, failureResponse(request.id, err));
         }
     };
 
     socket.onclose = () => {
+        clearTimeout(handshakeTimer);
+        // Only the socket the connection currently holds may change its state. An
+        // older one closing late, after a redial replaced it, reached this and set
+        // `ws` to null under the live socket: nothing then owned it, the next dial
+        // made a third, and the server closed the live one as a duplicate profile.
+        // A connection that was dropped or replaced since has nothing to update.
+        if (connections.get(port) !== conn || conn.ws !== socket) return;
         conn.state = "disconnected";
         conn.ws = null;
         if (conn.disconnectedAt === 0) conn.disconnectedAt = Date.now();
@@ -296,6 +394,8 @@ function pruneRemovedTokenPorts() {
     }
 }
 
+// Stops dialling a port until the next keepalive, which forgets every suppression
+// and tries again while the token file is still there.
 function suppressStaleTokenPort(port) {
     const token = authTokensByPort.get(port);
     if (token) staleTokensByPort.set(port, token);
