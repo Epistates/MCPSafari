@@ -505,6 +505,9 @@ actor SafariMCPServer {
         params.merge(extraParams) { _, supplied in supplied }
 
         let traceSession = try await startTraceIfNeeded(args)
+        // The action goes to the tab the trace is on, not to whichever is selected
+        // by the time it is sent.
+        let args = traceSession?.pinning(args) ?? args
         do {
             let response = try await send(action, args, params: params)
             return try await resultAfterAction(response, args, wantSnapshot: wantSnapshot, traceSession: traceSession)
@@ -573,6 +576,7 @@ actor SafariMCPServer {
     ) async throws -> CallTool.Result {
         try Self.ensureNativeInputPermission()
         let traceSession = try await startTraceIfNeeded(args)
+        let args = traceSession?.pinning(args) ?? args
         do {
             let (preparation, delivered) = try await NativeInputLock.withLock(
                 timeout: Self.bridgeTimeout(args)
@@ -644,6 +648,7 @@ actor SafariMCPServer {
     private func handleFormInput(_ args: [String: Value]) async throws -> CallTool.Result {
         let params: [String: AnyCodable] = ["fields": AnyCodable(try Self.formInputFields(args))]
         let traceSession = try await startTraceIfNeeded(args)
+        let args = traceSession?.pinning(args) ?? args
         do {
             let response = try await send("form_input", args, params: params)
             return try await resultAfterAction(response, args, traceSession: traceSession)
@@ -767,6 +772,15 @@ actor SafariMCPServer {
         batchArgs["_batchDeadline"] = .double(ProcessInfo.processInfo.systemUptime + plan.timeout)
         let traceSession = try await startTraceIfNeeded(batchArgs)
         let pin = BatchTabPin()
+        // A trace lives on the tab it started on, and that is the batch's tab: the
+        // steps that name none act there, and the trace and the final snapshot are
+        // read from there. Left to the first step's response, a first step on some
+        // other tab would have made that the batch's tab and stopped the trace on a
+        // tab that has none.
+        if let tab = traceSession?.tab {
+            pin.recordFirst(tab)
+            batchArgs = traceSession?.pinning(batchArgs) ?? batchArgs
+        }
         var results: [Value] = []
         var content: [Tool.Content] = []
 
@@ -925,6 +939,15 @@ actor SafariMCPServer {
         let duration: Double
         /// The tab `start_trace` resolved, when the extension reported one.
         let tab: TabHandle?
+
+        /// `args` aimed at that tab when the caller named none. The action the
+        /// trace is for happens there, and so does everything that follows it.
+        func pinning(_ args: [String: Value]) -> [String: Value] {
+            guard args["tabId"] == nil || args["tabId"] == .null, let tab else { return args }
+            var pinned = args
+            pinned["tabId"] = .string(tab.description)
+            return pinned
+        }
     }
 
     private func resultAfterAction(
@@ -1012,10 +1035,11 @@ actor SafariMCPServer {
         _ args: [String: Value],
         waitForDuration: Bool = true
     ) async throws -> BridgeResponse {
-        // The trace lives on the tab it was started on. Stopping it is aimed
-        // there when nothing more specific names a tab.
+        // The trace lives on the tab it was started on, so stopping it goes there
+        // whatever tab the rest of the call has been addressed to: a batch whose
+        // first step is on another tab would otherwise stop it where there is none.
         var args = args
-        if args["tabId"] == nil || args["tabId"] == .null, let tab = traceSession.tab {
+        if let tab = traceSession.tab {
             args["tabId"] = .string(tab.description)
         }
         if waitForDuration, traceSession.duration > 0 {

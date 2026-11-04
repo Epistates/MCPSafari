@@ -376,7 +376,9 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     start = requests.length;
     await tool("click", { selector: "body", trace: true, traceDuration: 0 });
     moveSelectionAfter = undefined;
-    assert.deepEqual(sentSince(start), ["start_trace:-", "click:-", "stop_trace:7"]);
+    // The action goes to the tab the trace started on, not to whichever is selected
+    // by the time it is sent.
+    assert.deepEqual(sentSince(start), ["start_trace:-", "click:7", "stop_trace:7"]);
 
     // An explicit tab is left alone.
     selectedTab = 9;
@@ -401,9 +403,23 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     moveSelectionAfter = undefined;
     assert.equal(pinnedBatch.structuredContent.completedSteps, 4);
     assert.deepEqual(sentSince(start), [
-        "start_trace:-", "click:-", "hover:7", "wait:7", "click:3", "stop_trace:7", "snapshot:7",
+        "start_trace:-", "click:7", "hover:7", "wait:7", "click:3", "stop_trace:7", "snapshot:7",
     ]);
     selectedTab = 7;
+
+    // A batch whose first step is on another tab still stops its trace on the tab
+    // it started on, and a later step that names none acts there too.
+    start = requests.length;
+    await tool("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body", tabId: "p0t3" } },
+            { tool: "click", arguments: { selector: "body" } },
+        ],
+        trace: true, traceDuration: 0, includeSnapshot: true,
+    });
+    assert.deepEqual(sentSince(start), [
+        "start_trace:-", "click:3", "click:7", "stop_trace:7", "snapshot:7",
+    ]);
 
     // A batch that names a tab uses it throughout.
     start = requests.length;
