@@ -264,6 +264,10 @@ Use `form_input` to fill multiple fields at once:
 
 This uses React-compatible value setting (`nativeInputValueSetter`) so it works with controlled inputs in React, Next.js, and similar frameworks.
 
+A `<select>` takes the option it names, by value or else by label, the same way `select_option` does. A field that cannot take its value, such as an option that does not exist or an element that is not a form control, is reported in that field's line of the result and does not stop the fields after it or undo the ones before it. The call fails only when no field could be filled.
+
+`select_option` selects the option itself, so with repeated values the label picks the right one. It fires `input` and then `change`, as a user's choice does, and refuses a disabled option (or one in a disabled group) with `invalid_input`, since a user could not choose it.
+
 `type_text` with `submitKey: "Enter"` submits the way the browser does. It sends keydown, keypress and keyup, and if the page cancelled the key it does nothing more, since the page has handled it. Otherwise a text-like input (text, search, url, tel, email, password, number, and the date and time types) submits its form by the HTML implicit submission rules: the form's first submit button is clicked, and nothing is submitted if that button is disabled. A form with no submit button is submitted only when it has a single such field. A `<textarea>` takes Enter as a newline and never submits.
 
 ### File upload and drop

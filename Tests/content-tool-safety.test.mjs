@@ -199,19 +199,38 @@ test("find by selector is capped like the other match strategies", async () => {
 
 // ─── select_option ───────────────────────────────────────────────────
 
-function selectHarness(optionValues) {
-    const options = optionValues.map((value) => ({ value, textContent: value.toUpperCase() }));
-    let stored = optionValues[0];
-    const select = el("select", { id: "s" });
-    select.options = options;
-    // Mirrors the real setter: an unmatched value clears the selection.
-    Object.defineProperty(select, "value", {
-        get: () => stored,
-        set: (v) => { stored = options.some((o) => o.value === v) ? v : ""; },
+// Options are {value, label, disabled}; a bare string is its own value, labelled
+// in capitals. Selecting one by setting `selected` moves the selection, as the
+// real element does, and `events` records what the select was sent.
+function selectHarness(specs, { multiple = false } = {}) {
+    let selectedIndex = 0;
+    const chosen = new Set([0]);
+    const events = [];
+    const options = specs.map((spec, index) => {
+        const { value, label = value.toUpperCase(), disabled = false } = typeof spec === "string" ? { value: spec } : spec;
+        return {
+            value,
+            textContent: label,
+            disabled,
+            get selected() { return chosen.has(index); },
+            set selected(on) {
+                if (on && !multiple) chosen.clear();
+                if (on) { chosen.add(index); selectedIndex = index; } else chosen.delete(index);
+            },
+        };
     });
+    const select = el("select", {
+        id: "s",
+        extra: { dispatchEvent(event) { events.push(event.type); return true; } },
+    });
+    select.options = options;
+    select.multiple = multiple;
+    Object.defineProperty(select, "value", { get: () => options[selectedIndex].value });
     return {
         select,
-        current: () => stored,
+        events,
+        current: () => options[selectedIndex].value,
+        selected: () => [...chosen].sort(),
         call: loadContent(el("body", {}, [select]), { querySelector: () => select }),
     };
 }
@@ -247,7 +266,79 @@ test("select_option requires a value or label", async () => {
     assert.equal(response.recoveryAction, "fix_input");
 });
 
+test("select_option by label picks that option when values repeat", async () => {
+    const { call, selected, current } = selectHarness([
+        { value: "x", label: "Standard" },
+        { value: "x", label: "Express" },
+    ]);
+
+    const response = await call("select_option", { selector: "#s", label: "Express" });
+
+    assert.equal(response.error, null);
+    assert.deepEqual(selected(), [1], "the second option, not the first that shares its value");
+    assert.equal(current(), "x");
+});
+
+test("select_option fires input and then change", async () => {
+    const { call, events } = selectHarness(["a", "b"]);
+
+    await call("select_option", { selector: "#s", value: "b" });
+
+    assert.deepEqual(events, ["input", "change"]);
+});
+
+test("select_option will not choose a disabled option, and takes an enabled twin", async () => {
+    const disabled = selectHarness(["a", { value: "b", disabled: true }]);
+    const refused = await disabled.call("select_option", { selector: "#s", value: "b" });
+    assert.equal(refused.errorCode, "invalid_input");
+    assert.match(refused.error, /disabled/);
+    assert.deepEqual(disabled.selected(), [0]);
+    assert.deepEqual(disabled.events, [], "nothing was dispatched for a refused choice");
+
+    const twins = selectHarness(["a", { value: "b", label: "Off", disabled: true }, { value: "b", label: "On" }]);
+    assert.equal((await twins.call("select_option", { selector: "#s", value: "b" })).error, null);
+    assert.deepEqual(twins.selected(), [2]);
+});
+
+test("select_option on a multiple select leaves just the chosen option", async () => {
+    const { call, selected } = selectHarness(["a", "b", "c"], { multiple: true });
+    await call("select_option", { selector: "#s", value: "c" });
+    assert.deepEqual(selected(), [2]);
+});
+
 // ─── form_input ──────────────────────────────────────────────────────
+
+test("form_input fills a select by value or label instead of throwing", async () => {
+    const byValue = selectHarness([{ value: "us", label: "United States" }, { value: "ca", label: "Canada" }]);
+    const valueResult = await byValue.call("form_input", { fields: { "#s": "ca" } });
+    assert.equal(valueResult.error, null);
+    assert.match(valueResult.data, /#s: filled/);
+    assert.equal(byValue.current(), "ca");
+
+    const byLabel = selectHarness([{ value: "us", label: "United States" }, { value: "ca", label: "Canada" }]);
+    assert.equal((await byLabel.call("form_input", { fields: { "#s": "Canada" } })).error, null);
+    assert.equal(byLabel.current(), "ca");
+});
+
+test("form_input reports a field it cannot fill and keeps the ones it did", async () => {
+    const text = el("input", { id: "name", extra: { value: "", type: "text" } });
+    const { select } = selectHarness(["a", "b"]);
+    const heading = el("h1", { id: "title" });
+    const byId = { "#name": text, "#s": select, "#title": heading };
+    const run = loadContent(el("body", {}, [text, select, heading]), { querySelector: (selector) => byId[selector] || null });
+
+    const mixed = await run("form_input", { fields: { "#name": "Jane", "#s": "nope", "#title": "x" } });
+
+    assert.equal(mixed.error, null);
+    assert.match(mixed.data, /#name: filled/);
+    assert.match(mixed.data, /#s: No option with value "nope"|#s: Option with label "nope" not found/);
+    assert.match(mixed.data, /#title: <h1> is not a fillable field/);
+    assert.equal(text.value, "Jane", "the earlier field stays filled");
+
+    const none = await run("form_input", { fields: { "#s": "nope", "#title": "x" } });
+    assert.equal(none.errorCode, "invalid_input");
+    assert.match(none.error, /No form field could be filled/);
+});
 
 test("form_input fails when no field matched, but reports a partial fill", async () => {
     const field = el("input", { id: "a", extra: { value: "" } });

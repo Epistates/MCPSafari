@@ -312,6 +312,7 @@
 
         const results = [];
         const missing = [];
+        const failed = [];
 
         for (const [selector, value] of entries) {
             const el = deepQueryFirst(selector);
@@ -320,14 +321,30 @@
                 results.push(`${selector}: not found`);
                 continue;
             }
-            el.focus();
-            setInputValue(el, value, false);
-            results.push(`${selector}: filled`);
+            // One field that cannot take its value is reported with the others,
+            // not thrown: the fields before it are already filled, and an error
+            // would hide that.
+            try {
+                el.focus();
+                fillField(el, value);
+                results.push(`${selector}: filled`);
+            } catch (error) {
+                failed.push(selector);
+                results.push(`${selector}: ${error.message}`);
+            }
         }
 
         // A partial fill still reports per-field results, but filling nothing is a
         // failure rather than a success whose body happens to say "not found".
-        if (missing.length === entries.length) {
+        if (missing.length + failed.length === entries.length) {
+            if (failed.length > 0) {
+                throw toolError(
+                    "invalid_input",
+                    `No form field could be filled: ${results.join("; ")}`,
+                    false,
+                    "fix_input"
+                );
+            }
             throw toolError(
                 "target_not_found",
                 `No form fields matched: ${missing.join(", ")}`,
@@ -337,6 +354,21 @@
         }
 
         return results.join("\n");
+    }
+
+    // A text control takes the value as typed; a select takes the option it
+    // names, by value or else by label. Anything else has nowhere to put it,
+    // and the native setters would throw an "Illegal invocation" for it.
+    function fillField(el, value) {
+        const tag = el.tagName.toLowerCase();
+        if (tag === "select") {
+            const byValue = Array.from(el.options).some((option) => option.value === String(value));
+            chooseOption(el, byValue ? { value } : { label: String(value) });
+        } else if (tag === "input" || tag === "textarea" || el.isContentEditable) {
+            setInputValue(el, value, false);
+        } else {
+            throw toolError("invalid_input", `<${tag}> is not a fillable field`, false, "fix_input");
+        }
     }
 
     // ─── Select Option ───────────────────────────────────────────────
@@ -368,38 +400,51 @@
             );
         }
 
-        if (params.value !== undefined) {
-            // Assigning an unmatched value clears the selection instead of
-            // throwing, so verify it took rather than reporting a silent no-op.
-            const previous = el.value;
-            el.value = params.value;
-            if (el.value !== String(params.value)) {
-                el.value = previous;
-                throw toolError(
-                    "target_not_found",
-                    `No option with value "${params.value}" in <select>`,
-                    false,
-                    "take_snapshot"
-                );
-            }
-        } else {
-            const option = Array.from(el.options).find(
-                (o) => o.textContent.trim() === params.label
-            );
-            if (!option) {
-                throw toolError(
-                    "target_not_found",
-                    `Option with label "${params.label}" not found`,
-                    false,
-                    "take_snapshot"
-                );
-            }
-            el.value = option.value;
-        }
-
-        el.dispatchEvent(new Event("change", { bubbles: true }));
+        chooseOption(el, params.value !== undefined ? { value: params.value } : { label: params.label });
         const target = params.uid || params.selector || params.label || "select";
         return `Selected option in ${target}`;
+    }
+
+    const optionDisabled = (option) => option.disabled
+        || (option.parentElement?.tagName === "OPTGROUP" && option.parentElement.disabled === true);
+
+    // Selects the option itself rather than assigning the select's `value`,
+    // which picks the first option carrying that value (the wrong one, where a
+    // label is what told them apart) and cannot tell a disabled option from any
+    // other. A user cannot choose a disabled option, so neither can this. The
+    // events are the ones a real choice fires, in order.
+    function chooseOption(select, { value, label }) {
+        const byValue = value !== undefined;
+        const matches = Array.from(select.options).filter(
+            (option) => (byValue ? option.value === String(value) : option.textContent.trim() === label)
+        );
+        if (matches.length === 0) {
+            throw toolError(
+                "target_not_found",
+                byValue ? `No option with value "${value}" in <select>` : `Option with label "${label}" not found`,
+                false,
+                "take_snapshot"
+            );
+        }
+        const option = matches.find((candidate) => !optionDisabled(candidate));
+        if (!option) {
+            throw toolError(
+                "invalid_input",
+                `The option ${byValue ? `with value "${value}"` : `labelled "${label}"`} in <select> is disabled`,
+                false,
+                "fix_input"
+            );
+        }
+
+        // A multiple select ends up with just this option, as assigning its
+        // value always left it; a single one drops its old choice by itself.
+        if (select.multiple) {
+            for (const other of select.options) other.selected = other === option;
+        } else {
+            option.selected = true;
+        }
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
     }
 
 
