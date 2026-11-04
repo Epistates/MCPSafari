@@ -123,13 +123,15 @@ function replyFrame(response) {
  */
 function sendReply(socket, port, response) {
     if (socket.readyState !== WebSocket.OPEN) {
-        console.warn(`[MCPSafari:${port}] Dropping the reply to ${response.id}: the connection closed first`);
+        // The id comes off the wire, so it is an argument and never part of the
+        // format string, where a `%o` in it would be read as a directive.
+        console.warn(`[MCPSafari:${port}] Dropping the reply to %s: the connection closed first`, String(response.id));
         return;
     }
     try {
         socket.send(replyFrame(response));
     } catch (err) {
-        console.error(`[MCPSafari:${port}] Could not send the reply to ${response.id}:`, err);
+        console.error(`[MCPSafari:${port}] Could not send the reply to %s:`, String(response.id), err);
     }
 }
 

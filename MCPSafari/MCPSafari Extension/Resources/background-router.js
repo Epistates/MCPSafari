@@ -111,9 +111,13 @@ const LOAD_STARTING_ACTIONS = new Map([
     ["select_option", () => true],
 ]);
 
+// `action` is the server's string, so every lookup below is checked to be a
+// function before it is called. A Map cannot hand back an inherited method the
+// way an object lookup can, but the check states that, and it is the form static
+// analysis recognises as a validated dynamic call.
 async function routeAction(action, params, serverPort) {
     const handler = BACKGROUND_HANDLERS.get(action);
-    if (handler) return handler(params, serverPort);
+    if (typeof handler === "function") return handler(params, serverPort);
 
     if (action === "wait") {
         return waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
@@ -121,13 +125,13 @@ async function routeAction(action, params, serverPort) {
     if (action === "get_network_requests") return readNetworkRequests(params.tabId, params);
     if (CONTENT_ACTIONS.has(action)) {
         const startsLoad = LOAD_STARTING_ACTIONS.get(action);
-        return startsLoad && startsLoad(params)
+        return typeof startsLoad === "function" && startsLoad(params)
             ? dispatchAndSettle(action, params)
             : dispatchToContent(action, params);
     }
 
     const proxy = CONTENT_PROXIES.get(action);
-    if (proxy) {
+    if (typeof proxy === "function") {
         const proxied = proxy(params);
         return proxied.action === "get_network_requests"
             ? readNetworkRequests(params.tabId, proxied.params)
@@ -271,7 +275,7 @@ const RESULT_REDACTORS = new Map([
 
 function redactResult(action, data) {
     const redactor = RESULT_REDACTORS.get(action);
-    if (redactor) redactor(data);
+    if (typeof redactor === "function") redactor(data);
     return data;
 }
 
