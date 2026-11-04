@@ -41,7 +41,7 @@ The binary is `MCPServer/.build/release/MCPSafari`.
 The type check exists because the extension scripts share globals across files with no imports, so a misspelled name is a `ReferenceError` that only surfaces when that code path runs. It fails on undeclared names and calls with too many arguments, and ignores the remaining type-shape diagnostics, which plain JavaScript produces in bulk. To run it locally:
 
 ```sh
-npx --yes -p typescript@7.0.2 tsc -p tsconfig.json
+bunx --package typescript@7.0.2 tsc -p tsconfig.json
 ```
 
 Expect diagnostics about property shapes; only `TS2304`, `TS2552` and `TS2554` fail CI. Keep the version here in step with the one in `ci.yml`. A new global that Safari provides, as `browser` is, is declared in `extension-globals.d.ts`.

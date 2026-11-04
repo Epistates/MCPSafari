@@ -45,6 +45,12 @@ jobs:
         with:
           node-version: '24'
 
+      # Runs the pinned TypeScript for the extension type check (`bunx`).
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
       - name: Select Xcode 26.6
         run: |
           set -euo pipefail
@@ -85,7 +91,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          npx --yes -p typescript@7.0.2 tsc -p tsconfig.json --pretty false > "$RUNNER_TEMP/tsc.log" 2>&1 || status=$?
+          bunx --package typescript@7.0.2 tsc -p tsconfig.json --pretty false > "$RUNNER_TEMP/tsc.log" 2>&1 || status=$?
           cat "$RUNNER_TEMP/tsc.log"
           # A crash or a bad config prints no file-level diagnostics, so
           # without this a broken checker would look like a clean one.
