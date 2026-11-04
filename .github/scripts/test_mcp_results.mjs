@@ -415,6 +415,27 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("drop_file", { selector: "body", filePaths: [tokenPath] }, /bridge token/);
     await refuse("navigate", { url: `file://${tokenPath}` }, /bridge token/);
     await refuse("tabs_create", { url: `file://${tokenPath}` }, /bridge token/);
+    // The same goes for a string where a boolean is declared, which is truthy at
+    // the extension, and for an argument the tool does not declare, which used to
+    // be dropped: `click {native: true}` ran a synthetic click.
+    await refuse("click", { selector: "body", force: "false" }, /force must be a boolean/);
+    await refuse("click", { selector: "body", doubleClick: "false" }, /doubleClick must be a boolean/);
+    await refuse("type_text", { selector: "input", text: "x", clearFirst: "false" }, /clearFirst must be a boolean/);
+    await refuse("click", { selector: "body", native: true }, /click does not take the argument "native"/);
+    await refuse("click", { selector: "body", waitForSelctor: "#a" }, /does not take the argument "waitForSelctor"/);
+    await refuse("scroll", { direction: "sideways" }, /Invalid direction: sideways\. Use up, down, left, right\./);
+    await refuse("form_input", { fields: { "#a": [1] } }, /fields\["#a"\] must be a string, number or boolean/);
+    await refuse("form_input", { fields: {} }, /fields must contain at least one/);
+    // A file that cannot be attached is found before the call, or before the first
+    // step of a batch, rather than after the steps ahead of it have acted.
+    const missing = join(directory, "missing.txt");
+    await refuse("upload_file", { selector: "input", filePath: missing }, /Cannot open file/);
+    await refuse("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body" } },
+            { tool: "drop_file", arguments: { selector: "body", filePath: missing } },
+        ],
+    }, /steps\[1\] \(drop_file\): Cannot open file/);
     // A screenshot save may only create a .png or replace a PNG: it used to
     // overwrite any file the account could write.
     const notes = join(directory, "notes.png");

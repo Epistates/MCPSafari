@@ -107,11 +107,24 @@ actor SafariMCPServer {
 
     // MARK: - Tool Dispatch
 
+    /// A call from a client. Its arguments are checked against the tool's schema
+    /// before anything runs, and `_batchDeadline` is no argument a client may give.
     private func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
         let args = params.arguments ?? [:]
-
         do {
             try Self.preflight(tool: params.name, arguments: args)
+        } catch {
+            return Self.failureResult(toolFailure(for: error))
+        }
+        return await dispatch(tool: params.name, arguments: args)
+    }
+
+    /// Runs a tool whose arguments are already checked. A `run_steps` batch checks
+    /// every step while it plans and then calls here, adding the deadline and tab
+    /// it pins to the arguments after that check.
+    private func dispatch(tool: String, arguments args: [String: Value]) async -> CallTool.Result {
+        let params = (name: tool, arguments: args)
+        do {
             switch params.name {
             case "status":          return try await handleStatus()
             case "tabs_context":    return try await handleTabsContext()
@@ -387,9 +400,7 @@ actor SafariMCPServer {
     }
 
     private func handleCloseTab(_ args: [String: Value]) async throws -> CallTool.Result {
-        guard let handle = try TabHandle.resolve(args["tabId"]) else {
-            throw ToolInputError("close_tab requires tabId, a handle from tabs_context such as p0t5")
-        }
+        let handle = try Self.requiredTabHandle(args, tool: "close_tab")
         let response = try await send("tabs_close", args)
         guard response.success else { return textResult(response, as: "tab") }
         // The extension's confirmation names the tab by its own number, which is
@@ -403,9 +414,7 @@ actor SafariMCPServer {
     }
 
     private func handleSelectTab(_ args: [String: Value]) async throws -> CallTool.Result {
-        guard let handle = try TabHandle.resolve(args["tabId"]) else {
-            throw ToolInputError("select_tab requires tabId, a handle from tabs_context such as p0t5")
-        }
+        let handle = try Self.requiredTabHandle(args, tool: "select_tab")
         let params = try Self.selectTabParams(args)
         // Bringing a tab to the front moves focus, so it queues with the other
         // focus-sensitive tools. Selecting without it touches nothing they use.
@@ -615,39 +624,7 @@ actor SafariMCPServer {
     }
 
     private func handleFormInput(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-
-        // The fields argument may arrive as a Value.object or as a JSON string
-        // (depending on how the MCP client serializes nested objects)
-        var fieldDict: [String: String] = [:]
-        if let fields = args["fields"]?.objectValue {
-            for (key, val) in fields {
-                if let s = val.stringValue {
-                    fieldDict[key] = s
-                } else if let i = val.intValue {
-                    fieldDict[key] = String(i)
-                } else if let d = val.doubleValue {
-                    fieldDict[key] = String(d)
-                } else if let b = val.boolValue {
-                    fieldDict[key] = String(b)
-                } else {
-                    fieldDict[key] = "\(val)"
-                }
-            }
-        } else if let fieldsStr = args["fields"]?.stringValue,
-                  let data = fieldsStr.data(using: .utf8),
-                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
-            fieldDict = parsed
-        }
-
-        guard !fieldDict.isEmpty else {
-            return CallTool.Result(
-                content: [Self.textContent("fields must contain at least one CSS selector and value")],
-                isError: true
-            )
-        }
-
-        params["fields"] = AnyCodable(fieldDict)
+        let params: [String: AnyCodable] = ["fields": AnyCodable(try Self.formInputFields(args))]
         let traceSession = try await startTraceIfNeeded(args)
         do {
             let response = try await send("form_input", args, params: params)
@@ -806,7 +783,7 @@ actor SafariMCPServer {
                 stepArguments["tabId"] = .string(tab.description)
             }
             let result = await Self.$batchPin.withValue(pin) {
-                await handleToolCall(.init(name: step.tool, arguments: stepArguments))
+                await dispatch(tool: step.tool, arguments: stepArguments)
             }
             if batchArgs["tabId"] == nil, let tab = pin.handle {
                 batchArgs["tabId"] = .string(tab.description)

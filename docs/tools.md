@@ -17,7 +17,7 @@ This reference describes `main`, which may include tools and options not yet in 
 | Tool | Description |
 |-|-|
 | `tabs_context` | List open tabs across every connected Safari profile, with handles, state, and for sites MCPSafari has reached, URLs and titles (see [Website access](#website-access)) |
-| `tabs_create` | Open a new tab, optionally with a URL |
+| `tabs_create` | Open a new tab, optionally with a URL, in the Safari profile of `tabId` when given |
 | `close_tab` | Close a tab by handle |
 | `select_tab` | Pin a tab, and its Safari profile, as the default context for future calls |
 
@@ -289,6 +289,10 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 An interaction that starts no navigation pays the 400 millisecond watch and answers as before. A navigation the page starts later than that, from a timer or after a request, is not waited for. A `click` on a link that opens a new tab (`target="_blank"`) does not navigate the tab you clicked in, so it answers after the watch with no note; call `tabs_context` to find the new tab. Native `press_key` and `type_text` are sent from the server rather than through the page, so they are not watched, though a `wait` sent afterwards is safe (below).
 
 `wait` survives a navigation that starts while it is pending, including one the page started itself. The extension notices the tab begin to load, waits for the load, and runs the wait again in the new page with the time that remains, instead of leaving the request to time out inside the page that was replaced. If the time runs out first, it fails with the retryable `wait_timeout` and says the page navigated while waiting.
+
+### Argument checking
+
+Every call is checked against the `inputSchema` the tool advertises before anything is sent. An argument the tool does not declare, one of the wrong type (a string where a boolean is declared, say, since `"false"` would be truthy in the page), a value outside a declared set, and a missing required argument are all refused with `invalid_input`, and the message names the argument and the values or argument names that are allowed. Nothing has happened when that comes back, so the corrected call is safe to send. A `run_steps` batch is checked as a whole before its first step runs, each step against its own tool's schema, and that includes opening every file named by `upload_file` and `drop_file` and refusing a missing or protected one. `form_input` takes a map of CSS selector to string, number or boolean, entered as text; a click or hover at a point needs both `x` and `y`. `tabs_create` takes a `tabId` to say which Safari profile gets the new tab, and `resize_window` takes one to say which window.
 
 ### Post-action waits
 

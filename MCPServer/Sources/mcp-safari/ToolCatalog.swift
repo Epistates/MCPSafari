@@ -90,6 +90,10 @@ extension SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object([
                         "url": .object(["type": .string("string"), "description": .string("URL to open")]),
+                        "tabId": .object([
+                            "type": .string("string"),
+                            "description": .string("Tab handle whose Safari profile gets the new tab (default: the selected profile)"),
+                        ]),
                     ]),
                 ])
             ),
@@ -226,9 +230,13 @@ extension SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
                         "fields": .object([
-                            "type": .string("object"),
-                            "description": .string("CSS selector → value map"),
-                            "additionalProperties": .object(["type": .string("string")]),
+                            // A JSON object serialized as a string is read as the object,
+                            // because some clients send nested objects that way.
+                            "type": .array([.string("object"), .string("string")]),
+                            "description": .string("CSS selector → value map; numbers and booleans are entered as their text"),
+                            "additionalProperties": .object([
+                                "type": .array([.string("string"), .string("number"), .string("boolean")]),
+                            ]),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -423,6 +431,7 @@ extension SafariMCPServer {
                     "properties": .object([
                         "width": .object(["type": .string("integer")]),
                         "height": .object(["type": .string("integer")]),
+                        "tabId": Self.tab,
                     ]),
                     "required": .array([.string("width"), .string("height")]),
                 ])

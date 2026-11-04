@@ -36,6 +36,51 @@ enum FileAttachmentLoader {
         }
     }
 
+    /// Opens the file a caller named, refusing one that is missing, unreadable or
+    /// protected. The caller owns the descriptor it gets back.
+    ///
+    /// Nonblocking open prevents a concurrently substituted FIFO from hanging.
+    /// fstat and read use the same descriptor, even if the path is replaced.
+    private static func open(_ path: String, protectedRoots: [String]) throws -> (descriptor: Int32, url: URL) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw FileAttachmentError("File path must not be empty") }
+        let url = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath).standardizedFileURL
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { throw FileAttachmentError("Cannot open file: \(url.path)") }
+        // Asked of the open descriptor, after resolving symlinks, so a link into
+        // the token directory is refused as the file it is.
+        guard !ProtectedPaths.isProtected(descriptor: descriptor, roots: protectedRoots) else {
+            Darwin.close(descriptor)
+            throw FileAttachmentError("Refusing to read \(url.path): it is in a directory where MCPSafari keeps its bridge token")
+        }
+        return (descriptor, url)
+    }
+
+    /// Everything `load` would refuse that does not need the contents: the list,
+    /// each file opening, not being protected, being a regular file, and the
+    /// sizes fitting the limit together. Run before a call acts, and for every
+    /// step of a batch before the first one does. The files are read again when
+    /// the step runs, so one that changes in between is still refused then.
+    static func validate(
+        paths: [String],
+        protectedRoots: [String] = ProtectedPaths.defaultRoots
+    ) throws {
+        try validateCount(of: paths)
+        var totalBytes = 0
+        for path in paths {
+            let (descriptor, url) = try open(path, protectedRoots: protectedRoots)
+            defer { Darwin.close(descriptor) }
+            var info = stat()
+            guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+                throw FileAttachmentError("\(url.path) is not a readable regular file")
+            }
+            totalBytes += Int(info.st_size)
+            guard totalBytes <= maxTotalBytes else {
+                throw FileAttachmentError("Files exceed the \(maxTotalBytes / (1024 * 1024)) MB total limit for one call")
+            }
+        }
+    }
+
     /// `protectedRoots` are directories no file may be read from, the bridge token
     /// roots by default. See `ProtectedPaths` for why.
     static func load(
@@ -49,21 +94,10 @@ enum FileAttachmentLoader {
         var totalBytes = 0
 
         for path in paths {
-            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { throw FileAttachmentError("File path must not be empty") }
-            let url = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath).standardizedFileURL
-            // Nonblocking open prevents a concurrently substituted FIFO from hanging.
-            // fstat and read use the same descriptor, even if the path is replaced.
-            let descriptor = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
-            guard descriptor >= 0 else { throw FileAttachmentError("Cannot open file: \(url.path)") }
+            let (descriptor, url) = try open(path, protectedRoots: protectedRoots)
             let data: Data
             do {
                 defer { Darwin.close(descriptor) }
-                // Asked of the open descriptor, after resolving symlinks, so a
-                // link into the token directory is refused as the file it is.
-                guard !ProtectedPaths.isProtected(descriptor: descriptor, roots: protectedRoots) else {
-                    throw FileAttachmentError("Refusing to read \(url.path): it is in a directory where MCPSafari keeps its bridge token")
-                }
                 data = try read(descriptor: descriptor, budget: maxTotalBytes - totalBytes)
             }
             let name = url.lastPathComponent

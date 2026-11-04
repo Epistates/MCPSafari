@@ -1,3 +1,4 @@
+import Foundation
 import MCP
 import Testing
 @testable import MCPSafari
@@ -37,15 +38,59 @@ struct RunStepsTests {
     @Test func acceptsTheFileAttachmentTools() throws {
         // They route through the same handler a direct call does; excluding them
         // forced callers to split a batch around the one step that attaches a file.
+        let a = try attachableFile("a.png")
+        let b = try attachableFile("b.png")
         let plan = try RunStepsPlan(arguments: [
             "steps": [
-                ["tool": "upload_file", "arguments": ["selector": "#file", "filePaths": ["/tmp/a.png"]]],
-                ["tool": "drop_file", "arguments": ["selector": "#drop", "filePath": "/tmp/b.png"]],
+                ["tool": "upload_file", "arguments": ["selector": "#file", "filePaths": [.string(a)]]],
+                ["tool": "drop_file", "arguments": ["selector": "#drop", "filePath": .string(b)]],
             ],
         ])
 
         #expect(plan.steps.map(\.tool) == ["upload_file", "drop_file"])
         #expect(RunStepsPlan.allowedTools.isSuperset(of: ["upload_file", "drop_file"]))
+    }
+
+    /// A real file, since a step that names a missing one is refused while planning.
+    private func attachableFile(_ name: String) throws -> String {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(name)
+        try "data".write(to: url, atomically: true, encoding: .utf8)
+        return url.path
+    }
+
+    // Step 7 naming a file that is not there used to fail after steps 1 to 6 had
+    // acted. The files are opened and checked while the batch is planned.
+    @Test func aMissingOrProtectedFileInALaterStepRefusesTheWholeBatch() throws {
+        let real = try attachableFile("real.png")
+        #expect(errorMessage(["steps": [
+            ["tool": "click", "arguments": ["selector": "#a"]],
+            ["tool": "upload_file", "arguments": ["selector": "#f", "filePath": .string(real)]],
+            ["tool": "upload_file", "arguments": ["selector": "#f", "filePath": "/nonexistent/missing.png"]],
+        ]]) == "steps[2] (upload_file): Cannot open file: /nonexistent/missing.png")
+
+        let token = WebSocketBridge.tokenDirectoryURL.appendingPathComponent("8089").path
+        #expect(errorMessage(["steps": [
+            ["tool": "click", "arguments": ["selector": "#a"]],
+            ["tool": "drop_file", "arguments": ["selector": "#f", "filePath": .string(token)]],
+        ]]) != nil)
+    }
+
+    // Step 7 given `force: "false"` would have been truthy at the extension.
+    @Test func unknownAndWronglyTypedArgumentsInALaterStepRefuseTheWholeBatch() {
+        func refused(_ tool: String, _ arguments: [String: Value]) -> String? {
+            errorMessage(["steps": [
+                ["tool": "wait", "arguments": ["seconds": 0]],
+                ["tool": .string(tool), "arguments": .object(arguments)],
+            ]])
+        }
+        #expect(refused("click", ["selector": "#a", "force": "false"]) == "steps[1] (click): force must be a boolean")
+        #expect(refused("click", ["selector": "#a", "native": true])?.hasPrefix("steps[1] (click): click does not take the argument \"native\"") == true)
+        #expect(refused("scroll", ["direction": "down", "amount": "9"]) == "steps[1] (scroll): amount must be an integer")
+        #expect(refused("form_input", ["fields": ["#a": [1]]]) == "steps[1] (form_input): fields[\"#a\"] must be a string, number or boolean")
+        #expect(refused("type_text", ["selector": "#a"]) == "steps[1] (type_text): text is required")
+        #expect(refused("wait", ["seconds": 1, "waitForText": "x"])?.hasPrefix("steps[1] (wait): wait does not take") == true)
     }
 
     @Test func rejectsEmptyOversizedAndUnsupportedBatches() {

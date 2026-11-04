@@ -61,4 +61,122 @@ extension SafariMCPServer {
         guard let value = args[key], value != .null else { return nil }
         return value
     }
+
+    // MARK: Declared arguments
+
+    /// What a tool's schema says it takes. The schema the server advertises is the
+    /// one its calls are held to: a caller who reads `tools/list` and follows it
+    /// is accepted, and one who adds an argument it does not list, or gives one
+    /// the wrong type, is told which and nothing is sent.
+    private struct DeclaredArguments: Sendable {
+        let properties: [String: Value]
+        let required: [String]
+    }
+
+    private nonisolated static let declaredArguments: [String: DeclaredArguments] = {
+        var declared: [String: DeclaredArguments] = [:]
+        for tool in toolDefinitions {
+            let schema = tool.inputSchema.objectValue
+            declared[tool.name] = DeclaredArguments(
+                properties: schema?["properties"]?.objectValue ?? [:],
+                required: (schema?["required"]?.arrayValue ?? []).compactMap(\.stringValue)
+            )
+        }
+        return declared
+    }()
+
+    /// Whether `tool` is one the server advertises.
+    nonisolated static func declaresTool(_ tool: String) -> Bool {
+        declaredArguments[tool] != nil
+    }
+
+    /// Whether `tool` takes `argument`, by its schema.
+    nonisolated static func declaresArgument(_ argument: String, for tool: String) -> Bool {
+        declaredArguments[tool]?.properties[argument] != nil
+    }
+
+    /// Refuses an argument the tool does not declare, a declared one of the wrong
+    /// type or outside its enum, and a required one that is missing. Typos such
+    /// as `waitForSelctor` used to be ignored, and `click {native: true}` ran a
+    /// synthetic click, so the call did something other than what was asked.
+    ///
+    /// Runs after the tool's own validators, which know more and say so. What
+    /// reaches this is whatever they leave unchecked, so every declared argument
+    /// is covered by one or the other, and a wrong type never reaches the
+    /// extension, where `"false"` is truthy.
+    nonisolated static func validateAgainstSchema(tool: String, arguments args: [String: Value]) throws {
+        guard let declared = declaredArguments[tool] else { return }
+
+        let unknown = args.keys.filter { declared.properties[$0] == nil }.sorted()
+        if !unknown.isEmpty {
+            let names = unknown.map { "\"\($0)\"" }.joined(separator: ", ")
+            let allowed = declared.properties.keys.sorted().joined(separator: ", ")
+            throw ToolInputError(
+                "\(tool) does not take \(unknown.count == 1 ? "the argument" : "the arguments") \(names). "
+                + (allowed.isEmpty ? "It takes no arguments." : "Its arguments are: \(allowed).")
+            )
+        }
+
+        for key in declared.required where args[key] == nil || args[key] == .null {
+            throw ToolInputError("\(key) is required")
+        }
+
+        for (key, value) in args.sorted(by: { $0.key < $1.key }) where value != .null {
+            guard let schema = declared.properties[key]?.objectValue else { continue }
+            guard schemaAccepts(value, schema) else {
+                throw ToolInputError("\(key) must be \(schemaDescription(schema))")
+            }
+            if let allowed = schema["enum"]?.arrayValue?.compactMap(\.stringValue),
+               let string = value.stringValue, !allowed.contains(string) {
+                throw ToolInputError("Invalid \(key): \(string). Use \(allowed.joined(separator: ", ")).")
+            }
+        }
+    }
+
+    /// Whether `value` has the JSON type the schema names. Types the server
+    /// reads strictly match here as they do in the `optional...` readers above:
+    /// an integer may arrive as a whole-valued double, and a number must be finite.
+    private nonisolated static func schemaAccepts(_ value: Value, _ schema: [String: Value]) -> Bool {
+        schemaTypes(schema).contains { type in
+            switch type {
+            case "string": return value.stringValue != nil
+            case "boolean": return value.boolValue != nil
+            case "integer":
+                if value.intValue != nil { return true }
+                if let double = value.doubleValue, double.isFinite, double == double.rounded() { return true }
+                return false
+            case "number": return numberValue(value)?.isFinite == true
+            case "array":
+                guard let items = value.arrayValue else { return false }
+                guard let itemSchema = schema["items"]?.objectValue else { return true }
+                return items.allSatisfy { schemaAccepts($0, itemSchema) }
+            case "object":
+                guard let object = value.objectValue else { return false }
+                guard let valueSchema = schema["additionalProperties"]?.objectValue else { return true }
+                return object.values.allSatisfy { schemaAccepts($0, valueSchema) }
+            default: return true
+            }
+        }
+    }
+
+    private nonisolated static func schemaTypes(_ schema: [String: Value]) -> [String] {
+        if let type = schema["type"]?.stringValue { return [type] }
+        return (schema["type"]?.arrayValue ?? []).compactMap(\.stringValue)
+    }
+
+    private nonisolated static func schemaDescription(_ schema: [String: Value]) -> String {
+        let descriptions = schemaTypes(schema).map { type -> String in
+            switch type {
+            case "string": "a string"
+            case "boolean": "a boolean"
+            case "integer": "an integer"
+            case "number": "a number"
+            case "array":
+                schema["items"]?.objectValue?["type"]?.stringValue == "string" ? "an array of strings" : "an array"
+            case "object": "an object"
+            default: "valid"
+            }
+        }
+        return descriptions.isEmpty ? "valid" : descriptions.joined(separator: " or ")
+    }
 }

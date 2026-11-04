@@ -37,6 +37,11 @@ extension SafariMCPServer {
     /// the handler for every direct call, and by `run_steps` over each step while
     /// it plans, so a bad argument in step 7 is refused before step 1 acts.
     nonisolated static func preflight(tool: String, arguments args: [String: Value]) throws {
+        do {
+            _ = try TabHandle.resolve(args["tabId"])
+        } catch let error as TabHandleError {
+            throw ToolInputError(error.description)
+        }
         if actionTools.contains(tool) {
             _ = try postActionWait(args)
             _ = try traceOptions(args)
@@ -55,7 +60,19 @@ extension SafariMCPServer {
             if try optionalBool("native", in: args) == true { _ = try nativeInputPlan(args, permission: {}) }
         case "press_key":
             if try optionalBool("native", in: args) == true { _ = try nativeKeyCombo(requiredKey(args)) }
-        case "upload_file", "drop_file": _ = try fileAttachmentInputs(args)
+        case "upload_file", "drop_file":
+            let inputs = try fileAttachmentInputs(args)
+            // The files are opened and checked now, so a missing or protected one
+            // is found before the call, or the first step of a batch, acts.
+            do {
+                try FileAttachmentLoader.validate(paths: inputs.paths)
+            } catch let error as FileAttachmentError {
+                throw ToolInputError(error.description)
+            }
+        case "click", "hover":
+            try requireCoordinatePair(args)
+        case "form_input": _ = try formInputFields(args)
+        case "close_tab": _ = try requiredTabHandle(args, tool: tool)
         case "screenshot":
             _ = try capturePadding(args)
             _ = try captureScale(args)
@@ -67,7 +84,9 @@ extension SafariMCPServer {
                 }
             }
         case "tabs_create": _ = try tabsCreateParams(args)
-        case "select_tab": _ = try selectTabParams(args)
+        case "select_tab":
+            _ = try requiredTabHandle(args, tool: tool)
+            _ = try selectTabParams(args)
         case "navigate": _ = try navigateParams(args)
         case "read_page": _ = try readPageParams(args)
         case "snapshot": _ = try snapshotParams(args)
@@ -78,6 +97,32 @@ extension SafariMCPServer {
         case "resize_window": _ = try resizeWindowParams(args)
         case "wait": _ = try waitRequest(args)
         default: break
+        }
+        try validateAgainstSchema(tool: tool, arguments: args)
+    }
+
+    /// `close_tab` and `select_tab` act on one named tab and have no selected-tab
+    /// fallback.
+    nonisolated static func requiredTabHandle(_ args: [String: Value], tool: String) throws -> TabHandle {
+        let handle: TabHandle?
+        do {
+            handle = try TabHandle.resolve(args["tabId"])
+        } catch let error as TabHandleError {
+            throw ToolInputError(error.description)
+        }
+        guard let handle else {
+            throw ToolInputError("\(tool) requires tabId, a handle from tabs_context such as p0t5")
+        }
+        return handle
+    }
+
+    /// A viewport point is two numbers. With one, the extension falls back to the
+    /// element arguments, or to an error, and the point the caller gave is lost.
+    private nonisolated static func requireCoordinatePair(_ args: [String: Value]) throws {
+        let x = try optionalNumber("x", in: args)
+        let y = try optionalNumber("y", in: args)
+        guard (x == nil) == (y == nil) else {
+            throw ToolInputError("x and y must be given together: a viewport point needs both")
         }
     }
 
@@ -113,6 +158,39 @@ extension SafariMCPServer {
         }
         let mimeType = try optionalString("mimeType", in: args)
         return FileAttachmentInputs(paths: paths, mimeType: mimeType)
+    }
+
+    // MARK: Form fields
+
+    /// The selector-to-text map `form_input` fills. Numbers and booleans are
+    /// entered as their text, which is how a checkbox's `"true"` arrives. The
+    /// object may also arrive as JSON text, since some clients serialize nested
+    /// objects that way.
+    nonisolated static func formInputFields(_ args: [String: Value]) throws -> [String: String] {
+        let empty = ToolInputError("fields must contain at least one CSS selector and value")
+        guard let raw = args["fields"], raw != .null else { throw empty }
+
+        let object: [String: Value]
+        if let fields = raw.objectValue {
+            object = fields
+        } else if let text = raw.stringValue,
+                  let parsed = try? JSONDecoder().decode(Value.self, from: Data(text.utf8)),
+                  let fields = parsed.objectValue {
+            object = fields
+        } else {
+            throw ToolInputError("fields must be an object mapping CSS selectors to values")
+        }
+        guard !object.isEmpty else { throw empty }
+
+        var fields: [String: String] = [:]
+        for (selector, value) in object {
+            if let string = value.stringValue { fields[selector] = string }
+            else if let int = value.intValue { fields[selector] = String(int) }
+            else if let double = value.doubleValue { fields[selector] = String(double) }
+            else if let bool = value.boolValue { fields[selector] = String(bool) }
+            else { throw ToolInputError("fields[\"\(selector)\"] must be a string, number or boolean") }
+        }
+        return fields
     }
 
     // MARK: Native input
@@ -257,11 +335,13 @@ extension SafariMCPServer {
 
     // MARK: Action options
 
-    /// The tools whose result goes through the post-action steps: the optional
-    /// wait, trace and snapshot that run after the action succeeded.
+    /// The tools that declare the post-action steps: the optional wait, trace and
+    /// snapshot that run after the action succeeded. `handle_dialog` goes through
+    /// the same result path but declares none of them, so a caller who passes it
+    /// one is told it takes none.
     nonisolated static let actionTools: Set<String> = [
         "navigate", "click", "type_text", "form_input", "select_option", "scroll",
-        "press_key", "hover", "drag", "upload_file", "drop_file", "handle_dialog",
+        "press_key", "hover", "drag", "upload_file", "drop_file",
     ]
 
     struct PostActionWait: Equatable {
