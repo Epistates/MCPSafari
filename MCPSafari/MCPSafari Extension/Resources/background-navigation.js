@@ -318,6 +318,8 @@ async function waitForTabLoad(
     let loadStarted = false;
     let sameDocumentTimer = null;
     let noNavigationTimer = null;
+    // The tab as the last update described it, for when it cannot be read.
+    let lastSeen = beforeTab ? { ...beforeTab } : null;
 
     return new Promise((resolve, reject) => {
         let settled = false;
@@ -334,9 +336,18 @@ async function waitForTabLoad(
             settled = true;
             cleanup();
             try {
-                resolve(await browser.tabs.get(tabId));
+                // On an origin Safari has not decided, this read parks on the
+                // permission dialog like every other call that touches the tab,
+                // and the whole request then rode the bridge timeout. The load
+                // is over by now, so the updates already said what the tab
+                // became; a read that does not come back is answered from those.
+                resolve(await withDeadline(browser.tabs.get(tabId), PERMISSION_PROBE_TIMEOUT_MS));
             } catch (err) {
-                reject(err);
+                if (!(err instanceof DeadlineExceeded)) reject(err);
+                // Nothing was ever seen of this tab, so there is nothing to
+                // answer from: the dialog is the reason, as everywhere else.
+                else if (lastSeen) resolve(lastSeen);
+                else reject(permissionRequiredError(null, true));
             }
         };
 
@@ -347,6 +358,7 @@ async function waitForTabLoad(
 
         const onUpdated = (updatedTabId, changeInfo, tab) => {
             if (updatedTabId !== tabId) return;
+            if (tab) lastSeen = { ...tab };
 
             if (changeInfo.status === "loading") {
                 sawNavigation = true;

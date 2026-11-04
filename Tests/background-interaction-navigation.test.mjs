@@ -127,6 +127,7 @@ function loadBackground({ onMessage, url = OLD_URL } = {}) {
             await flush();
         },
         listenerCount: () => listeners.length - loadedListeners,
+        evaluate: (expression) => vm.runInContext(expression, context),
         request(action, params = {}) {
             const outcome = { done: false, response: null };
             vm.runInContext(
@@ -386,6 +387,57 @@ test("an object result gets the new URL as a field instead of a trailing line", 
     assert.equal(data.clicked, true);
     assert.match(data.navigatedTo, /^https:\/\/elsewhere\.example\//);
     assert.doesNotMatch(data.navigatedTo, /abc123/);
+});
+
+// ─── A settle that cannot read the tab ───────────────────────────────
+
+// On an origin Safari has not decided, `tabs.get` parks on the permission dialog
+// like every other call that touches the tab. The load itself is reported by
+// events, which still arrive, so the settle has already seen where the tab went.
+const parkTabReads = (harness) => harness.evaluate("browser.tabs.get = () => new Promise(() => {})");
+
+test("navigate on a tab whose reads are parked on the dialog answers from the last update", async () => {
+    const harness = loadBackground();
+    const navigation = harness.request("navigate", { url: NEW_URL });
+    await harness.flush();
+    parkTabReads(harness);
+    navigateLater(harness);
+
+    await harness.advance(1000);
+    assert.equal(navigation.done, false, "answered before the settle's read had its deadline");
+    await harness.advance(2500);
+
+    assert.equal(navigation.done, true, "the settle rode the bridge timeout");
+    assert.equal(navigation.response.success, true);
+    assert.match(navigation.response.data, new RegExp(`^Navigated to ${NEW_URL} `));
+    assert.equal(harness.listenerCount(), 0);
+});
+
+test("a click whose settle cannot read the tab still reports where the page went", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            parkTabReads(h);
+            navigateLater(h);
+            return { data: "Clicked <a>", error: null };
+        },
+    });
+    const click = harness.request("click", { selector: "a" });
+
+    await harness.advance(4000);
+
+    assert.equal(click.done, true);
+    assert.match(click.response.data, new RegExp(`\\nPage navigated to ${NEW_URL} `));
+});
+
+test("navigate that never saw the tab and cannot read it names the permission dialog", async () => {
+    const harness = loadBackground();
+    harness.evaluate("browser.tabs.get = () => new Promise(() => {})");
+    const navigation = harness.request("navigate", { url: NEW_URL });
+
+    await harness.advance(15_000);
+
+    assert.equal(navigation.done, true);
+    assert.equal(navigation.response.errorCode, "permission_required");
 });
 
 // ─── A reply that never comes ────────────────────────────────────────
