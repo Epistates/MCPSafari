@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
@@ -42,6 +42,14 @@ async function extensionRoutableActions() {
     ]);
 }
 
+/// The server's environment with its token files redirected to `tokenRoot`.
+/// `MCP_SAFARI_TOKEN_ROOT` is honoured by the server for exactly this: the Safari
+/// extension finds a server by the token files in the standard location, so a test
+/// server must not write there.
+function serverEnvironment(tokenRoot) {
+    return { ...process.env, MCP_SAFARI_TOKEN_ROOT: tokenRoot };
+}
+
 function bounded(promise, label, ms = 10000) {
     let timer;
     return Promise.race([
@@ -52,7 +60,12 @@ function bounded(promise, label, ms = 10000) {
 
 test("every advertised tool returns object structuredContent over MCP", { timeout: 45000 }, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "mcpsafari-results-"));
-    const server = spawn(binary, ["--port", "0"], { stdio: ["pipe", "pipe", "pipe"] });
+    // Its tokens go under the temporary directory, not the one a running Safari
+    // extension reads: that extension would dial this server and could drive the
+    // user's real browser from the test. A directory of their own inside it, because
+    // the files the tool tests use have to lie outside the protected token root.
+    const tokenRoot = join(directory, "token-root");
+    const server = spawn(binary, ["--port", "0"], { stdio: ["pipe", "pipe", "pipe"], env: serverEnvironment(tokenRoot) });
     const exited = once(server, "exit");
     const lines = createInterface({ input: server.stdout });
     let stderr = "";
@@ -67,11 +80,6 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         try { await bounded(exited, "server shutdown", 2000); }
         catch { server.kill("SIGKILL"); await bounded(exited, "kill server"); }
         lines.close();
-        if (port && token) {
-            const path = join(homedir(), "Library/Application Support/MCPSafari/tokens", String(port));
-            // Never delete another process's replacement token.
-            if (await readFile(path, "utf8").catch(() => null) === token) await rm(path);
-        }
         await rm(directory, { recursive: true, force: true });
     });
     lines.on("line", (line) => {
@@ -124,7 +132,9 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(status.listener, "listening");
     assert.ok(status.port > 0);
     port = status.port;
-    token = await readFile(join(homedir(), "Library/Application Support/MCPSafari/tokens", String(port)), "utf8");
+    // The server says where its tokens went, and that is the temporary directory.
+    assert.equal(status.tokenRootOverride, tokenRoot);
+    token = await readFile(join(tokenRoot, "tokens", String(port)), "utf8");
 
     let pageText = "Example Domain";
     let jsText = "42";
@@ -410,7 +420,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     // The bridge token is a file the same account can read, so a file tool that
     // took any caller-named path would hand it to a page. It is refused as a
     // file to attach and as a file: URL to open, before the extension is asked.
-    const tokenPath = join(homedir(), "Library/Application Support/MCPSafari/tokens", String(port));
+    const tokenPath = join(tokenRoot, "tokens", String(port));
     await refuse("upload_file", { selector: "input", filePath: tokenPath }, /bridge token/);
     await refuse("drop_file", { selector: "body", filePaths: [tokenPath] }, /bridge token/);
     await refuse("navigate", { url: `file://${tokenPath}` }, /bridge token/);
@@ -483,12 +493,18 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
 /// Starts the real server on any free port and waits until its bridge is listening.
 /// The port it bound is how the token file is found.
 async function startServer(t, name) {
-    const server = spawn(binary, ["--port", "0"], { stdio: ["pipe", "pipe", "pipe"] });
+    // Its own token root, so no running Safari extension can find this server.
+    const tokenRoot = await mkdtemp(join(tmpdir(), "mcpsafari-server-"));
+    const server = spawn(binary, ["--port", "0"], { stdio: ["pipe", "pipe", "pipe"], env: serverEnvironment(tokenRoot) });
     const exited = new Promise((resolve) => server.once("exit", (code, by) => resolve({ code, by })));
     const lines = createInterface({ input: server.stdout });
     let stderr = "";
     server.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000); });
-    t.after(() => { lines.close(); server.kill("SIGKILL"); });
+    t.after(async () => {
+        lines.close();
+        server.kill("SIGKILL");
+        await rm(tokenRoot, { recursive: true, force: true });
+    });
 
     const answers = new Map();
     lines.on("line", (line) => { const message = JSON.parse(line); answers.set(message.id, message); });
@@ -515,7 +531,7 @@ async function startServer(t, name) {
     }
     assert.equal(status.listener, "listening", `the bridge never came up: ${stderr}`);
 
-    const directory = join(homedir(), "Library/Application Support/MCPSafari/tokens");
+    const directory = join(tokenRoot, "tokens");
     const port = status.port;
     return {
         server, exited, ask, port,

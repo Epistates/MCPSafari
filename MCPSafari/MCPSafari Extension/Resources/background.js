@@ -125,7 +125,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (message.type === "addPort") {
         const port = parseInt(message.port, 10);
-        if (port >= 1024 && port <= 65535) {
+        if (port >= MIN_BRIDGE_PORT && port <= 65535) {
             ensurePort(port, true); // manual = true
             loadAuthTokens().finally(() => connectToPort(port));
             persistManualPorts();
@@ -180,6 +180,15 @@ if (typeof browser.alarms !== "undefined") {
     browser.alarms.create("mcp-keepalive", { periodInMinutes: 0.4 }); // ~24s
     browser.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === "mcp-keepalive") {
+            // A suppressed port is a pause, not a verdict. The only thing suppression
+            // can know is that the dials since the last token read failed, and a
+            // refusal says nothing about whether the server is coming back: anything
+            // holding the server's handshake slots, or one slow start, produces
+            // the same failures, and giving up for good on that left the extension
+            // dark until it was restarted. The token file is the evidence a server
+            // exists, so a port keeps being retried each time round for as long as
+            // it is there, and `pruneRemovedTokenPorts` drops it when it is gone.
+            staleTokensByPort.clear();
             loadAuthTokens().finally(() => {
                 // Was a second copy of this loop, which is how the give-up
                 // threshold below ended up disagreeing with `scheduleReconnect`.
@@ -232,7 +241,7 @@ async function loadAuthTokens() {
             authTokensByPort.clear();
             for (const [port, token] of Object.entries(tokens)) {
                 const parsedPort = parseInt(port, 10);
-                if (parsedPort >= 1024 && parsedPort <= 65535 && token) {
+                if (parsedPort >= MIN_BRIDGE_PORT && parsedPort <= 65535 && token) {
                     authTokensByPort.set(parsedPort, token);
                 }
             }

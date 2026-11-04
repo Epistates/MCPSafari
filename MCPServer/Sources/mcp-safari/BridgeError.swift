@@ -13,6 +13,8 @@ extension WebSocketBridge {
         case timeout(action: String, seconds: TimeInterval)
         case encodingFailed
         case decodingFailed(String)
+        /// The extension answered, and the answer could not be read.
+        case malformedResponse
         case extensionError(String)
         case authenticationFailed
         /// The server could not open its side of the bridge at all, as opposed to
@@ -32,6 +34,8 @@ extension WebSocketBridge {
                 "Failed to encode bridge request."
             case .decodingFailed(let detail):
                 "Failed to decode bridge response: \(detail)"
+            case .malformedResponse:
+                "The Safari extension replied, but the reply could not be read. The operation may already have completed; inspect the browser state before retrying."
             case .extensionError(let message):
                 "Safari extension error: \(message)"
             case .authenticationFailed:
@@ -81,6 +85,13 @@ extension WebSocketBridge {
                     message: description,
                     retryable: false,
                     recoveryAction: "call_status"
+                )
+            case .malformedResponse:
+                ToolFailure(
+                    code: "malformed_response",
+                    message: description,
+                    retryable: false,
+                    recoveryAction: "inspect_error"
                 )
             case .encodingFailed, .decodingFailed, .extensionError:
                 ToolFailure(

@@ -38,8 +38,15 @@ func parseCommand(
     while index < options.count {
         switch options[index] {
         case "--port", "-p":
-            guard index + 1 < options.count, let parsed = UInt16(options[index + 1]) else {
-                throw CLIError(description: "--port requires a value from 0 through 65535")
+            // 0 asks the system for a free port. Anything from 1 to 1023 is a port the
+            // extension never dials (it ignores them), so a server there would run and
+            // never be found.
+            guard index + 1 < options.count, let parsed = UInt16(options[index + 1]),
+                  parsed == 0 || parsed >= WebSocketBridge.minPort
+            else {
+                throw CLIError(
+                    description: "--port requires 0 (any free port) or a value from \(WebSocketBridge.minPort) through 65535"
+                )
             }
             port = parsed
             index += 2
@@ -78,6 +85,10 @@ func parseCommand(
             throw CLIError(description: "\(portRangeEnvironmentVariable) must be \(portCountUsage), not \(text)")
         }
         explicitPortCount = (parsed, portRangeEnvironmentVariable)
+    }
+    if let text = environment[WebSocketBridge.tokenRootEnvironmentVariable]?
+        .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty, !text.hasPrefix("/") {
+        throw CLIError(description: "\(WebSocketBridge.tokenRootEnvironmentVariable) must be an absolute path, not \(text)")
     }
     // Only an explicit count is held to this. The default has always shortened
     // itself near the top of the port space, and refusing it would stop a
@@ -120,7 +131,8 @@ let usageText = """
       mcp-safari doctor [options]   Report on the installation and exit
 
     OPTIONS:
-      -p, --port <n>        WebSocket port the Safari extension connects to (default: 8089)
+      -p, --port <n>        WebSocket port the Safari extension connects to, 1024 through 65535,
+                            or 0 for any free port (default: 8089)
           --port-range <n>  Ports to try from --port when one is taken, 1 through 64 (default: 10)
           --log-level <l>   trace, debug, info, notice, warning, error, critical (default: notice)
           --verbose         Shorthand for --log-level debug
@@ -135,6 +147,10 @@ let usageText = """
     ENVIRONMENT:
       MCP_SAFARI_LOG_LEVEL   Log level used when --log-level and --verbose are absent
       MCP_SAFARI_PORT_RANGE  Port count used when --port-range is absent
+      MCP_SAFARI_TOKEN_ROOT  Absolute path to write the token files under instead of
+                             ~/Library/Application Support/MCPSafari. For tests: the Safari
+                             extension reads only the standard location, so it cannot find a
+                             server started with this set.
 
     The Safari extension finds a server through its token file, so the port range needs no
     matching setting there.
@@ -258,7 +274,8 @@ enum Doctor {
         paths: DoctorPaths = .system,
         port: UInt16 = 8089,
         portCount: UInt16 = WebSocketBridge.defaultPortCount,
-        registration: ExtensionRegistration = .unknown
+        registration: ExtensionRegistration = .unknown,
+        tokenRootOverride: String? = WebSocketBridge.tokenRootOverride()
     ) -> DoctorReport {
         let extensionRegistered = registration.isRegistered
         let registeredExtensionPath = registration.bundlePath
@@ -372,6 +389,19 @@ enum Doctor {
         ))
 
         checks.append(tokenPathCheck(for: paths.tokenDirectoryURL))
+
+        // After the two checks above, which report on wherever the tokens are looked
+        // for: this says why that is not the place the extension looks.
+        if let tokenRootOverride {
+            checks.append(.init(
+                code: "token_root_override",
+                status: .warning,
+                message: "\(WebSocketBridge.tokenRootEnvironmentVariable) is set, so token files are read from "
+                    + "\(tokenRootOverride) instead of the standard location. "
+                    + "The Safari extension reads only the standard location, so it cannot see a server started with this set.",
+                recovery: "Unset \(WebSocketBridge.tokenRootEnvironmentVariable) unless this is a test run."
+            ))
+        }
 
         let overall: DiagnosticStatus = checks.contains { $0.status == .error }
             ? .error

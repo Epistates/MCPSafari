@@ -156,9 +156,9 @@ A server tries `8089` and then the ports after it, ten in all by default: `8089`
 }
 ```
 
-A client that can set environment variables but not arguments can use `MCP_SAFARI_PORT_RANGE=20` instead. The flag wins when both are set. A value outside 1 to 64, or a range that would run past port 65535, stops the server with a message saying which.
+A client that can set environment variables but not arguments can use `MCP_SAFARI_PORT_RANGE=20` instead. The flag wins when both are set. A value outside 1 to 64, or a range that would run past port 65535, stops the server with a message saying which. So does a `--port` from 1 to 1023: the extension does not dial those, so a server there would run and never be found. `--port 0` takes any free port.
 
-Nothing needs to be set in the extension, and there is no matching setting to keep in step. Each server writes a token file for the port it actually bound, and the extension connects to every port that has one. Any `--port` and `--port-range` are therefore found without further setup, and a port drops out of the popup when its server stops and removes its token. The extension manages up to 64 such ports at a time. Ports added by hand in the popup are kept until you remove them and do not count toward that limit.
+Nothing needs to be set in the extension, and there is no matching setting to keep in step. Each server writes a token file for the port it actually bound, and the extension connects to every port that has one. Any `--port` and `--port-range` are therefore found without further setup, and a port drops out of the popup when its server stops and removes its token. A port that keeps refusing the extension is paused and tried again about every 24 seconds for as long as its token file exists, so a server that was slow to start, or briefly crowded out, is picked up without reopening Safari. The extension manages up to 64 such ports at a time. Ports added by hand in the popup are kept until you remove them and do not count toward that limit.
 
 `status` reports the range as `requestedPort` through `lastPort`, and `mcp-safari doctor` looks for a token anywhere in it.
 
@@ -172,7 +172,7 @@ Every connected profile is drivable. `tabs_context` lists the tabs of all of the
 
 | Flag | Description |
 |-|-|
-| `--port <n>` / `-p <n>` | WebSocket port to try first (default: `8089`) |
+| `--port <n>` / `-p <n>` | WebSocket port to try first, 1024 to 65535, or `0` for any free port (default: `8089`) |
 | `--port-range <n>` | How many consecutive ports to try from `--port`, 1 to 64 (default: `10`). Also `MCP_SAFARI_PORT_RANGE`. See [Ports](#ports) |
 | `--log-level <level>` | `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `critical` (default: `notice`) |
 | `--verbose` | Shorthand for `--log-level debug` |

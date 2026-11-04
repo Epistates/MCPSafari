@@ -125,10 +125,9 @@ struct ProfileConnectionTests {
         case timedOut
     }
 
-    /// Bounds every wait on the socket. These tests bind fixed ports, so another
-    /// copy of the suite running at the same time takes them and the handshake
-    /// never answers. Failing after a few seconds is diagnosable; hanging holds
-    /// the SwiftPM build lock until someone notices.
+    /// Bounds every wait on the socket. A handshake that never answers is a
+    /// failure after a few seconds, which is diagnosable; hanging holds the
+    /// SwiftPM build lock until someone notices.
     private func withTimeout<T: Sendable>(
         _ seconds: Double = 30,
         _ operation: @escaping @Sendable () async throws -> T
@@ -238,7 +237,7 @@ struct ProfileConnectionTests {
     }
 
     @Test func twoProfilesStayConnectedInsteadOfEvictingEachOther() async throws {
-        try await withStartedBridge(port: 8131) { bridge, port in
+        try await withStartedBridge(port: 0) { bridge, port in
             let token = await bridge.authToken
 
             let personal = makeTask(port: port)
@@ -270,7 +269,7 @@ struct ProfileConnectionTests {
     }
 
     @Test func aProfileReconnectingReplacesOnlyItsOwnConnection() async throws {
-        try await withStartedBridge(port: 8132) { bridge, port in
+        try await withStartedBridge(port: 0) { bridge, port in
             let token = await bridge.authToken
 
             let work = makeTask(port: port)
@@ -301,7 +300,7 @@ struct ProfileConnectionTests {
     }
 
     @Test func aProfileDisconnectingLeavesTheOthersConnected() async throws {
-        try await withStartedBridge(port: 8133) { bridge, port in
+        try await withStartedBridge(port: 0) { bridge, port in
             let token = await bridge.authToken
 
             let personal = makeTask(port: port)
@@ -331,7 +330,7 @@ struct ProfileConnectionTests {
     // MARK: - Routing
 
     @Test func aProfileIndexRoutesTheRequestToThatProfileAlone() async throws {
-        try await withStartedBridge(port: 8134) { bridge, port in
+        try await withStartedBridge(port: 0) { bridge, port in
             let token = await bridge.authToken
 
             let personal = makeTask(port: port)
@@ -371,7 +370,7 @@ struct ProfileConnectionTests {
     }
 
     @Test func namingAProfileThatIsNotConnectedFailsInsteadOfFallingBack() async throws {
-        try await withStartedBridge(port: 8135) { bridge, port in
+        try await withStartedBridge(port: 0) { bridge, port in
             let token = await bridge.authToken
             let personal = makeTask(port: port)
             try await authenticate(port: port, token: token, profileId: "default", task: personal)
@@ -394,7 +393,7 @@ struct ProfileConnectionTests {
     }
 
     @Test func selectingAProfilePinsWhereUntargetedCallsLand() async throws {
-        try await withStartedBridge(port: 8136) { bridge, port in
+        try await withStartedBridge(port: 0) { bridge, port in
             let token = await bridge.authToken
 
             let personal = makeTask(port: port)
@@ -422,7 +421,7 @@ struct ProfileConnectionTests {
     }
 
     @Test func aPinnedProfileGoingAwayFallsThroughRatherThanBreakingEveryCall() async throws {
-        try await withStartedBridge(port: 8137) { bridge, port in
+        try await withStartedBridge(port: 0) { bridge, port in
             let token = await bridge.authToken
 
             let personal = makeTask(port: port)
@@ -449,7 +448,7 @@ struct ProfileConnectionTests {
     }
 
     @Test func broadcastReachesEveryProfileAndReportsEachSeparately() async throws {
-        try await withStartedBridge(port: 8138) { bridge, port in
+        try await withStartedBridge(port: 0) { bridge, port in
             let token = await bridge.authToken
 
             let personal = makeTask(port: port)

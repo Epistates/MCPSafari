@@ -121,10 +121,13 @@ struct TokenDirectoryTests {
         #expect(FileManager.default.fileExists(atPath: token.path))
         await bridge.stop()
         #expect(!FileManager.default.fileExists(atPath: token.path))
-        await bridge.start()
-        let nextToken = root.appendingPathComponent("tokens/\(await bridge.port)")
+
+        // A stopped bridge stays stopped, so the next owner is a new one.
+        let next = try WebSocketBridge(port: 0, logger: Logger(label: "token-test"), tokenRoot: root)
+        await next.start()
+        let nextToken = root.appendingPathComponent("tokens/\(await next.port)")
         try "different-owner".write(to: nextToken, atomically: true, encoding: .utf8)
-        await bridge.stop()
+        await next.stop()
         #expect(try String(contentsOf: nextToken, encoding: .utf8) == "different-owner")
     }
 

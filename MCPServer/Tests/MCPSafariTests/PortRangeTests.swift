@@ -112,6 +112,45 @@ struct PortRangeTests {
         )
     }
 
+    /// The extension dials no port below 1024, so a server started on one would run
+    /// and never be found, with nothing saying why.
+    @Test func aPortTheExtensionNeverDialsIsRefused() throws {
+        for value in ["1", "80", "443", "1023"] {
+            for arguments in [["--port", value], ["doctor", "--port", value]] {
+                let refusal = #expect(throws: CLIError.self, "\(arguments)") {
+                    try parseCommand(arguments: arguments, environment: [:])
+                }
+                #expect(refusal?.description.contains("1024") == true)
+            }
+        }
+        #expect(WebSocketBridge.minPort == 1024)
+        #expect(
+            try parseCommand(arguments: ["--port", "1024"], environment: [:])
+                == .serve(port: 1024, portCount: 10, logLevel: .notice)
+        )
+        // Zero is how the system is asked for any free port, which tests rely on.
+        #expect(
+            try parseCommand(arguments: ["--port", "0"], environment: [:])
+                == .serve(port: 0, portCount: 10, logLevel: .notice)
+        )
+    }
+
+    @Test func theTokenRootOverrideMustBeAnAbsolutePath() throws {
+        let refusal = #expect(throws: CLIError.self) {
+            try parseCommand(arguments: [], environment: ["MCP_SAFARI_TOKEN_ROOT": "relative/tokens"])
+        }
+        #expect(refusal?.description.contains("MCP_SAFARI_TOKEN_ROOT") == true)
+        #expect(
+            try parseCommand(arguments: [], environment: ["MCP_SAFARI_TOKEN_ROOT": "/tmp/mcpsafari-test"])
+                == .serve(port: 8089, portCount: 10, logLevel: .notice)
+        )
+        // Empty is how a client config unsets one.
+        #expect(
+            try parseCommand(arguments: [], environment: ["MCP_SAFARI_TOKEN_ROOT": ""])
+                == .serve(port: 8089, portCount: 10, logLevel: .notice)
+        )
+    }
+
     @Test func theLastPortOfASweepStopsAtTheTopOfThePortSpace() {
         #expect(WebSocketBridge.lastPort(from: 8089, count: 10) == 8098)
         #expect(WebSocketBridge.lastPort(from: 9000, count: 1) == 9000)
@@ -130,10 +169,8 @@ struct PortRangeTests {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
-        let first: UInt16 = 8601
-        let held = holdPorts(from: first, count: 10)
+        let (first, held) = try #require(holdFreePorts(count: 10), "no run of ten free ports to occupy")
         defer { for descriptor in held { Darwin.close(descriptor) } }
-        try #require(held.count == 10, "every port in the first ten has to be occupied for this to test anything")
 
         let bridge = try WebSocketBridge(
             port: first,
@@ -161,10 +198,8 @@ struct PortRangeTests {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
-        let first: UInt16 = 8631
-        let held = holdPorts(from: first, count: 3)
+        let (first, held) = try #require(holdFreePorts(count: 3), "no run of three free ports to occupy")
         defer { for descriptor in held { Darwin.close(descriptor) } }
-        try #require(held.count == 3, "the ports in the sweep have to be occupied for this to test anything")
 
         // The ports right after the held ones are free, and a sweep of ten would
         // have reached them.
@@ -182,7 +217,7 @@ struct PortRangeTests {
         #expect(status.lastPort == first + 2)
         let failure = try #require(status.lastError)
         #expect(failure.code == "bridge_bind_failed")
-        #expect(failure.message == "No free port in 8631-8633 for the extension bridge.")
+        #expect(failure.message == "No free port in \(first)-\(first + 2) for the extension bridge.")
         #expect(failure.recovery.contains("--port-range"))
         #expect(!FileManager.default.fileExists(atPath: tokenRoot.appendingPathComponent("tokens/\(first + 3)").path))
     }
@@ -191,10 +226,8 @@ struct PortRangeTests {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
 
-        let first: UInt16 = 8641
-        let held = holdPorts(from: first, count: 1)
+        let (first, held) = try #require(holdFreePorts(count: 1), "no free port to occupy")
         defer { for descriptor in held { Darwin.close(descriptor) } }
-        try #require(held.count == 1)
 
         let bridge = try WebSocketBridge(
             port: first,
@@ -205,7 +238,7 @@ struct PortRangeTests {
         await bridge.start()
         defer { Task { await bridge.stop() } }
 
-        #expect(await bridge.status().lastError?.message == "No free port in 8641 for the extension bridge.")
+        #expect(await bridge.status().lastError?.message == "No free port in \(first) for the extension bridge.")
     }
 
     @Test func statusReportsTheDefaultRange() async throws {

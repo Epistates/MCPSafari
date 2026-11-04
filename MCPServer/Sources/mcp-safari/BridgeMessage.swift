@@ -46,6 +46,32 @@ struct BridgeResponse: Codable, Sendable {
     }
 }
 
+extension BridgeResponse {
+    /// The request id of a reply that would not decode, read straight from its text.
+    ///
+    /// The cases that matter are ones a JSON parser refuses as a whole, such as a
+    /// string holding a lone surrogate escape, so no parser can be asked for the id.
+    /// The extension writes `id` first, and the ids this server hands out are UUIDs,
+    /// so a short scan of the start of the frame finds it. The caller still has to
+    /// match the result against a request it is waiting on, which is what makes a
+    /// wrong guess harmless.
+    static func recoverID(from data: Data) -> String? {
+        let head = Array(data.prefix(512))
+        guard let key = head.firstRange(of: Array(#""id":""#.utf8)) else { return nil }
+        let id = head[key.upperBound...].prefix { $0 != UInt8(ascii: "\"") }
+        guard !id.isEmpty, id.count <= 64, id.count < head.count - key.upperBound,
+              id.allSatisfy({ $0 == UInt8(ascii: "-") || $0 == UInt8(ascii: "_") || isASCIIAlphanumeric($0) })
+        else { return nil }
+        return String(decoding: id, as: UTF8.self)
+    }
+
+    private static func isASCIIAlphanumeric(_ byte: UInt8) -> Bool {
+        (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+            || (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte)
+            || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
+    }
+}
+
 struct ToolFailure: Codable, Equatable, Sendable {
     let code: String
     let message: String

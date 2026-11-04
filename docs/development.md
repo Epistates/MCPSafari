@@ -34,6 +34,14 @@ Point your MCP client at `MCPServer/.build/debug/MCPSafari` using an absolute pa
 
 The binary is `MCPServer/.build/release/MCPSafari`.
 
+### Tests that start the server
+
+Anything that runs the real `mcp-safari` binary must keep its token files out of `~/Library/Application Support/MCPSafari/tokens/`. A Safari extension running on the same machine finds servers by the files there, so it would dial the test server, and a test that clicks or navigates could drive your actual browser. Set `MCP_SAFARI_TOKEN_ROOT` to a temporary directory in the server's environment; the token files then go to `<that directory>/tokens/` and the protected-path checks follow it. The variable is for tests only. `status` reports it as `tokenRootOverride` and `mcp-safari doctor` warns about it, because the extension reads only the standard location and cannot see a server started with it set. The MCP harness (`.github/scripts/test_mcp_results.mjs`) and the smoke test (`.github/scripts/smoke_mcp.py`) both do this.
+
+Swift tests that bind ports take them from the system (`port: 0`) or look for a free run at run time (`holdFreePorts`), never a fixed number, so two copies of the suite or a developer's own server cannot collide with them.
+
+`Tests/bridge-constants.test.mjs` reads the numbers the server and the extension must agree on (the protocol version, the most ports a server may try, the lowest port, the message size limit) out of the Swift sources and compares them with the JavaScript constants. Change one side and it fails until the other follows.
+
 ## CI
 
 [ci.yml](../.github/workflows/ci.yml) builds and tests the Swift server, runs the Node extension tests, type-checks the extension scripts, checks the MCP handshake, and builds the Safari extension in Debug and Release. It runs once per toolchain, Xcode 27.1 and Xcode 26.6. Its path filters skip Markdown-only changes. The release workflow runs the same file as its test gate before anything is signed. Security scans have [separate workflows](../.github/workflows).
@@ -56,7 +64,7 @@ A Swift executable using the official [modelcontextprotocol/swift-sdk](https://g
 
 - `main.swift` — Entry point, parses CLI flags, starts the server
 - `SafariMCPServer.swift` — The actor itself: tool dispatch, profile routing, and the tool handlers
-- `WebSocketBridge.swift` — WebSocket server with request/response correlation (actor). Most of this actor is one state machine running from listener to connection to handshake to authenticated send, and it stays in one file for that reason: the steps share mutable bookkeeping and are far easier to follow together. What sits beside it is the part that holds no state: `BridgeHandshake.swift` (the challenge-response exchange: the two proofs, and how a frame is judged the next valid step), `BridgeStatus.swift` (the `Codable` shapes `status` and `doctor` report), `BridgeListenerAttempt.swift` (which listener states settle a bind attempt, and the deadline for one that never does), and `BridgeError.swift` (every failure and the message it gives the MCP client)
+- `WebSocketBridge.swift` — WebSocket server with request/response correlation (actor). Most of this actor is one state machine running from listener to connection to handshake to authenticated send, and it stays in one file for that reason: the steps share mutable bookkeeping and are far easier to follow together. What sits beside it is the part that holds no state: `BridgeHandshake.swift` (the challenge-response exchange: the two proofs, and how a frame is judged the next valid step), `BridgeStatus.swift` (the `Codable` shapes `status` and `doctor` report), `BridgeListenerAttempt.swift` (which listener states settle a bind attempt, and the deadline for one that never does), `BridgeError.swift` (every failure and the message it gives the MCP client), `BridgeOwnerRecord.swift` (the `<port>.pid` file and the lock a live server holds on it), and `BridgeLogThrottle.swift` (lets a warning that can repeat without bound through once per interval)
 - `BridgeMessage.swift` — Wire protocol types and `AnyCodable` serialization
 - `Diagnostics.swift` — CLI flag parsing and the `doctor` checks
 - `TabHandle.swift` / `FileAttachment.swift` — Profile-qualified tab handles, and loading local files for upload
