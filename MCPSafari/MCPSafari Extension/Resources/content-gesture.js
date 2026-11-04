@@ -267,12 +267,16 @@
             }
             return toScreen(css.x, css.y);
         };
-        const centerOf = (element) => {
-            const rect = element.getBoundingClientRect();
-            return checked({
-                x: rect.left + rect.width / 2,
-                y: rect.top + rect.height / 2,
-            });
+        // A real pointer lands on whatever is at the point, so an element under
+        // a modal or a banner is refused here, before the server is told where
+        // to click, with the error the synthetic path gives. `force` waives the
+        // cover, as it does there; an element with no area has no point to aim
+        // at, so that is refused either way.
+        const aimedAt = (element) => {
+            const point = aimPoint(element);
+            const screen = checked(point);
+            if (!params.force || !point.visible) assertReachable(element, point);
+            return screen;
         };
 
         // x/y wins over uid/selector/text here exactly as it does for the
@@ -303,7 +307,7 @@
 
         let from;
         if (fromEl) {
-            from = centerOf(fromEl);
+            from = aimedAt(fromEl);
         } else if (pointRequested) {
             from = checked({ x: Number(params.x), y: Number(params.y) });
         } else {
@@ -315,7 +319,7 @@
             );
         }
 
-        const to = toEl ? centerOf(toEl) : undefined;
+        const to = toEl ? aimedAt(toEl) : undefined;
         return to ? { from, to } : { from };
     }
 

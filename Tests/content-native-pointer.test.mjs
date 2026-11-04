@@ -18,14 +18,22 @@ const WINDOW = {
     innerHeight: 800,
 };
 
-function el(rect) {
-    return {
+// `covering` stands in for what the hit test lands on: the element itself
+// unless something is on top of it.
+function el(rect, covering) {
+    const node = {
         nodeType: ELEMENT_NODE,
         tagName: "DIV",
         hidden: false,
+        id: "",
+        getAttribute: () => null,
         scrollIntoView() {},
         getBoundingClientRect: () => rect,
+        getRootNode: () => ({ elementFromPoint: () => covering || node, querySelector: () => null }),
+        closest: () => null,
+        contains: (other) => other === node,
     };
+    return node;
 }
 
 function loadContent({ target, toTarget, window: windowValues, hasFocus = true } = {}) {
@@ -102,20 +110,17 @@ test("native_pointer_points measures both drag endpoints after all scrolling", a
     // must be measured after all scrolling (and here fails the bounds check
     // rather than dragging whatever sits at the stale point).
     let scrollOffset = 0;
-    const scrollingEl = (baseTop) => ({
-        nodeType: ELEMENT_NODE,
-        tagName: "DIV",
-        hidden: false,
-        scrollIntoView() {
-            scrollOffset = baseTop;
-        },
-        getBoundingClientRect: () => ({
+    const scrollingEl = (baseTop) => {
+        const node = el({ left: 0, top: 0, width: 10, height: 10 });
+        node.scrollIntoView = () => { scrollOffset = baseTop; };
+        node.getBoundingClientRect = () => ({
             left: 0,
             top: baseTop - scrollOffset,
             width: 10,
             height: 10,
-        }),
-    });
+        });
+        return node;
+    };
     const target = scrollingEl(100);
     const toTarget = scrollingEl(2000);
     const call = loadContent({ target, toTarget });
@@ -166,6 +171,72 @@ test("x/y overrides a resolvable selector, matching the synthetic path", async (
     assert.deepEqual(JSON.parse(JSON.stringify(data)), {
         from: { x: 100 + 400, y: 125 + 100 + 300 },
     });
+});
+
+// ─── Reachability ────────────────────────────────────────────────────
+//
+// A real pointer lands on whatever is at the point. The synthetic path refuses
+// a covered target; the native path used to answer with its centre and let the
+// click land on the overlay, reporting success for it.
+
+test("native_pointer_points refuses a target covered by an overlay and names it", async () => {
+    const overlay = el({ left: 0, top: 0, width: 1000, height: 800 });
+    overlay.id = "cookie-banner";
+    const target = el({ left: 50, top: 60, width: 20, height: 10 }, overlay);
+    const call = loadContent({ target });
+
+    const response = await call("native_pointer_points", { selector: "#target" });
+
+    assert.equal(response.data, null);
+    assert.equal(response.errorCode, "target_covered", response.error);
+    assert.match(response.error, /<div>#cookie-banner/);
+});
+
+test("force waives the cover for native points", async () => {
+    const overlay = el({ left: 0, top: 0, width: 1000, height: 800 });
+    const target = el({ left: 50, top: 60, width: 20, height: 10 }, overlay);
+    const call = loadContent({ target });
+
+    const { data, error } = await call("native_pointer_points", { selector: "#target", force: true });
+
+    assert.equal(error, null);
+    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 160, y: 290 } });
+});
+
+test("native_pointer_points checks both ends of a drag", async () => {
+    const overlay = el({ left: 0, top: 0, width: 1000, height: 800 });
+    const target = el({ left: 0, top: 0, width: 10, height: 10 });
+    const toTarget = el({ left: 200, top: 300, width: 40, height: 20 }, overlay);
+    const call = loadContent({ target, toTarget });
+
+    const covered = await call("native_pointer_points", { fromSelector: "#from", toSelector: "#to" });
+    const forced = await call("native_pointer_points", { fromSelector: "#from", toSelector: "#to", force: true });
+
+    assert.equal(covered.data, null);
+    assert.equal(covered.errorCode, "target_covered");
+    assert.equal(forced.error, null);
+});
+
+test("native_pointer_points refuses an element with no area, forced or not", async () => {
+    const target = el({ left: 50, top: 60, width: 0, height: 0 });
+    const call = loadContent({ target });
+
+    const plain = await call("native_pointer_points", { selector: "#target" });
+    const forced = await call("native_pointer_points", { selector: "#target", force: true });
+
+    assert.equal(plain.errorCode, "target_not_visible");
+    assert.equal(forced.errorCode, "target_not_visible");
+    assert.equal(plain.data, null);
+});
+
+test("native_pointer_points aims at the visible part of an element larger than the viewport", async () => {
+    const target = el({ left: -500, top: 100, width: 3000, height: 40 });
+    const call = loadContent({ target });
+
+    const { data, error } = await call("native_pointer_points", { selector: "#target" });
+
+    assert.equal(error, null);
+    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 100 + 500, y: 125 + 100 + 120 } });
 });
 
 // The points are screen coordinates. If Safari is not the window in front, they
