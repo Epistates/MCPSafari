@@ -24,18 +24,32 @@
 // alone it is usually a SKU or coupon.
 const SECRET_NAME_WORDS = new Set([
     "token", "secret", "key", "sig", "signature",
-    "password", "passwd", "pwd", "passcode",
+    "password", "passwd", "pwd", "passcode", "pass",
     "auth", "authorization", "session", "sid", "jwt",
     "otp", "ticket", "verifier", "credential", "credentials",
+    "assertion", "bearer",
 ]);
 // Joined words ending in one of these are caught too, for names run together
 // (`accesstoken`, `clientsecret`). Short words are left out on purpose: `key`
 // would take `monkey`.
-const SECRET_NAME_SUFFIXES = ["token", "secret", "password", "passwd", "signature", "apikey", "sessionid", "credential", "credentials"];
+const SECRET_NAME_SUFFIXES = [
+    "token", "secret", "password", "passwd", "signature", "apikey", "sessionid", "sessid", "credential", "credentials",
+    "samlresponse",
+];
 const DESCRIPTIVE_LAST_WORDS = new Set([
     "type", "hint", "length", "expires", "expiry", "ttl", "algorithm", "alg", "format", "endpoint", "url", "uri", "count", "name", "method",
 ]);
-const USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/i;
+// The authority's userinfo, after a scheme or none (`//user:pw@host`). A browser
+// reads a backslash as a slash in the special schemes, so `https:\\user:pw@host`
+// is the same address.
+const USERINFO = /^((?:[a-z][a-z0-9+.-]*:)?[\\/]{2})[^\\/?#]*@/i;
+
+// A parameter is a name and a value, set off by `?`, `&`, `#` or `;`. The same
+// four characters percent-encoded (`%3F`, `%26`, `%23`, `%3B`, and `%3D` for the
+// equals sign) are read as well, because a URL carried inside another's value
+// is encoded, and its token is no less a token for that. Twice-encoded text is
+// not decoded.
+const PARAMETER_NAME_CHARS = "(?:[^=&#?;%]|%(?!3[DdFfBb]|26|23))*";
 
 function urlNameWords(name) {
     let decoded = name;
@@ -61,20 +75,31 @@ function isSecretUrlName(words) {
 function redactUrlSecrets(url) {
     if (!url) return "";
     const noUserinfo = String(url).replace(USERINFO, "$1[redacted]@");
-    // Only the query and fragment carry parameters; `&` is legal in a path.
+    // The query and fragment carry parameters, and `&` is legal in a path. A
+    // path carries only `;name=value` parameters, handled on their own.
     const start = noUserinfo.search(/[?#]/);
-    if (start === -1) return noUserinfo;
-    const tail = noUserinfo.slice(start);
+    if (start === -1) return redactPathParameters(noUserinfo);
+    return redactPathParameters(noUserinfo.slice(0, start)) + redactQueryParameters(noUserinfo.slice(start));
+}
 
-    // A name follows `?`, `&` or `#`, so a hash-routed callback
+// `/app;jsessionid=ABC/page`: a servlet container's session id travels as a
+// parameter on a path segment, where no query parser looks.
+function redactPathParameters(path) {
+    return path.replace(/;([^=;/\\]*)=([^;/\\]*)/g, (whole, name) =>
+        isSecretUrlName(urlNameWords(name)) ? `;${name}=[redacted]` : whole
+    );
+}
+
+function redactQueryParameters(tail) {
+    // A name follows `?`, `&`, `#` or `;`, so a hash-routed callback
     // (`#/cb?code=x`) is read the same as a plain query.
-    const parameter = /([?&#])([^=&#?]*)=/g;
+    const parameter = new RegExp(`([?&#;]|%3[FfBb]|%26|%23)(${PARAMETER_NAME_CHARS})(?:=|%3[Dd])`, "g");
     const hasState = [...tail.matchAll(parameter)].some((match) => {
         const words = urlNameWords(match[2]);
         return words.length === 1 && words[0] === "state";
     });
     // `state` with no value (`&state`) is still the OAuth state.
-    const bareState = /[?&#]state(?=[&#]|$)/i.test(tail);
+    const bareState = /(?:[?&#;]|%3[FfBb]|%26|%23)state(?=[&#;]|%26|%23|%3[Bb]|$)/i.test(tail);
 
     let redacted = "";
     let copied = 0;
@@ -87,13 +112,13 @@ function redactUrlSecrets(url) {
         // than from the end of the name, keeps a `?token=` nested inside an
         // earlier parameter's value (`?next=/cb?token=x`) in view.
         const valueStart = parameter.lastIndex;
-        const rest = tail.slice(valueStart).search(/[&#]/);
+        const rest = tail.slice(valueStart).search(/[&#;]|%26|%23|%3[Bb]/);
         const valueEnd = rest === -1 ? tail.length : valueStart + rest;
         redacted += `${tail.slice(copied, valueStart)}[redacted]`;
         copied = valueEnd;
         parameter.lastIndex = valueEnd;
     }
-    return noUserinfo.slice(0, start) + redacted + tail.slice(copied);
+    return redacted + tail.slice(copied);
 }
 
 // ─── What a tab may say about itself ─────────────────────────────────

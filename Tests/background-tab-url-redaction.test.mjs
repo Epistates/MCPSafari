@@ -182,6 +182,70 @@ test("userinfo in the authority is stripped", () => {
     assert.equal(redact("https://host.example/?email=a@b.example"), "https://host.example/?email=a@b.example");
 });
 
+test("userinfo is stripped whichever way the authority is spelled", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    // Protocol-relative, and the backslashes a browser reads as slashes.
+    assert.equal(redact("//user:hunter2@host.example/path"), "//[redacted]@host.example/path");
+    assert.equal(redact("https:\\\\user:hunter2@host.example\\path"), "https:\\\\[redacted]@host.example\\path");
+    assert.equal(redact("https:/\\user:hunter2@host.example/"), "https:/\\[redacted]@host.example/");
+    assert.equal(redact("//host.example/@user/repo"), "//host.example/@user/repo");
+    assert.equal(redact("/path/@user"), "/path/@user");
+});
+
+test("a secret percent-encoded inside another parameter's value is still found", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    assert.equal(
+        redact("https://a.example/login?next=https%3A%2F%2Fb.example%2Fcb%3Ftoken%3DLEAK"),
+        "https://a.example/login?next=https%3A%2F%2Fb.example%2Fcb%3Ftoken%3D[redacted]"
+    );
+    // The encoded value ends at the encoded separator, not at the end of the URL.
+    assert.equal(
+        redact("https://a.example/login?next=%2Fcb%3Ftoken%3DLEAK%26page%3D2&x=1"),
+        "https://a.example/login?next=%2Fcb%3Ftoken%3D[redacted]%26page%3D2&x=1"
+    );
+    assert.equal(
+        redact("https://a.example/#/r?redirect=%2Fa%23access_token%3DLEAK"),
+        "https://a.example/#/r?redirect=%2Fa%23access_token%3D[redacted]"
+    );
+    // Nothing secret in it, so nothing changes.
+    assert.equal(
+        redact("https://a.example/?next=https%3A%2F%2Fb.example%2Fx%3Fpage%3D2"),
+        "https://a.example/?next=https%3A%2F%2Fb.example%2Fx%3Fpage%3D2"
+    );
+});
+
+test("a path parameter and a semicolon-separated pair are covered", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    assert.equal(redact("https://a.example/app;jsessionid=LEAK/page"), "https://a.example/app;jsessionid=[redacted]/page");
+    assert.equal(redact("https://a.example/app;jsessionid=LEAK?x=1"), "https://a.example/app;jsessionid=[redacted]?x=1");
+    assert.equal(redact("https://a.example/a;v=2/b"), "https://a.example/a;v=2/b");
+    assert.equal(redact("https://a.example/?a=1;token=LEAK;b=2"), "https://a.example/?a=1;token=[redacted];b=2");
+    assert.equal(redact("https://a.example/?a=1#x=1;id_token=LEAK"), "https://a.example/?a=1#x=1;id_token=[redacted]");
+});
+
+test("the names that carried credentials unnoticed are covered", () => {
+    const evaluate = loadBackground();
+    const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
+
+    for (const name of ["pass", "SAMLResponse", "client_assertion", "bearer", "PHPSESSID", "phpsessid", "Pass"]) {
+        assert.equal(
+            redact(`https://a.example/?${name}=LEAK&page=2`),
+            `https://a.example/?${name}=[redacted]&page=2`,
+            name
+        );
+    }
+    // Words that merely contain one of them are not names for one.
+    for (const name of ["bypass", "passenger", "compass", "SAMLRequest", "RelayState"]) {
+        assert.equal(redact(`https://a.example/?${name}=1`), `https://a.example/?${name}=1`, name);
+    }
+});
+
 test("a secret nested in an earlier parameter's value is still found", () => {
     const evaluate = loadBackground();
     const redact = (url) => evaluate(`redactUrlSecrets(${JSON.stringify(url)})`);
