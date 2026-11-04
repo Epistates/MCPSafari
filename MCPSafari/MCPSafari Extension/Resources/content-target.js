@@ -99,7 +99,10 @@
         // By UID (preferred — most precise, from snapshot)
         if (params.uid) {
             const el = getElementByUid(params.uid);
-            if (!el) {
+            // An element the page removed is still alive as long as something
+            // holds it, which a framework's cache often does. Acting on it
+            // dispatches events to a node nobody can see and reports success.
+            if (!el || el.isConnected === false) {
                 throw toolError(
                     "stale_uid",
                     `No element found for uid: ${params.uid}. Take a new snapshot; UIDs may have changed.`,
