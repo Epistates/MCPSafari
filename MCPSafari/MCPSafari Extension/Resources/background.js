@@ -98,7 +98,9 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
 async function describeActiveTabAccess() {
     let tabId;
     try {
-        tabId = await getActiveTabId();
+        // The tab in front, not a server's pinned one: the popup answers for
+        // what the user is looking at.
+        tabId = await userActiveTabId();
     } catch {
         return { origin: null, allowed: false, pending: false };
     }

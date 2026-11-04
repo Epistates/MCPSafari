@@ -34,7 +34,7 @@ function loadBackground({ probe, tabUrl = "https://example.com/a/page?q=1" }) {
         },
         tabs: {
             query: async () => [{ id: 1, active: true, windowId: 1 }],
-            get: async (id) => ({ id, active: true, windowId: 1, url: tabUrl, title: "T" }),
+            get: async (id) => ({ id, active: true, windowId: 1, url: typeof tabUrl === "function" ? tabUrl(id) : tabUrl, title: "T" }),
             onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },
@@ -67,6 +67,20 @@ test("a reachable site reports the origin, without the path", async () => {
     assert.equal(access.origin, "https://example.com");
     assert.equal(access.allowed, true);
     assert.equal(access.pending, false);
+});
+
+test("the popup describes the tab the user is looking at, not one a server pinned", async () => {
+    // The popup answers "can MCPSafari reach what I am looking at?", so an
+    // agent's select_tab on some other tab is beside the point.
+    const harness = loadBackground({
+        probe: async () => [{ result: true }],
+        tabUrl: (id) => (id === 7 ? "https://pinned.example/inbox" : "https://example.com/a/page"),
+    });
+    harness.call("pinnedTabs.set(8089, 7)");
+
+    const access = await harness.call("describeActiveTabAccess()");
+
+    assert.equal(access.origin, "https://example.com");
 });
 
 test("a site awaiting Safari's dialog is reported as asking, not as refused", async () => {
