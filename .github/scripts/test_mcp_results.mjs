@@ -227,7 +227,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await connect("default", async ({ action, params }) => {
         sentActions.add(action);
         received.push(action);
-        requests.push({ action, tabId: params.tabId });
+        requests.push({ action, tabId: params.tabId, selector: params.selector });
         inFlight.set(action, (inFlight.get(action) ?? 0) + 1);
         peakInFlight.set(action, Math.max(peakInFlight.get(action) ?? 0, inFlight.get(action)));
         if (answerDelayMs) await new Promise((resolve) => setTimeout(resolve, answerDelayMs));
@@ -337,6 +337,37 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(peakInFlight.get("screenshot"), 1, "screenshots overlapped at the extension");
     await Promise.all([0, 1, 2, 3].map(() => tool("snapshot")));
     assert.ok(peakInFlight.get("snapshot") > 1, "the fixture never overlapped two plain reads");
+    // Not only screenshots: every tool that is not read-only can move focus, as
+    // tabs_create does by activating the new tab, so each is serialised with the
+    // rest. read_console is among them because `clear` empties its buffer.
+    const serialised = [
+        ["tabs_create", {}], ["click", { selector: "body" }], ["javascript_tool", { code: "1" }],
+        ["resize_window", { width: 800, height: 600 }], ["read_console", {}], ["read_network", {}],
+    ];
+    for (const [name, args] of serialised) {
+        await Promise.all([0, 1, 2, 3].map(() => tool(name, args)));
+        assert.equal(peakInFlight.get(name), 1, `${name} calls overlapped at the extension`);
+    }
+    // A batch holds the lock once for all its steps. Three batches of two clicks
+    // each must reach the extension as three adjacent pairs, never interleaved,
+    // and none may wait for a lock its own steps hold.
+    let batchStart = requests.length;
+    await Promise.all(["a", "b", "c"].map((id) => tool("run_steps", {
+        steps: [{ tool: "click", arguments: { selector: `#${id}1` } }, { tool: "click", arguments: { selector: `#${id}2` } }],
+    })));
+    const clicks = requests.slice(batchStart).filter(({ action }) => action === "click").map(({ selector }) => selector);
+    assert.equal(clicks.length, 6);
+    for (let index = 0; index < clicks.length; index += 2) {
+        assert.equal(clicks[index][1], clicks[index + 1][1], `batches interleaved: ${clicks}`);
+    }
+    // And a plain call queues behind a running batch rather than between its steps.
+    batchStart = requests.length;
+    await Promise.all([
+        tool("run_steps", { steps: [{ tool: "click", arguments: { selector: "#x1" } }, { tool: "click", arguments: { selector: "#x2" } }] }),
+        tool("click", { selector: "#y" }),
+    ]);
+    const mixed2 = requests.slice(batchStart).map(({ selector }) => selector);
+    assert.ok(mixed2.join() === "#x1,#x2,#y" || mixed2.join() === "#y,#x1,#x2", `a call ran between a batch's steps: ${mixed2}`);
     answerDelayMs = 0;
 
     // A call that names no tab acts on the selected one, and its own follow-ups
@@ -355,7 +386,9 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     start = requests.length;
     await tool("click", { selector: "body", trace: true, traceDuration: 0 });
     moveSelectionAfter = undefined;
-    assert.deepEqual(sentSince(start), ["start_trace:-", "click:-", "stop_trace:7"]);
+    // The action goes to the tab the trace started on, not to whichever is selected
+    // by the time it is sent.
+    assert.deepEqual(sentSince(start), ["start_trace:-", "click:7", "stop_trace:7"]);
 
     // An explicit tab is left alone.
     selectedTab = 9;
@@ -380,9 +413,23 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     moveSelectionAfter = undefined;
     assert.equal(pinnedBatch.structuredContent.completedSteps, 4);
     assert.deepEqual(sentSince(start), [
-        "start_trace:-", "click:-", "hover:7", "wait:7", "click:3", "stop_trace:7", "snapshot:7",
+        "start_trace:-", "click:7", "hover:7", "wait:7", "click:3", "stop_trace:7", "snapshot:7",
     ]);
     selectedTab = 7;
+
+    // A batch whose first step is on another tab still stops its trace on the tab
+    // it started on, and a later step that names none acts there too.
+    start = requests.length;
+    await tool("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body", tabId: "p0t3" } },
+            { tool: "click", arguments: { selector: "body" } },
+        ],
+        trace: true, traceDuration: 0, includeSnapshot: true,
+    });
+    assert.deepEqual(sentSince(start), [
+        "start_trace:-", "click:3", "click:7", "stop_trace:7", "snapshot:7",
+    ]);
 
     // A batch that names a tab uses it throughout.
     start = requests.length;
@@ -425,6 +472,27 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("drop_file", { selector: "body", filePaths: [tokenPath] }, /bridge token/);
     await refuse("navigate", { url: `file://${tokenPath}` }, /bridge token/);
     await refuse("tabs_create", { url: `file://${tokenPath}` }, /bridge token/);
+    // The same goes for a string where a boolean is declared, which is truthy at
+    // the extension, and for an argument the tool does not declare, which used to
+    // be dropped: `click {native: true}` ran a synthetic click.
+    await refuse("click", { selector: "body", force: "false" }, /force must be a boolean/);
+    await refuse("click", { selector: "body", doubleClick: "false" }, /doubleClick must be a boolean/);
+    await refuse("type_text", { selector: "input", text: "x", clearFirst: "false" }, /clearFirst must be a boolean/);
+    await refuse("click", { selector: "body", native: true }, /click does not take the argument "native"/);
+    await refuse("click", { selector: "body", waitForSelctor: "#a" }, /does not take the argument "waitForSelctor"/);
+    await refuse("scroll", { direction: "sideways" }, /Invalid direction: sideways\. Use up, down, left, right\./);
+    await refuse("form_input", { fields: { "#a": [1] } }, /fields\["#a"\] must be a string, number or boolean/);
+    await refuse("form_input", { fields: {} }, /fields must contain at least one/);
+    // A file that cannot be attached is found before the call, or before the first
+    // step of a batch, rather than after the steps ahead of it have acted.
+    const missing = join(directory, "missing.txt");
+    await refuse("upload_file", { selector: "input", filePath: missing }, /Cannot open file/);
+    await refuse("run_steps", {
+        steps: [
+            { tool: "click", arguments: { selector: "body" } },
+            { tool: "drop_file", arguments: { selector: "body", filePath: missing } },
+        ],
+    }, /steps\[1\] \(drop_file\): Cannot open file/);
     // A screenshot save may only create a .png or replace a PNG: it used to
     // overwrite any file the account could write.
     const notes = join(directory, "notes.png");
@@ -449,6 +517,17 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         ],
     }, /steps\[1\] \(navigate\): Invalid navigation action/);
 
+    // A step after a successful action can fail on its own. The failure keeps what
+    // the action returned, so the caller who is told the wait timed out can still
+    // read what the click did.
+    failAction = "wait";
+    const waitFailed = await tool("click", { selector: "body", waitForSelector: "#never" }, false);
+    assert.equal(waitFailed.structuredContent.code, "permission_required");
+    assert.equal(waitFailed.structuredContent.result, "Completed click");
+    failAction = "snapshot";
+    const snapshotFailed = await tool("click", { selector: "body", includeSnapshot: true, waitForSelector: "body" }, false);
+    assert.equal(snapshotFailed.structuredContent.result, "Completed click");
+    assert.deepEqual(snapshotFailed.structuredContent.wait, { matched: true });
     failAction = "click";
     const failed = await tool("click", { selector: "body" }, false);
     assert.equal(failed.structuredContent.code, "permission_required");

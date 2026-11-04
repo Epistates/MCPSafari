@@ -10,9 +10,20 @@ actor SafariMCPServer {
     private let bridge: WebSocketBridge
     private let logger: Logger
 
-    /// Held from the extension's prepare step through the act step of every tool
-    /// that depends on what has focus: native input, `screenshot`, and
-    /// `select_tab` when it brings the tab to the front.
+    /// Held for the whole of every call to a tool that is not annotated read-only.
+    ///
+    /// Almost everything that acts can move focus or change what is frontmost:
+    /// `tabs_create` activates the new tab, `close_tab` hands focus to another,
+    /// `resize_window` and `click` can raise a window, `javascript_tool` can do
+    /// any of it. And the tools that depend on focus (native input, `screenshot`)
+    /// prepare it in one bridge request and use it in the next, so none of those
+    /// may run in between. A list of the tools that move focus would be wrong
+    /// the first time one was added; the annotation each tool already carries is
+    /// the rule, and it errs towards waiting. Read-only tools touch nothing and
+    /// run alongside everything.
+    ///
+    /// A `run_steps` batch holds it once for all its steps, which run without
+    /// asking for it again: the lock is not reentrant.
     private let focusLock = AsyncFIFOLock()
 
     init(
@@ -67,7 +78,7 @@ actor SafariMCPServer {
     // MARK: - Tool Registration
 
     private func registerToolHandlers() async {
-        let allTools = buildToolDefinitions()
+        let allTools = Self.toolDefinitions
 
         await server.withMethodHandler(ListTools.self) { _ in
             .init(tools: allTools)
@@ -107,11 +118,32 @@ actor SafariMCPServer {
 
     // MARK: - Tool Dispatch
 
+    /// A call from a client. Its arguments are checked against the tool's schema
+    /// before anything runs, and `_batchDeadline` is no argument a client may give.
     private func handleToolCall(_ params: CallTool.Parameters) async -> CallTool.Result {
         let args = params.arguments ?? [:]
-
         do {
             try Self.preflight(tool: params.name, arguments: args)
+        } catch {
+            return Self.failureResult(toolFailure(for: error))
+        }
+        guard Self.declaresTool(params.name), !Self.readOnlyTools.contains(params.name) else {
+            return await dispatch(tool: params.name, arguments: args)
+        }
+        do {
+            return try await focusLock.withLock { await dispatch(tool: params.name, arguments: args) }
+        } catch {
+            // Cancelled while queued: it never ran.
+            return Self.failureResult(toolFailure(for: error))
+        }
+    }
+
+    /// Runs a tool whose arguments are already checked. A `run_steps` batch checks
+    /// every step while it plans and then calls here, adding the deadline and tab
+    /// it pins to the arguments after that check.
+    private func dispatch(tool: String, arguments args: [String: Value]) async -> CallTool.Result {
+        let params = (name: tool, arguments: args)
+        do {
             switch params.name {
             case "status":          return try await handleStatus()
             case "tabs_context":    return try await handleTabsContext()
@@ -387,9 +419,7 @@ actor SafariMCPServer {
     }
 
     private func handleCloseTab(_ args: [String: Value]) async throws -> CallTool.Result {
-        guard let handle = try TabHandle.resolve(args["tabId"]) else {
-            throw ToolInputError("close_tab requires tabId, a handle from tabs_context such as p0t5")
-        }
+        let handle = try Self.requiredTabHandle(args, tool: "close_tab")
         let response = try await send("tabs_close", args)
         guard response.success else { return textResult(response, as: "tab") }
         // The extension's confirmation names the tab by its own number, which is
@@ -403,15 +433,9 @@ actor SafariMCPServer {
     }
 
     private func handleSelectTab(_ args: [String: Value]) async throws -> CallTool.Result {
-        guard let handle = try TabHandle.resolve(args["tabId"]) else {
-            throw ToolInputError("select_tab requires tabId, a handle from tabs_context such as p0t5")
-        }
+        let handle = try Self.requiredTabHandle(args, tool: "select_tab")
         let params = try Self.selectTabParams(args)
-        // Bringing a tab to the front moves focus, so it queues with the other
-        // focus-sensitive tools. Selecting without it touches nothing they use.
-        let response = params["bringToFront"]?.boolValue == false
-            ? try await send("select_tab", args, params: params)
-            : try await focusLock.withLock { try await send("select_tab", args, params: params) }
+        let response = try await send("select_tab", args, params: params)
         guard response.success else { return textResult(response, as: "tab") }
         // Pinning the tab pins its profile too, so later calls that name no tab
         // stay in the browser window the caller just chose.
@@ -481,6 +505,9 @@ actor SafariMCPServer {
         params.merge(extraParams) { _, supplied in supplied }
 
         let traceSession = try await startTraceIfNeeded(args)
+        // The action goes to the tab the trace is on, not to whichever is selected
+        // by the time it is sent.
+        let args = traceSession?.pinning(args) ?? args
         do {
             let response = try await send(action, args, params: params)
             return try await resultAfterAction(response, args, wantSnapshot: wantSnapshot, traceSession: traceSession)
@@ -537,19 +564,25 @@ actor SafariMCPServer {
     // Shared flow for native input tools: permission, trace, bridge
     // preparation, then the CGEvent posting supplied by the caller.
     //
-    // Preparation and posting run under the focus lock as one unit. The
-    // extension focuses the tab or element during preparation, and the events
-    // are only right while that focus holds; a parallel call that focuses
-    // something else in between would take the keystrokes or the click.
+    // Preparation and posting are one unit. The extension focuses the tab or
+    // element during preparation, and the events are only right while that focus
+    // holds. Inside this process the call already holds the focus lock, so no
+    // parallel call can focus something else in between; across processes, the
+    // native input lock does the same for the other servers sharing the keyboard.
     private func runNativeAction(
         _ action: String,
         _ args: [String: Value],
         perform: (BridgeResponse) async throws -> String
     ) async throws -> CallTool.Result {
-        try Self.ensureNativeInputPermission()
+        // Before the trace starts and before the extension is asked to focus
+        // anything: neither is worth doing for input that will be refused.
+        try Self.ensureNativeInputReady()
         let traceSession = try await startTraceIfNeeded(args)
+        let args = traceSession?.pinning(args) ?? args
         do {
-            let (preparation, delivered) = try await focusLock.withLock { () -> (BridgeResponse, String?) in
+            let (preparation, delivered) = try await NativeInputLock.withLock(
+                timeout: Self.bridgeTimeout(args)
+            ) { () -> (BridgeResponse, String?) in
                 let preparation = try await send(action, args, params: interactionParams(args))
                 guard preparation.success else { return (preparation, nil) }
                 return (preparation, try await perform(preparation))
@@ -584,7 +617,7 @@ actor SafariMCPServer {
         }
         let combo = try Self.nativeKeyCombo(Self.requiredKey(args))
         return try await runNativeAction("native_press_key", args) { _ in
-            try Self.pressNativeKey(combo, deadline: Self.numberValue(args["_batchDeadline"]))
+            try await Self.pressNativeKey(combo, deadline: Self.numberValue(args["_batchDeadline"]))
         }
     }
 
@@ -596,7 +629,7 @@ actor SafariMCPServer {
         }
         return try await runNativeAction("native_pointer", args) { preparation in
             let targets = try Self.nativePointerTargets(from: preparation.data)
-            _ = try Self.moveNativePointer(to: targets.from, deadline: Self.numberValue(args["_batchDeadline"]))
+            _ = try await Self.moveNativePointer(to: targets.from, deadline: Self.numberValue(args["_batchDeadline"]))
             return "Hovered with native input; pointer at (\(Int(targets.from.x)), \(Int(targets.from.y)))"
         }
     }
@@ -610,45 +643,14 @@ actor SafariMCPServer {
             guard let to = targets.to else {
                 throw ToolInputError("drag requires toUid or toSelector")
             }
-            return try Self.dragNativePointer(from: targets.from, to: to, deadline: Self.numberValue(args["_batchDeadline"]))
+            return try await Self.dragNativePointer(from: targets.from, to: to, deadline: Self.numberValue(args["_batchDeadline"]))
         }
     }
 
     private func handleFormInput(_ args: [String: Value]) async throws -> CallTool.Result {
-        var params: [String: AnyCodable] = [:]
-
-        // The fields argument may arrive as a Value.object or as a JSON string
-        // (depending on how the MCP client serializes nested objects)
-        var fieldDict: [String: String] = [:]
-        if let fields = args["fields"]?.objectValue {
-            for (key, val) in fields {
-                if let s = val.stringValue {
-                    fieldDict[key] = s
-                } else if let i = val.intValue {
-                    fieldDict[key] = String(i)
-                } else if let d = val.doubleValue {
-                    fieldDict[key] = String(d)
-                } else if let b = val.boolValue {
-                    fieldDict[key] = String(b)
-                } else {
-                    fieldDict[key] = "\(val)"
-                }
-            }
-        } else if let fieldsStr = args["fields"]?.stringValue,
-                  let data = fieldsStr.data(using: .utf8),
-                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
-            fieldDict = parsed
-        }
-
-        guard !fieldDict.isEmpty else {
-            return CallTool.Result(
-                content: [Self.textContent("fields must contain at least one CSS selector and value")],
-                isError: true
-            )
-        }
-
-        params["fields"] = AnyCodable(fieldDict)
+        let params: [String: AnyCodable] = ["fields": AnyCodable(try Self.formInputFields(args))]
         let traceSession = try await startTraceIfNeeded(args)
+        let args = traceSession?.pinning(args) ?? args
         do {
             let response = try await send("form_input", args, params: params)
             return try await resultAfterAction(response, args, traceSession: traceSession)
@@ -668,11 +670,7 @@ actor SafariMCPServer {
         // scrolls the page, and a refused destination should not have cost that.
         let padding = try Self.capturePadding(args)
         let scale = try Self.captureScale(args)
-        // The extension may activate the tab before capturing it, so the capture
-        // queues with the other focus-sensitive tools rather than racing them.
-        // The extension may activate the tab before capturing it, so the capture
-        // queues with the other focus-sensitive tools rather than racing them.
-        let response = try await focusLock.withLock { try await send("screenshot", args, params: params) }
+        let response = try await send("screenshot", args, params: params)
 
         guard response.success, let raw = response.data?.stringValue else {
             return textResult(response, as: "screenshot")
@@ -776,6 +774,15 @@ actor SafariMCPServer {
         batchArgs["_batchDeadline"] = .double(ProcessInfo.processInfo.systemUptime + plan.timeout)
         let traceSession = try await startTraceIfNeeded(batchArgs)
         let pin = BatchTabPin()
+        // A trace lives on the tab it started on, and that is the batch's tab: the
+        // steps that name none act there, and the trace and the final snapshot are
+        // read from there. Left to the first step's response, a first step on some
+        // other tab would have made that the batch's tab and stopped the trace on a
+        // tab that has none.
+        if let tab = traceSession?.tab {
+            pin.recordFirst(tab)
+            batchArgs = traceSession?.pinning(batchArgs) ?? batchArgs
+        }
         var results: [Value] = []
         var content: [Tool.Content] = []
 
@@ -806,7 +813,7 @@ actor SafariMCPServer {
                 stepArguments["tabId"] = .string(tab.description)
             }
             let result = await Self.$batchPin.withValue(pin) {
-                await handleToolCall(.init(name: step.tool, arguments: stepArguments))
+                await dispatch(tool: step.tool, arguments: stepArguments)
             }
             if batchArgs["tabId"] == nil, let tab = pin.handle {
                 batchArgs["tabId"] = .string(tab.description)
@@ -934,6 +941,15 @@ actor SafariMCPServer {
         let duration: Double
         /// The tab `start_trace` resolved, when the extension reported one.
         let tab: TabHandle?
+
+        /// `args` aimed at that tab when the caller named none. The action the
+        /// trace is for happens there, and so does everything that follows it.
+        func pinning(_ args: [String: Value]) -> [String: Value] {
+            guard args["tabId"] == nil || args["tabId"] == .null, let tab else { return args }
+            var pinned = args
+            pinned["tabId"] = .string(tab.description)
+            return pinned
+        }
     }
 
     private func resultAfterAction(
@@ -946,12 +962,17 @@ actor SafariMCPServer {
         let args = Self.pinned(args, to: response)
         var content = [Self.textContent(responseText(response))]
         var details: [String: Value] = ["result": Self.structuredPayload(response.data)]
+        // A step after the action can fail when the action itself did not. The
+        // failure carries everything gathered so far in `details`, so a caller
+        // told the wait timed out can still read what the click returned.
         guard response.success else {
+            details["result"] = nil // the action failed; the failure is its result
             if let traceSession {
                 let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
                 content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
+                details["trace"] = Self.structuredPayload(traceResponse.data)
             }
-            return Self.failureResult(response.toolFailure, content: content)
+            return Self.failureResult(response.toolFailure, content: content, details: details)
         }
 
         if let waitResponse = try await waitAfterAction(args) {
@@ -960,8 +981,9 @@ actor SafariMCPServer {
                 if let traceSession {
                     let traceResponse = try await stopTraceResponse(traceSession, args, waitForDuration: false)
                     content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
+                    details["trace"] = Self.structuredPayload(traceResponse.data)
                 }
-                return Self.failureResult(waitResponse.toolFailure, content: content)
+                return Self.failureResult(waitResponse.toolFailure, content: content, details: details)
             }
             content.append(Self.textContent(responseText(waitResponse)))
             details["wait"] = Self.structuredPayload(waitResponse.data)
@@ -972,7 +994,7 @@ actor SafariMCPServer {
             details["trace"] = Self.structuredPayload(traceResponse.data)
             content.append(Self.textContent("--- Page Trace ---\n\(responseText(traceResponse))"))
             guard traceResponse.success else {
-                return Self.failureResult(traceResponse.toolFailure, content: content)
+                return Self.failureResult(traceResponse.toolFailure, content: content, details: details)
             }
         }
 
@@ -982,7 +1004,7 @@ actor SafariMCPServer {
             let snapText = responseText(snapResponse)
             content.append(Self.textContent("--- Page Snapshot ---\n\(snapText)"))
             guard snapResponse.success else {
-                return Self.failureResult(snapResponse.toolFailure, content: content)
+                return Self.failureResult(snapResponse.toolFailure, content: content, details: details)
             }
         }
 
@@ -1015,10 +1037,11 @@ actor SafariMCPServer {
         _ args: [String: Value],
         waitForDuration: Bool = true
     ) async throws -> BridgeResponse {
-        // The trace lives on the tab it was started on. Stopping it is aimed
-        // there when nothing more specific names a tab.
+        // The trace lives on the tab it was started on, so stopping it goes there
+        // whatever tab the rest of the call has been addressed to: a batch whose
+        // first step is on another tab would otherwise stop it where there is none.
         var args = args
-        if args["tabId"] == nil || args["tabId"] == .null, let tab = traceSession.tab {
+        if let tab = traceSession.tab {
             args["tabId"] = .string(tab.description)
         }
         if waitForDuration, traceSession.duration > 0 {

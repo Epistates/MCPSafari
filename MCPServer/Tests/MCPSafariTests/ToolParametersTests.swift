@@ -1,3 +1,4 @@
+import Foundation
 import MCP
 import Testing
 @testable import MCPSafari
@@ -115,9 +116,29 @@ struct ToolParametersTests {
         #expect(refusal(tool, ["waitTimeout": "5"]) == "waitTimeout must be a number")
         #expect(refusal(tool, ["includeSnapshot": "true"]) == "includeSnapshot must be a boolean")
         var valid: [String: Value] = ["waitForSelector": "#done", "waitForText": "Done", "waitTimeout": 5]
-        if tool == "upload_file" || tool == "drop_file" { valid["filePath"] = "/tmp/a.png" }
+        valid.merge(requiredArguments(for: tool)) { _, required in required }
         #expect(refusal(tool, valid) == nil)
     }
+
+    /// The least a tool needs to be a valid call, with a real file where it
+    /// names one.
+    private func requiredArguments(for tool: String) -> [String: Value] {
+        switch tool {
+        case "type_text": ["text": "x"]
+        case "press_key": ["key": "Enter"]
+        case "scroll": ["direction": "down"]
+        case "form_input": ["fields": ["#a": "b"]]
+        case "handle_dialog": ["action": "accept"]
+        case "upload_file", "drop_file": ["filePath": .string(Self.existingFile)]
+        default: [:]
+        }
+    }
+
+    private static let existingFile: String = {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("preflight-\(UUID().uuidString).txt")
+        try? "x".write(to: url, atomically: true, encoding: .utf8)
+        return url.path
+    }()
 
     @Test func traceOptionsAreCheckedBeforeStartTraceCanBeSent() {
         #expect(refusal("click", ["trace": "yes"]) == "trace must be a boolean")
@@ -144,8 +165,153 @@ struct ToolParametersTests {
         #expect(try SafariMCPServer.traceOptions([:]) == nil)
     }
 
-    @Test func toolsWithNothingToCheckPassThrough() {
-        #expect(refusal("status", ["anything": 1]) == nil)
+    @Test func aWellFormedCallPassesThrough() {
+        #expect(refusal("status", [:]) == nil)
         #expect(refusal("click", ["selector": "#a"]) == nil)
+    }
+
+    // MARK: - Unknown argument names
+
+    // `click {native: true}` ran a synthetic click, and `waitForSelctor` did nothing
+    // at all. Both are the caller being told nothing, so both are refused.
+    @Test func anArgumentTheToolDoesNotDeclareIsRefusedWithTheOnesItDoes() {
+        let click = refusal("click", ["selector": "#a", "native": true])
+        #expect(click?.hasPrefix("click does not take the argument \"native\". Its arguments are: ") == true)
+        #expect(click?.contains("doubleClick") == true)
+        #expect(click?.contains("waitForSelector") == true)
+
+        let typo = refusal("click", ["selector": "#a", "waitForSelctor": "#b"])
+        #expect(typo?.hasPrefix("click does not take the argument \"waitForSelctor\"") == true)
+
+        #expect(refusal("status", ["anything": 1]) == "status does not take the argument \"anything\". It takes no arguments.")
+        #expect(refusal("tabs_context", ["tabId": "p0t1"])?.hasPrefix("tabs_context does not take") == true)
+        #expect(refusal("click", ["b": 1, "a": 2, "selector": "#a"])?.hasPrefix("click does not take the arguments \"a\", \"b\". ") == true)
+    }
+
+    @Test func theInternalBatchDeadlineIsNoArgumentAClientMayGive() {
+        #expect(refusal("click", ["selector": "#a", "_batchDeadline": 0])?.hasPrefix("click does not take the argument \"_batchDeadline\"") == true)
+        #expect(refusal("run_steps", ["steps": [["tool": "wait"]], "_batchDeadline": 0]) != nil)
+    }
+
+    @Test func everyDeclaredArgumentIsAccepted() throws {
+        for tool in SafariMCPServer.toolDefinitions {
+            let properties = tool.inputSchema.objectValue?["properties"]?.objectValue ?? [:]
+            for name in properties.keys {
+                #expect(
+                    refusal(tool.name, [name: sampleValue(for: properties[name])])?.contains("does not take") != true,
+                    "\(tool.name) refuses its own argument \(name)"
+                )
+            }
+        }
+    }
+
+    private func sampleValue(for schema: Value?) -> Value {
+        let type = schema?.objectValue?["type"]?.stringValue ?? schema?.objectValue?["type"]?.arrayValue?.first?.stringValue
+        switch type {
+        case "boolean": return true
+        case "integer": return 1
+        case "number": return 1
+        case "array": return []
+        case "object": return [:]
+        default: return schema?.objectValue?["enum"]?.arrayValue?.first ?? "x"
+        }
+    }
+
+    // MARK: - Wrong types
+
+    // `"false"` is truthy once it reaches the extension: force skipped the
+    // reachability check, doubleClick double-clicked, and clearFirst wiped the field.
+    @Test(arguments: [
+        ("click", "force"), ("click", "doubleClick"), ("hover", "force"), ("drag", "force"),
+        ("type_text", "clearFirst"), ("type_text", "native"), ("press_key", "native"),
+        ("hover", "native"), ("drag", "native"), ("click", "includeSnapshot"), ("click", "trace"),
+    ])
+    func aStringWhereABooleanIsDeclaredIsRefused(_ tool: String, _ name: String) {
+        var args = requiredArguments(for: tool)
+        args[name] = "false"
+        #expect(refusal(tool, args) == "\(name) must be a boolean")
+    }
+
+    @Test func everyInteractionArgumentIsTypeCheckedBeforeAnythingIsSent() {
+        #expect(refusal("click", ["x": "10", "y": 20]) == "x must be a number")
+        #expect(refusal("click", ["x": 10, "y": [20]]) == "y must be a number")
+        #expect(refusal("hover", ["x": 10]) == "x and y must be given together: a viewport point needs both")
+        #expect(refusal("click", ["y": 10]) == "x and y must be given together: a viewport point needs both")
+        #expect(refusal("click", ["x": 10, "y": 20]) == nil)
+        #expect(refusal("scroll", ["direction": "down", "amount": "50"]) == "amount must be an integer")
+        #expect(refusal("scroll", ["direction": "down", "amount": 50.5]) == "amount must be an integer")
+        #expect(refusal("scroll", ["direction": "down", "amount": 50.0]) == nil)
+        #expect(refusal("scroll", ["direction": "sideways"]) == "Invalid direction: sideways. Use up, down, left, right.")
+        #expect(refusal("scroll", [:]) == "direction is required")
+        #expect(refusal("click", ["uid": 5]) == "uid must be a string")
+        #expect(refusal("click", ["selector": ["#a"]]) == "selector must be a string")
+        #expect(refusal("click", ["text": true]) == "text must be a string")
+        #expect(refusal("select_option", ["selector": "s", "value": 1]) == "value must be a string")
+        #expect(refusal("drag", ["fromUid": 1, "toUid": "e2"]) == "fromUid must be a string")
+        #expect(refusal("type_text", ["text": 5]) == "text must be a string")
+        #expect(refusal("type_text", [:]) == "text is required")
+        #expect(refusal("type_text", ["text": "x", "submitKey": 13]) == "submitKey must be a string")
+        #expect(refusal("press_key", ["key": 13]) == "key must be a string")
+        #expect(refusal("press_key", [:]) == "key is required")
+        #expect(refusal("javascript_tool", ["code": 1]) == "code must be a string")
+        #expect(refusal("javascript_tool", [:]) == "code is required")
+        #expect(refusal("find", ["role": 1]) == "role must be a string")
+        #expect(refusal("handle_dialog", ["action": "maybe"]) == "Invalid action: maybe. Use accept, dismiss.")
+        #expect(refusal("handle_dialog", ["action": true]) == "action must be a string")
+        #expect(refusal("handle_dialog", ["action": "accept", "promptText": 4]) == "promptText must be a string")
+        #expect(refusal("handle_dialog", [:]) == "action is required")
+        #expect(refusal("run_steps", ["steps": "wait"]) == "steps must be an array")
+        #expect(refusal("run_steps", ["steps": [["tool": "wait"]], "timeout": "5"]) == "timeout must be a number")
+        #expect(refusal("wait", ["seconds": 1, "tabId": 5])?.hasPrefix("tabId must be a tab handle") == true)
+    }
+
+    @Test func tabIdIsReadAsAHandleOnEveryToolThatTakesOne() {
+        for tool in SafariMCPServer.toolDefinitions where SafariMCPServer.declaresArgument("tabId", for: tool.name) {
+            var args = requiredArguments(for: tool.name)
+            args["tabId"] = "42"
+            if tool.name == "resize_window" { args["width"] = 1; args["height"] = 1 }
+            #expect(refusal(tool.name, args)?.hasPrefix("tabId \"42\" is not a tab handle") == true, "\(tool.name)")
+        }
+        // Naming the profile to open a tab in, and the window to resize, are declared.
+        #expect(refusal("tabs_create", ["tabId": "p1t3"]) == nil)
+        #expect(refusal("resize_window", ["width": 800, "height": 600, "tabId": "p1t3"]) == nil)
+    }
+
+    @Test func closeAndSelectTabNeedAHandle() {
+        #expect(refusal("close_tab", [:]) == "close_tab requires tabId, a handle from tabs_context such as p0t5")
+        #expect(refusal("select_tab", [:]) == "select_tab requires tabId, a handle from tabs_context such as p0t5")
+        #expect(refusal("close_tab", ["tabId": "p0t5"]) == nil)
+    }
+
+    // MARK: - form_input
+
+    @Test func formInputFieldsAreCheckedBeforeTheyAreSent() throws {
+        #expect(refusal("form_input", [:]) == "fields must contain at least one CSS selector and value")
+        #expect(refusal("form_input", ["fields": [:]]) == "fields must contain at least one CSS selector and value")
+        #expect(refusal("form_input", ["fields": 5]) == "fields must be an object mapping CSS selectors to values")
+        #expect(refusal("form_input", ["fields": "not json"]) == "fields must be an object mapping CSS selectors to values")
+        #expect(refusal("form_input", ["fields": ["#a": [1]]]) == "fields[\"#a\"] must be a string, number or boolean")
+        #expect(refusal("form_input", ["fields": ["#a": .null]]) == "fields[\"#a\"] must be a string, number or boolean")
+        #expect(refusal("form_input", ["fields": ["#a": "x"]]) == nil)
+
+        // Numbers and booleans are entered as their text, and JSON text is read as the object.
+        let fields = try SafariMCPServer.formInputFields(["fields": ["#a": "x", "#b": 3, "#c": true, "#d": 1.5]])
+        #expect(fields == ["#a": "x", "#b": "3", "#c": "true", "#d": "1.5"])
+        let json = ##"{"#a":"x","#b":true}"##
+        #expect(try SafariMCPServer.formInputFields(["fields": .string(json)]) == ["#a": "x", "#b": "true"])
+    }
+
+    // MARK: - Files
+
+    @Test func aFileThatCannotBeAttachedIsRefusedBeforeTheCall() throws {
+        #expect(refusal("upload_file", ["selector": "i", "filePath": "/nonexistent/a.png"]) == "Cannot open file: /nonexistent/a.png")
+        #expect(refusal("drop_file", ["selector": "i", "filePaths": [.string(Self.existingFile), "/nonexistent/b.png"]]) == "Cannot open file: /nonexistent/b.png")
+        #expect(refusal("upload_file", ["selector": "i", "filePath": "/tmp"])?.hasSuffix("is not a readable regular file") == true)
+        #expect(refusal("upload_file", ["selector": "i", "filePath": .string(Self.existingFile)]) == nil)
+
+        let tokenPath = WebSocketBridge.tokenDirectoryURL.appendingPathComponent("8089").path
+        // Whether or not a token file exists there, nothing under the root may be named.
+        let message = refusal("upload_file", ["selector": "i", "filePath": .string(tokenPath)])
+        #expect(message != nil)
     }
 }

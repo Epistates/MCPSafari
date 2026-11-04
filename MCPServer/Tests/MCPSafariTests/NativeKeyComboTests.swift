@@ -2,6 +2,30 @@ import CoreGraphics
 import Testing
 @testable import MCPSafari
 
+extension SafariMCPServer.KeyboardLayouts {
+    /// A made-up keyboard that is both the layout in use and the one shortcuts
+    /// read, so tests do not depend on the layouts of the machine running them.
+    init(table: [String: SafariMCPServer.ResolvedCharacter]) {
+        self.init(typed: table, shortcut: table)
+    }
+
+    /// Different layouts for typing and for shortcuts, as on a Russian keyboard.
+    /// The reverse lookup is derived from the shortcut table, and answers with
+    /// the ASCII character when a key has more than one, as the real layout
+    /// would.
+    init(typed: [String: SafariMCPServer.ResolvedCharacter], shortcut: [String: SafariMCPServer.ResolvedCharacter]) {
+        self.init(
+            typed: { typed[$0] },
+            shortcut: { shortcut[$0] },
+            shortcutCharacter: { code in
+                shortcut.first {
+                    $0.value.keyCode == code && !$0.value.needsShift && $0.key.unicodeScalars.allSatisfy(\.isASCII)
+                }?.key
+            }
+        )
+    }
+}
+
 struct NativeKeyComboTests {
     // Stand-in for a QWERTY layout, so these tests do not depend on whatever
     // layout the machine running them happens to have selected.
@@ -16,7 +40,7 @@ struct NativeKeyComboTests {
     ]
 
     private func combo(_ key: String) throws -> SafariMCPServer.NativeKeyCombo {
-        try SafariMCPServer.nativeKeyCombo(key) { Self.qwerty[$0] }
+        try SafariMCPServer.nativeKeyCombo(key, layouts: .init(table: Self.qwerty))
     }
 
     @Test func mapsNamedKeys() throws {
@@ -64,7 +88,7 @@ struct NativeKeyComboTests {
 
     private func errorMessage(_ key: String) -> String? {
         do {
-            _ = try SafariMCPServer.nativeKeyCombo(key) { Self.qwerty[$0] }
+            _ = try SafariMCPServer.nativeKeyCombo(key, layouts: .init(table: Self.qwerty))
             return nil
         } catch {
             return String(describing: error)
@@ -78,29 +102,29 @@ struct NativeKeyComboTests {
             "a": .init(keyCode: 12, needsShift: false),
             "q": .init(keyCode: 0, needsShift: false),
         ]
-        let combo = try SafariMCPServer.nativeKeyCombo("Meta+a") { azerty[$0] }
+        let layouts = SafariMCPServer.KeyboardLayouts(table: azerty)
+        let combo = try SafariMCPServer.nativeKeyCombo("Meta+a", layouts: layouts)
 
         // Not keycode 0, which is Q — and therefore Quit — on this layout.
         #expect(combo.keyCode == 12)
         #expect(combo.flags == .maskCommand)
         // Meta+q is refused outright now; q itself still lands on keycode 0.
-        #expect(try SafariMCPServer.nativeKeyCombo("Control+q") { azerty[$0] }.keyCode == 0)
+        #expect(try SafariMCPServer.nativeKeyCombo("Control+q", layouts: layouts).keyCode == 0)
     }
 
     @Test func namedKeysIgnoreTheLayout() throws {
         // Physical positions, so they resolve without consulting a layout at all.
-        let noCharacters: (String) -> SafariMCPServer.ResolvedCharacter? = { _ in nil }
-        #expect(try SafariMCPServer.nativeKeyCombo("Tab", resolveCharacter: noCharacters).keyCode == 48)
-        #expect(try SafariMCPServer.nativeKeyCombo("Escape", resolveCharacter: noCharacters).keyCode == 53)
-        #expect(try SafariMCPServer.nativeKeyCombo("ArrowUp", resolveCharacter: noCharacters).keyCode == 126)
+        let nothing = SafariMCPServer.KeyboardLayouts(table: [:])
+        #expect(try SafariMCPServer.nativeKeyCombo("Tab", layouts: nothing).keyCode == 48)
+        #expect(try SafariMCPServer.nativeKeyCombo("Escape", layouts: nothing).keyCode == 53)
+        #expect(try SafariMCPServer.nativeKeyCombo("ArrowUp", layouts: nothing).keyCode == 126)
     }
 
     @Test func refusesCharactersTheLayoutCannotProduce() {
         // Better to fail than to post whichever key happens to sit at that code.
-        let cyrillicOnly: (String) -> SafariMCPServer.ResolvedCharacter? = { _ in nil }
         var message: String?
         do {
-            _ = try SafariMCPServer.nativeKeyCombo("Meta+a", resolveCharacter: cyrillicOnly)
+            _ = try SafariMCPServer.nativeKeyCombo("Meta+a", layouts: .init(table: [:]))
         } catch {
             message = String(describing: error)
         }
@@ -166,7 +190,7 @@ struct NativeKeyComboTests {
             "w": .init(keyCode: 13, needsShift: false), "h": .init(keyCode: 4, needsShift: false),
             "m": .init(keyCode: 46, needsShift: false),
         ]
-        let combo = try SafariMCPServer.nativeKeyCombo(key) { letters[$0] }
+        let combo = try SafariMCPServer.nativeKeyCombo(key, layouts: .init(table: letters))
         #expect(combo.label == key)
     }
 
@@ -177,21 +201,107 @@ struct NativeKeyComboTests {
             "a": .init(keyCode: 12, needsShift: false),
             "q": .init(keyCode: 0, needsShift: false),
         ]
-        #expect(try SafariMCPServer.nativeKeyCombo("Meta+a") { azerty[$0] }.keyCode == 12)
+        let layouts = SafariMCPServer.KeyboardLayouts(table: azerty)
+        #expect(try SafariMCPServer.nativeKeyCombo("Meta+a", layouts: layouts).keyCode == 12)
         #expect(throws: SafariMCPServer.ToolInputError.self) {
-            try SafariMCPServer.nativeKeyCombo("Meta+q") { azerty[$0] }
+            try SafariMCPServer.nativeKeyCombo("Meta+q", layouts: layouts)
         }
         // And on QWERTY, where keycode 12 is q.
         #expect(throws: SafariMCPServer.ToolInputError.self) {
-            try SafariMCPServer.nativeKeyCombo("Meta+q") { Self.qwerty[$0] }
+            try SafariMCPServer.nativeKeyCombo("Meta+q", layouts: .init(table: Self.qwerty))
         }
     }
 
     @Test func theRefusalListIsSmallAndNamed() {
         let names = SafariMCPServer.blockedNativeCombos.map(\.name)
         #expect(names.count == Set(names).count)
-        #expect(names.count <= 12)
+        #expect(names.count <= 24)
         #expect(names.contains("Command+Q"))
+    }
+
+    // MARK: - Command shortcuts follow the ASCII-capable layout
+
+    // On a Russian layout the key that types `й` is the one that is Q on QWERTY,
+    // and macOS reads a Command shortcut from the ASCII-capable layout, so
+    // Command plus that key is Command-Q. `c` has no key of its own on the
+    // Russian layout, or sits somewhere else on a transliterating one.
+    private static let russianTyping: [String: SafariMCPServer.ResolvedCharacter] = [
+        "й": .init(keyCode: 12, needsShift: false),
+        "c": .init(keyCode: 38, needsShift: false), // where QWERTY has `j`
+    ]
+
+    @Test func commandShortcutsAreResolvedOnTheAsciiCapableLayoutNotTheOneInUse() throws {
+        let layouts = SafariMCPServer.KeyboardLayouts(typed: Self.russianTyping, shortcut: Self.qwerty)
+
+        let copy = try SafariMCPServer.nativeKeyCombo("Meta+c", layouts: layouts)
+        // Keycode 8 is c on the layout macOS reads shortcuts from. 38 is J, so
+        // posting it would have pressed Command-J.
+        #expect(copy.keyCode == 8)
+        #expect(copy.flags == .maskCommand)
+
+        // Without Command the layout in use still decides what is typed.
+        #expect(try SafariMCPServer.nativeKeyCombo("Control+c", layouts: layouts).keyCode == 38)
+    }
+
+    @Test func aKeycodeThatReadsAsQuitIsRefusedWhateverTheCallerCalledIt() {
+        // A shortcut layout that maps the Cyrillic letter onto the Q key, as a
+        // resolver that followed the layout in use would. The caller never said
+        // `q`, but the key that is posted is Command-Q.
+        var shortcut = Self.qwerty
+        shortcut["й"] = .init(keyCode: 12, needsShift: false)
+        let layouts = SafariMCPServer.KeyboardLayouts(typed: Self.russianTyping, shortcut: shortcut)
+
+        #expect(errorMessage(for: "Meta+й", layouts)?.hasPrefix("Native press_key does not send Meta+й") == true)
+        // The modifiers that will be held count too: Shift is added for `#`.
+        var withHash = Self.qwerty
+        withHash["#"] = .init(keyCode: 20, needsShift: true)
+        withHash["3"] = .init(keyCode: 20, needsShift: false)
+        #expect(errorMessage(for: "Meta+#", .init(table: withHash))?.hasPrefix("Native press_key does not send Meta+#") == true)
+    }
+
+    @Test func aLayoutWithNoAsciiKeyForTheLetterRefusesInsteadOfGuessing() {
+        let layouts = SafariMCPServer.KeyboardLayouts(typed: Self.russianTyping, shortcut: [:])
+        #expect(errorMessage(for: "Meta+c", layouts)?.hasPrefix("Native press_key cannot type c") == true)
+    }
+
+    private func errorMessage(for key: String, _ layouts: SafariMCPServer.KeyboardLayouts) -> String? {
+        do {
+            _ = try SafariMCPServer.nativeKeyCombo(key, layouts: layouts)
+            return nil
+        } catch {
+            return String(describing: error)
+        }
+    }
+
+    // The live ASCII-capable lookup is the one the tool actually uses.
+    @Test func theLiveShortcutLayoutAgreesWithItself() {
+        guard let resolved = SafariMCPServer.shortcutLayoutKeyCode(for: "c") else { return }
+        #expect(SafariMCPServer.shortcutLayoutCharacter(forKeyCode: resolved.keyCode) == "c")
+    }
+
+    // MARK: - Further shortcuts that leave the page
+
+    @Test(arguments: [
+        "Control+ArrowLeft", "Control+ArrowRight", "Control+ArrowUp", "Control+ArrowDown",
+        "Control+Shift+ArrowLeft", "F3", "F11", "Shift+F3",
+        "Meta+Shift+3", "Meta+Shift+4", "Meta+Shift+5", "Meta+Alt+Shift+4",
+        "Meta+o", "Meta+s", "Meta+p", "Meta+Shift+s", "Command+P",
+    ])
+    func refusesShortcutsThatSwitchSpacesCaptureTheScreenOrOpenSheets(_ key: String) {
+        let message = errorMessage(key)
+        #expect(message?.hasPrefix("Native press_key does not send \(key)") == true, "\(key) was sent")
+    }
+
+    @Test(arguments: [
+        "ArrowLeft", "Alt+ArrowLeft", "Meta+ArrowLeft", "Shift+ArrowUp", "F4", "F12", "Meta+3", "Meta+Shift+z", "o", "s", "p",
+    ])
+    func stillSendsTheNeighboursOfThoseShortcuts(_ key: String) throws {
+        let letters: [String: SafariMCPServer.ResolvedCharacter] = [
+            "3": .init(keyCode: 20, needsShift: false), "z": .init(keyCode: 6, needsShift: false),
+            "o": .init(keyCode: 31, needsShift: false), "s": .init(keyCode: 1, needsShift: false),
+            "p": .init(keyCode: 35, needsShift: false),
+        ]
+        #expect(try SafariMCPServer.nativeKeyCombo(key, layouts: .init(table: letters)).label == key)
     }
 
     @Test func keepsOriginalLabel() throws {

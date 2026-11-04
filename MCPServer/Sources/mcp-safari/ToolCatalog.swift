@@ -57,7 +57,16 @@ extension SafariMCPServer {
     }
     // MARK: - Tool Definitions
 
-    func buildToolDefinitions() -> [Tool] {
+    /// The tools that change nothing, by their own annotation. A tool that is
+    /// not in this set is treated as one that may move focus or alter the page,
+    /// and takes the focus lock for the whole call; see `handleToolCall`.
+    nonisolated static let readOnlyTools: Set<String> = Set(
+        toolDefinitions.filter { $0.annotations.readOnlyHint == true }.map(\.name)
+    )
+
+    nonisolated static let toolDefinitions: [Tool] = buildToolDefinitions()
+
+    private nonisolated static func buildToolDefinitions() -> [Tool] {
         [
             Tool(
                 name: "status",
@@ -81,6 +90,10 @@ extension SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object([
                         "url": .object(["type": .string("string"), "description": .string("URL to open")]),
+                        "tabId": .object([
+                            "type": .string("string"),
+                            "description": .string("Tab handle whose Safari profile gets the new tab (default: the selected profile)"),
+                        ]),
                     ]),
                 ])
             ),
@@ -217,9 +230,13 @@ extension SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
                         "fields": .object([
-                            "type": .string("object"),
-                            "description": .string("CSS selector → value map"),
-                            "additionalProperties": .object(["type": .string("string")]),
+                            // A JSON object serialized as a string is read as the object,
+                            // because some clients send nested objects that way.
+                            "type": .array([.string("object"), .string("string")]),
+                            "description": .string("CSS selector → value map; numbers and booleans are entered as their text"),
+                            "additionalProperties": .object([
+                                "type": .array([.string("string"), .string("number"), .string("boolean")]),
+                            ]),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -384,7 +401,8 @@ extension SafariMCPServer {
                         "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(readOnlyHint: true)
+                // `clear` empties the buffer, so the call is not read-only.
+                annotations: .init(readOnlyHint: false, destructiveHint: false)
             ),
             Tool(
                 name: "read_network",
@@ -400,7 +418,7 @@ extension SafariMCPServer {
                         "tabId": Self.tab,
                     ]),
                 ]),
-                annotations: .init(readOnlyHint: true)
+                annotations: .init(readOnlyHint: false, destructiveHint: false)
             ),
 
             // ── Utility ──────────────────────────────────────────────
@@ -413,6 +431,7 @@ extension SafariMCPServer {
                     "properties": .object([
                         "width": .object(["type": .string("integer")]),
                         "height": .object(["type": .string("integer")]),
+                        "tabId": Self.tab,
                     ]),
                     "required": .array([.string("width"), .string("height")]),
                 ])

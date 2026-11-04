@@ -96,6 +96,27 @@ struct ProtectedPathsTests {
         #expect(refusal(dotfiles.appendingPathComponent("tokens/8089").path, roots: roots) != nil)
     }
 
+    // The descriptor reports the name it was opened by, and a hard link is a
+    // second name for the same data, so a link made outside the directory
+    // passed the path test and handed the token over.
+    @Test func aHardLinkToTheTokenIsRefusedAsTheFileItIs() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let roots = ProtectedPaths.roots(for: [fixture.root])
+
+        let link = fixture.sibling.appendingPathComponent("innocent.txt")
+        try FileManager.default.linkItem(at: fixture.token, to: link)
+
+        #expect(refusal(link.path, roots: roots)?.hasPrefix("Refusing to read") == true)
+        // A file that merely has more than one link, none of them in the root, is fine.
+        let other = fixture.sibling.appendingPathComponent("other.txt")
+        let otherLink = fixture.sibling.appendingPathComponent("other-link.txt")
+        try "data".write(to: other, atomically: true, encoding: .utf8)
+        try FileManager.default.linkItem(at: other, to: otherLink)
+        #expect(refusal(otherLink.path, roots: roots) == nil)
+        #expect(refusal(fixture.neighbour.path, roots: roots) == nil)
+    }
+
     @Test func spellingTheDirectoryInADifferentCaseDoesNotGetAround() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.base) }
@@ -135,7 +156,7 @@ struct ProtectedPathsTests {
     @Test func theDefaultRootsAreTheRealTokenRoots() {
         let defaults = ProtectedPaths.defaultRoots
         let root = WebSocketBridge.applicationSupportDirectoryURL
-        #expect(defaults.contains(root.standardizedFileURL.path.lowercased()))
+        #expect(defaults.contains { $0.lowercased() == root.standardizedFileURL.path.lowercased() })
         #expect(ProtectedPaths.isProtected(WebSocketBridge.tokenDirectoryURL.appendingPathComponent("8089").path))
     }
 
@@ -185,6 +206,64 @@ struct ProtectedPathsTests {
         #expect(accepted(fixture.neighbour.absoluteString))
         #expect(accepted("file:///tmp/page.html"))
         #expect(accepted("https://example.com/MCPSafari/tokens/8089"))
+    }
+
+    // The data volume is mounted at /System/Volumes/Data and also reached through
+    // firmlinks, and realpath leaves whichever spelling it is given, so the token
+    // had a second name that no root was written for.
+    @Test func theDataVolumeSpellingOfATokenPathIsProtectedToo() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let roots = ProtectedPaths.roots(for: [fixture.root])
+        // The temporary directory is /var/... to Foundation and /private/var/... on
+        // disk, and only the second exists under the mount point.
+        func viaMountPoint(_ url: URL) -> String { "/System/Volumes/Data" + ProtectedPaths.canonicalPath(url.path) }
+        let viaMountPoint = viaMountPoint(fixture.token)
+        try #require(FileManager.default.fileExists(atPath: viaMountPoint), "this volume layout has no data volume mount point")
+
+        #expect(ProtectedPaths.isProtected(viaMountPoint, roots: roots))
+        #expect(ProtectedPaths.isProtected(
+            "/System/Volumes/Data" + ProtectedPaths.canonicalPath(fixture.root.path) + "/tokens/9999", roots: roots
+        ))
+        #expect(refusal(viaMountPoint, roots: roots)?.hasPrefix("Refusing to read") == true)
+        // A root named by its mount point matches the plain spelling as well.
+        let rootsViaMountPoint = ProtectedPaths.roots(for: [
+            URL(fileURLWithPath: "/System/Volumes/Data" + ProtectedPaths.canonicalPath(fixture.root.path)),
+        ])
+        #expect(ProtectedPaths.isProtected(fixture.token.path, roots: rootsViaMountPoint))
+        #expect(!ProtectedPaths.isProtected(
+            "/System/Volumes/Data" + ProtectedPaths.canonicalPath(fixture.neighbour.path), roots: roots
+        ))
+
+        let url = "file://" + viaMountPoint
+        #expect((try? SafariMCPServer.validatedNavigationURL(url, protectedRoots: roots)) == nil)
+    }
+
+    // WebKit reads a backslash in a file: URL as a slash and Foundation does not,
+    // so what the check saw and what Safari opened could differ.
+    @Test func backslashesInAFileURLPathAreRefusedWhateverTheirSpelling() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let roots = ProtectedPaths.roots(for: [fixture.root])
+        func message(_ url: String) -> String? {
+            do { _ = try SafariMCPServer.validatedNavigationURL(url, protectedRoots: roots); return nil }
+            catch let error as SafariMCPServer.ToolInputError { return error.description }
+            catch { return "unexpected \(error)" }
+        }
+
+        let parent = fixture.base.path
+        for url in [
+            "file://" + parent + "/MCPSafari\\tokens\\8089",
+            "file://" + parent + "/MCPSafari%5Ctokens%5C8089",
+            "file://" + parent + "/MCPSafari%5ctokens/8089",
+            "FILE://" + parent + "/x\\..\\MCPSafari/tokens/8089",
+        ] {
+            #expect(message(url)?.hasPrefix("Refusing to open a file: URL with a backslash") == true, "\(url) was accepted")
+        }
+        // Only the path matters: a backslash in the query or fragment is just data,
+        // and other schemes are not held to the rule.
+        #expect(message(fixture.neighbour.absoluteString + "?q=a%5Cb#frag") == nil)
+        #expect(message("https://example.com/a%5Cb") == nil)
     }
 
     @Test func bothNavigationToolsApplyTheFileRule() throws {

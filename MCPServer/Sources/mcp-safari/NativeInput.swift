@@ -38,11 +38,11 @@ extension SafariMCPServer {
         let submitKeyCode: CGKeyCode?
     }
 
-    /// The resolver and the permission check are parameters so the plan can be
+    /// The layouts and the permission check are parameters so the plan can be
     /// tested without a particular keyboard layout or an Accessibility grant.
     nonisolated static func nativeInputPlan(
         _ args: [String: Value],
-        resolveCharacter: (String) -> ResolvedCharacter? = currentLayoutKeyCode(for:),
+        layouts: KeyboardLayouts = .live,
         permission: () throws -> Void = ensureNativeInputPermission
     ) throws -> NativeInputPlan {
         guard let text = args["text"]?.stringValue else {
@@ -63,7 +63,7 @@ extension SafariMCPServer {
         let submitKey = args["submitKey"]?.stringValue
         let submitKeyCode = try nativeSubmitKeyCode(for: submitKey)
         let clearFirst = args["clearFirst"]?.boolValue == true
-        let selectAllKeyCode = try clearFirst ? resolveSelectAllKeyCode(resolveCharacter: resolveCharacter) : nil
+        let selectAllKeyCode = try clearFirst ? resolveSelectAllKeyCode(layouts: layouts) : nil
         try permission()
 
         return NativeInputPlan(
@@ -75,14 +75,12 @@ extension SafariMCPServer {
         )
     }
 
-    /// Command plus the key that types `a` on the active layout. Keycode 0 is `a`
+    /// Command plus the key macOS reads as `a` in a shortcut. Keycode 0 is `a`
     /// on QWERTY and `q` on AZERTY, so a constant here sends Command-Q, which
     /// quits Safari, to a French or Belgian user. A layout with no unshifted `a`
     /// is refused rather than guessed at, and never falls back to keycode 0.
-    private nonisolated static func resolveSelectAllKeyCode(
-        resolveCharacter: (String) -> ResolvedCharacter?
-    ) throws -> CGKeyCode {
-        guard let resolved = resolveCharacter("a"), !resolved.needsShift else {
+    private nonisolated static func resolveSelectAllKeyCode(layouts: KeyboardLayouts) throws -> CGKeyCode {
+        guard let resolved = layouts.shortcut("a"), !resolved.needsShift else {
             let layout = currentKeyboardLayoutName().map { " on \($0)" } ?? ""
             throw ToolInputError("Native type_text cannot select the field's text first because there is no plain a key\(layout). Switch the keyboard layout, or omit clearFirst and clear the field another way.")
         }
@@ -103,8 +101,25 @@ extension SafariMCPServer {
     /// driven by a fake in tests without keystrokes reaching the real keyboard.
     struct NativeKeyboard: Sendable {
         let safariIsFrontmost: @Sendable () -> Bool
+        /// Whether keyboard focus is inside the web page, or nil when
+        /// Accessibility cannot say. Safari being frontmost does not mean that:
+        /// Command-L, or a key the page does not take, leaves the address bar or
+        /// the find bar holding the keyboard.
+        let focusIsInPage: @Sendable () -> Bool?
         let postText: @Sendable (String) throws -> Void
         let postKey: @Sendable (CGKeyCode, CGEventFlags) throws -> Void
+
+        init(
+            safariIsFrontmost: @escaping @Sendable () -> Bool,
+            focusIsInPage: @escaping @Sendable () -> Bool? = { nil },
+            postText: @escaping @Sendable (String) throws -> Void,
+            postKey: @escaping @Sendable (CGKeyCode, CGEventFlags) throws -> Void
+        ) {
+            self.safariIsFrontmost = safariIsFrontmost
+            self.focusIsInPage = focusIsInPage
+            self.postText = postText
+            self.postKey = postKey
+        }
 
         static func live() throws -> NativeKeyboard {
             guard let source = CGEventSource(stateID: .hidSystemState) else {
@@ -113,10 +128,26 @@ extension SafariMCPServer {
             let box = EventSourceBox(source)
             return NativeKeyboard(
                 safariIsFrontmost: { SafariMCPServer.safariIsActive() },
+                focusIsInPage: { SafariMCPServer.focusedElementIsInWebArea() },
                 postText: { try SafariMCPServer.postText($0, source: box.source) },
                 postKey: { try SafariMCPServer.postKey(code: $0, flags: $1, source: box.source) }
             )
         }
+
+        /// Why native input may not go on, or nil if it may. Safari not being in
+        /// front is checked first and is the clearer cause; a focus that is
+        /// somewhere Accessibility can place outside the page is the second. A
+        /// focus Accessibility cannot place at all is allowed, which is how this
+        /// behaved before the check existed.
+        func focusProblem() -> NativeFocusProblem? {
+            guard safariIsFrontmost() else { return .safariNotFrontmost }
+            return focusIsInPage() == false ? .focusOutsidePage : nil
+        }
+    }
+
+    enum NativeFocusProblem {
+        case safariNotFrontmost
+        case focusOutsidePage
     }
 
     /// The source is only ever used by one task at a time, one event after
@@ -151,8 +182,21 @@ extension SafariMCPServer {
         var delivered = 0
 
         try checkNativeDeadline(deadline)
-        guard keyboard.safariIsFrontmost() else {
-            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
+        if let problem = keyboard.focusProblem() {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false, problem: problem))
+        }
+
+        /// A key that moved focus mid-text, such as Command-L, sends what follows
+        /// into the address bar, so the page is asked again wherever the loop
+        /// would otherwise carry on blind.
+        func ensureFocus() throws {
+            if let problem = keyboard.focusProblem() {
+                throw NativeInputError(failure: nativeFocusFailure(
+                    eventsAlreadySent: true,
+                    delivered: (delivered, characters.count),
+                    problem: problem
+                ))
+            }
         }
 
         do {
@@ -167,18 +211,17 @@ extension SafariMCPServer {
             for (index, character) in characters.enumerated() {
                 try Task.checkCancellation()
                 try checkNativeDeadline(deadline)
-                if index > 0, index % nativeFocusCheckInterval == 0, !keyboard.safariIsFrontmost() {
-                    throw NativeInputError(failure: nativeFocusFailure(
-                        eventsAlreadySent: true,
-                        delivered: (delivered, characters.count)
-                    ))
-                }
+                if index > 0, index % nativeFocusCheckInterval == 0 { try ensureFocus() }
                 try keyboard.postText(String(character))
                 delivered += 1
                 try await nativeKeystrokePause()
             }
             if let submitKeyCode = input.submitKeyCode {
                 try checkNativeDeadline(deadline)
+                // The Enter that submits is the keystroke that does the most harm
+                // in the wrong place, so it is not sent on the strength of a check
+                // made up to fifteen characters ago.
+                try ensureFocus()
                 try keyboard.postKey(submitKeyCode, [])
                 try await nativeKeystrokePause()
             }
@@ -191,12 +234,7 @@ extension SafariMCPServer {
             ))
         }
 
-        guard keyboard.safariIsFrontmost() else {
-            throw NativeInputError(failure: nativeFocusFailure(
-                eventsAlreadySent: true,
-                delivered: (delivered, characters.count)
-            ))
-        }
+        try ensureFocus()
 
         let suffix = input.submitKey.map { " then pressed \($0)" } ?? ""
         return "Typed \(input.text.count) character(s) with native input\(suffix)"
@@ -231,22 +269,80 @@ extension SafariMCPServer {
     /// so the caller knows what the page and the other application each received.
     nonisolated static func nativeFocusFailure(
         eventsAlreadySent: Bool,
-        delivered: (sent: Int, total: Int)? = nil
+        delivered: (sent: Int, total: Int)? = nil,
+        problem: NativeFocusProblem = .safariNotFrontmost
     ) -> ToolFailure {
         let progress = delivered.map { " Delivered \($0.sent) of \($0.total) characters before that." } ?? ""
+        let message: String
+        switch (problem, eventsAlreadySent) {
+        case (.safariNotFrontmost, true):
+            message = "Safari lost focus during native input, so some events may have gone to another application.\(progress) Tell the user before retrying: a retry sends the whole input again."
+        case (.safariNotFrontmost, false):
+            message = "Safari is not the frontmost application, so nothing was sent. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it, or omit native to use synthetic input, which does not need focus."
+        case (.focusOutsidePage, true):
+            message = "Keyboard focus left the page during native input, into Safari's address bar, find bar or another control outside it, so some events may have gone there instead.\(progress) Tell the user before retrying: a retry sends the whole input again."
+        case (.focusOutsidePage, false):
+            message = "Keyboard focus is not in the page, but in Safari's address bar, find bar or another control outside it, so nothing was sent. Native keys go wherever the keyboard focus is. Ask the user to click into the page, or omit native to use synthetic input, which does not depend on keyboard focus."
+        }
         return ToolFailure(
             code: "native_input_focus_lost",
-            message: eventsAlreadySent
-                ? "Safari lost focus during native input, so some events may have gone to another application.\(progress) Tell the user before retrying: a retry sends the whole input again."
-                : "Safari is not the frontmost application, so nothing was sent. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it, or omit native to use synthetic input, which does not need focus.",
+            message: message,
             retryable: !eventsAlreadySent,
             recoveryAction: "ask_user"
         )
     }
 
-    private nonisolated static func ensureSafariIsFrontmost(eventsAlreadySent: Bool = false) throws {
-        guard safariIsActive() else {
-            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: eventsAlreadySent))
+    /// Whether the element holding keyboard focus is part of the web page, by
+    /// Accessibility: it has an `AXWebArea` among its ancestors. Nil when
+    /// Accessibility cannot say, because it is refused, the answer times out, or
+    /// nothing reports focus; callers then go on as they did before this check.
+    nonisolated static func focusedElementIsInWebArea() -> Bool? {
+        guard AXIsProcessTrusted() else { return nil }
+        let system = AXUIElementCreateSystemWide()
+        // A busy Safari must not hold up a keystroke for the default six seconds.
+        AXUIElementSetMessagingTimeout(system, 1)
+
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID()
+        else { return nil }
+        var element = unsafeDowncast(focused, to: AXUIElement.self)
+
+        // The page sits a few levels down from the window; a bound keeps a cyclic
+        // or runaway tree from looping.
+        for _ in 0..<64 {
+            var role: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success else {
+                return nil
+            }
+            if (role as? String) == "AXWebArea" { return true }
+
+            var parent: CFTypeRef?
+            switch AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parent) {
+            case .success:
+                guard let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
+                element = unsafeDowncast(parent, to: AXUIElement.self)
+            case .noValue, .attributeUnsupported:
+                return false // the top of the tree, and no web area on the way
+            default:
+                return nil
+            }
+        }
+        return nil
+    }
+
+    /// Refuses before a bridge request is made when native input cannot work: no
+    /// Accessibility, or Safari not in front. The extension's prepare step focuses
+    /// an element and may scroll to it, which is not worth doing for keys that
+    /// will not be sent. Safari can still lose the front between this and the
+    /// events, which each posting path checks again.
+    nonisolated static func ensureNativeInputReady(
+        permission: () throws -> Void = ensureNativeInputPermission,
+        safariIsFrontmost: () -> Bool = safariIsActive
+    ) throws {
+        try permission()
+        guard safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
         }
     }
 
@@ -345,6 +441,32 @@ extension SafariMCPServer {
         let needsShift: Bool
     }
 
+    /// The two keyboards a native key press has to ask.
+    ///
+    /// Typed characters and Option or Control combinations follow the layout in
+    /// use. A Command shortcut does not: macOS reads it from the ASCII-capable
+    /// layout, so Command+C is Copy on a Russian layout as well, where the key
+    /// that types `с` is the one that sits where `c` does on QWERTY. Asking the
+    /// layout in use for `c` there finds no such key, or a different one, and the
+    /// shortcut that was meant is not the one posted.
+    struct KeyboardLayouts {
+        /// Where the layout in use puts a character.
+        let typed: (String) -> ResolvedCharacter?
+        /// Where a Command shortcut finds a character.
+        let shortcut: (String) -> ResolvedCharacter?
+        /// The unshifted character a Command shortcut reads from a key: the
+        /// reverse of `shortcut`, which says what a posted keycode will mean.
+        let shortcutCharacter: (CGKeyCode) -> String?
+
+        static var live: KeyboardLayouts {
+            KeyboardLayouts(
+                typed: currentLayoutKeyCode(for:),
+                shortcut: shortcutLayoutKeyCode(for:),
+                shortcutCharacter: shortcutLayoutCharacter(forKeyCode:)
+            )
+        }
+    }
+
     /// Which physical key produces `character` on the keyboard layout that is
     /// active right now.
     ///
@@ -352,12 +474,29 @@ extension SafariMCPServer {
     /// `q` on AZERTY, so a hardcoded table turns `Meta+a` into Command-Q — Quit
     /// Safari — for a French or Belgian user. Ask the layout instead.
     nonisolated static func currentLayoutKeyCode(for character: String) -> ResolvedCharacter? {
-        guard let layout = currentKeyboardLayout() else { return nil }
+        guard let layout = keyboardLayout(.current) else { return nil }
+        return keyCode(for: character, layout: layout.data, command: false)
+    }
+
+    /// Which physical key a Command shortcut reads as `character`: the key that
+    /// types it on the ASCII-capable layout, with Command held, as macOS does.
+    nonisolated static func shortcutLayoutKeyCode(for character: String) -> ResolvedCharacter? {
+        guard let layout = keyboardLayout(.asciiCapable) else { return nil }
+        return keyCode(for: character, layout: layout.data, command: true)
+    }
+
+    /// What Command plus `code` reads as in a shortcut, unshifted.
+    nonisolated static func shortcutLayoutCharacter(forKeyCode code: CGKeyCode) -> String? {
+        guard let layout = keyboardLayout(.asciiCapable) else { return nil }
+        return character(forKeyCode: code, shifted: false, command: true, layout: layout.data)
+    }
+
+    private nonisolated static func keyCode(for character: String, layout: Data, command: Bool) -> ResolvedCharacter? {
         for shifted in [false, true] {
             // Ascending, so the main block wins over the numeric keypad, which
             // produces the same digits from a different position.
             for code in CGKeyCode(0)...CGKeyCode(127)
-            where self.character(forKeyCode: code, shifted: shifted, layout: layout.data) == character {
+            where self.character(forKeyCode: code, shifted: shifted, command: command, layout: layout) == character {
                 return ResolvedCharacter(keyCode: code, needsShift: shifted)
             }
         }
@@ -365,7 +504,7 @@ extension SafariMCPServer {
     }
 
     nonisolated static func currentKeyboardLayoutName() -> String? {
-        currentKeyboardLayout()?.name
+        keyboardLayout(.current)?.name
     }
 
     /// HIToolbox aborts the whole process if the Text Input Sources API is
@@ -375,11 +514,21 @@ extension SafariMCPServer {
     /// goes through this lock.
     private nonisolated static let keyboardLayoutLock = NSLock()
 
-    private nonisolated static func currentKeyboardLayout() -> (data: Data, name: String)? {
+    private enum LayoutKind {
+        case current
+        /// The layout in use when it can type ASCII, otherwise the one macOS
+        /// falls back to for shortcuts.
+        case asciiCapable
+    }
+
+    private nonisolated static func keyboardLayout(_ kind: LayoutKind) -> (data: Data, name: String)? {
         keyboardLayoutLock.lock()
         defer { keyboardLayoutLock.unlock() }
 
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+        let copy = kind == .current
+            ? TISCopyCurrentKeyboardLayoutInputSource()
+            : TISCopyCurrentASCIICapableKeyboardLayoutInputSource()
+        guard let source = copy?.takeRetainedValue(),
               let dataPointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
         else { return nil }
 
@@ -391,22 +540,26 @@ extension SafariMCPServer {
         return (data, name ?? "the active keyboard layout")
     }
 
+    /// `command` translates with Command held, which a layout such as Dvorak -
+    /// QWERTY answers with the QWERTY letter and most others answer as usual.
     private nonisolated static func character(
         forKeyCode code: CGKeyCode,
         shifted: Bool,
+        command: Bool = false,
         layout: Data
     ) -> String? {
         let capacity = 4
         var characters = [UniChar](repeating: 0, count: capacity)
         var length = 0
         var deadKeyState: UInt32 = 0
+        let modifiers = (shifted ? shiftKey : 0) | (command ? cmdKey : 0)
         let status = layout.withUnsafeBytes { raw -> OSStatus in
             guard let base = raw.baseAddress else { return OSStatus(-1) }
             return UCKeyTranslate(
                 base.assumingMemoryBound(to: UCKeyboardLayout.self),
                 UInt16(code),
                 UInt16(kUCKeyActionDown),
-                shifted ? UInt32(shiftKey >> 8) : 0,
+                UInt32(modifiers >> 8),
                 UInt32(LMGetKbdType()),
                 OptionBits(kUCKeyTranslateNoDeadKeysBit),
                 &deadKeyState,
@@ -421,7 +574,7 @@ extension SafariMCPServer {
 
     nonisolated static func nativeKeyCombo(
         _ keyString: String,
-        resolveCharacter: (String) -> ResolvedCharacter? = currentLayoutKeyCode(for:)
+        layouts: KeyboardLayouts = .live
     ) throws -> NativeKeyCombo {
         var parts = keyString.split(separator: "+", omittingEmptySubsequences: true).map(String.init)
         guard let key = parts.popLast(), !key.isEmpty else {
@@ -441,21 +594,32 @@ extension SafariMCPServer {
 
         let normalized = key.lowercased()
         if let code = namedKeyCodes[normalized] {
-            try refuseBlockedCombo(identity: namedKeyIdentity(code: code), flags: flags, label: keyString)
+            try refuseBlockedCombo(identities: [namedKeyIdentity(code: code)], flags: flags, label: keyString)
             return NativeKeyCombo(keyCode: code, flags: flags, label: keyString)
         }
 
         guard normalized.count == 1 else {
             throw ToolInputError("Native press_key does not support \(key). Use Enter, Tab, Escape, Space, Backspace, Delete, arrows, Home, End, PageUp, PageDown, F1-F12, or a single character.")
         }
-        // Judged on the character the caller asked for, not on the keycode it
-        // resolves to: Meta+q on AZERTY is keycode 0, and still Command-Q.
-        try refuseBlockedCombo(identity: normalized, flags: flags, label: keyString)
-        guard let resolved = resolveCharacter(normalized) else {
+        // Judged on the character the caller asked for first: Meta+q on AZERTY is
+        // keycode 0, and still Command-Q.
+        try refuseBlockedCombo(identities: [normalized], flags: flags, label: keyString)
+
+        // A Command shortcut is read from the ASCII-capable layout, and the
+        // others from the layout in use.
+        let commandHeld = flags.contains(.maskCommand)
+        guard let resolved = (commandHeld ? layouts.shortcut : layouts.typed)(normalized) else {
             let layout = currentKeyboardLayoutName().map { " on \($0)" } ?? ""
             throw ToolInputError("Native press_key cannot type \(key)\(layout). Switch the keyboard layout, or use a named key such as Enter, Tab, or the arrows.")
         }
         if resolved.needsShift { flags.insert(.maskShift) }
+
+        // And again on the key that will actually be posted, with the modifiers
+        // that will actually be held. The character the caller named is not what
+        // macOS acts on, the keycode is: `Meta+й` on a Russian layout resolves
+        // to the key that is Q, and Shift added for `#` makes Command+Shift+3.
+        let landed = commandHeld ? layouts.shortcutCharacter(resolved.keyCode) : nil
+        try refuseBlockedCombo(identities: [landed], flags: flags, label: keyString)
         return NativeKeyCombo(keyCode: resolved.keyCode, flags: flags, label: keyString)
     }
 
@@ -469,21 +633,35 @@ extension SafariMCPServer {
         let name: String
     }
 
-    /// Everything here ends the session or takes Safari away from the caller:
-    /// quit, close, hide, minimize, switch application, log out, lock, force
-    /// quit, or empty the Trash. A real key event cannot be told apart from the
-    /// user's own, so unlike a synthetic one there is no page to contain it. Kept
-    /// short on purpose; documented in docs/tools.md.
+    /// Everything here ends the session, takes Safari away from the caller, or
+    /// opens something outside the page: quit, close, hide, minimize, switch
+    /// application or Space, show the desktop, take a screenshot, log out, lock,
+    /// force quit, empty the Trash, or raise the open, save or print sheet. A
+    /// real key event cannot be told apart from the user's own, so unlike a
+    /// synthetic one there is no page to contain it. Kept short on purpose;
+    /// documented in docs/tools.md.
     nonisolated static let blockedNativeCombos: [BlockedNativeCombo] = [
         .init(modifiers: .maskCommand, key: "q", name: "Command+Q"),
         .init(modifiers: .maskCommand, key: "w", name: "Command+W"),
         .init(modifiers: .maskCommand, key: "h", name: "Command+H"),
         .init(modifiers: .maskCommand, key: "m", name: "Command+M"),
+        .init(modifiers: .maskCommand, key: "o", name: "Command+O"),
+        .init(modifiers: .maskCommand, key: "s", name: "Command+S"),
+        .init(modifiers: .maskCommand, key: "p", name: "Command+P"),
         .init(modifiers: .maskCommand, key: "tab", name: "Command+Tab"),
         .init(modifiers: .maskCommand, key: "space", name: "Command+Space"),
         .init(modifiers: .maskControl, key: "space", name: "Control+Space"),
+        .init(modifiers: .maskControl, key: "arrowleft", name: "Control+ArrowLeft"),
+        .init(modifiers: .maskControl, key: "arrowright", name: "Control+ArrowRight"),
+        .init(modifiers: .maskControl, key: "arrowup", name: "Control+ArrowUp"),
+        .init(modifiers: .maskControl, key: "arrowdown", name: "Control+ArrowDown"),
         .init(modifiers: [.maskCommand, .maskAlternate], key: "escape", name: "Command+Option+Escape"),
         .init(modifiers: [.maskCommand, .maskShift], key: "delete", name: "Command+Shift+Delete"),
+        .init(modifiers: [.maskCommand, .maskShift], key: "3", name: "Command+Shift+3"),
+        .init(modifiers: [.maskCommand, .maskShift], key: "4", name: "Command+Shift+4"),
+        .init(modifiers: [.maskCommand, .maskShift], key: "5", name: "Command+Shift+5"),
+        .init(modifiers: [], key: "f3", name: "F3"),
+        .init(modifiers: [], key: "f11", name: "F11"),
     ]
 
     private nonisolated static func namedKeyIdentity(code: CGKeyCode) -> String? {
@@ -492,22 +670,43 @@ extension SafariMCPServer {
         case 49: "space"
         case 53: "escape"
         case 51, 117: "delete" // Backspace and forward delete are both "Delete" to Finder.
+        case 123: "arrowleft"
+        case 124: "arrowright"
+        case 125: "arrowdown"
+        case 126: "arrowup"
+        case 99: "f3" // Mission Control
+        case 103: "f11" // Show Desktop
         default: nil
         }
     }
 
-    private nonisolated static func refuseBlockedCombo(identity: String?, flags: CGEventFlags, label: String) throws {
-        guard let identity,
-              let blocked = blockedNativeCombos.first(where: { $0.key == identity && flags.isSuperset(of: $0.modifiers) })
-        else { return }
-        throw ToolInputError("Native press_key does not send \(label): it includes \(blocked.name), which quits, closes, hides, or leaves Safari, or locks, logs out, or empties the Trash, and a real key event cannot be contained to the page. Use close_tab to close a tab, or omit native to send the key to the page only.")
+    /// Refuses when any of the identities a key can be known by is blocked with
+    /// the modifiers held: the character the caller named, and the one the
+    /// posted keycode reads as.
+    private nonisolated static func refuseBlockedCombo(identities: [String?], flags: CGEventFlags, label: String) throws {
+        guard let blocked = blockedNativeCombos.first(where: { combo in
+            identities.contains { $0 == combo.key } && flags.isSuperset(of: combo.modifiers)
+        }) else { return }
+        throw ToolInputError("Native press_key does not send \(label): it includes \(blocked.name), which quits, closes, hides, or leaves Safari, switches Spaces, shows the desktop, takes a screenshot, opens a file or print sheet, or locks, logs out, or empties the Trash, and a real key event cannot be contained to the page. Use close_tab to close a tab, or omit native to send the key to the page only.")
     }
 
-    nonisolated static func pressNativeKey(_ combo: NativeKeyCombo, deadline: Double? = nil) throws -> String {
-        let source = try nativeEventSource(deadline: deadline)
-        try postKey(code: combo.keyCode, flags: combo.flags, source: source)
-        Thread.sleep(forTimeInterval: 0.005)
-        try ensureSafariIsFrontmost(eventsAlreadySent: true)
+    /// Off the actor like the typing loop: the pause is a suspension, so the
+    /// caller's executor is free while it lasts.
+    nonisolated static func pressNativeKey(
+        _ combo: NativeKeyCombo,
+        deadline: Double? = nil,
+        keyboard: NativeKeyboard? = nil
+    ) async throws -> String {
+        try checkNativeDeadline(deadline)
+        let keyboard = try keyboard ?? NativeKeyboard.live()
+        guard keyboard.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
+        }
+        try keyboard.postKey(combo.keyCode, combo.flags)
+        try await nativeKeystrokePause()
+        guard keyboard.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
         return "Pressed \(combo.label) with native input"
     }
 
@@ -541,15 +740,29 @@ extension SafariMCPServer {
         )
     }
 
-    // Deadline check, frontmost guard, and event source in one call; every
-    // native posting path starts here.
-    private nonisolated static func nativeEventSource(deadline: Double? = nil) throws -> CGEventSource {
-        try checkNativeDeadline(deadline)
-        try ensureSafariIsFrontmost()
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
-            throw nativeInputUnavailable("macOS could not create a native input event.")
+    /// What native pointer movement needs from the machine, so the paths below
+    /// can be driven by a fake in tests without the pointer moving.
+    struct NativePointer: Sendable {
+        let safariIsFrontmost: @Sendable () -> Bool
+        let safariProcessIDs: @Sendable () -> Set<pid_t>
+        /// Where the pointer is now, when macOS will say.
+        let location: @Sendable () -> CGPoint?
+        let post: @Sendable (CGEventType, CGPoint) throws -> Void
+
+        static func live() throws -> NativePointer {
+            guard let source = CGEventSource(stateID: .hidSystemState) else {
+                throw nativeInputUnavailable("macOS could not create a native input event.")
+            }
+            let box = EventSourceBox(source)
+            return NativePointer(
+                safariIsFrontmost: { SafariMCPServer.safariIsActive() },
+                safariProcessIDs: {
+                    Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").map(\.processIdentifier))
+                },
+                location: { CGEvent(source: nil)?.location },
+                post: { try SafariMCPServer.postMouse(type: $0, at: $1, source: box.source) }
+            )
         }
-        return source
     }
 
     /// One on-screen window as the window server reports it. `bounds` are in
@@ -626,26 +839,48 @@ extension SafariMCPServer {
         )
     }
 
-    private nonisolated static func ensurePointersAreOverSafari(_ points: [CGPoint], windows: NativeWindowLister) throws {
+    private nonisolated static func ensurePointersAreOverSafari(
+        _ points: [CGPoint],
+        windows: NativeWindowLister,
+        pointer: NativePointer
+    ) throws {
         let windows = windows()
-        let safariProcessIDs = Set(
-            NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").map(\.processIdentifier)
-        )
+        let safariProcessIDs = pointer.safariProcessIDs()
         for point in points {
             try ensurePointerIsOverSafari(at: point, windows: windows, safariProcessIDs: safariProcessIDs)
         }
     }
 
+    /// The deadline, then Safari being in front, then the pointer. Every native
+    /// pointer path starts here.
+    private nonisolated static func startNativePointer(
+        deadline: Double?,
+        pointer: NativePointer?
+    ) throws -> NativePointer {
+        try checkNativeDeadline(deadline)
+        let pointer = try pointer ?? NativePointer.live()
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
+        }
+        return pointer
+    }
+
+    /// Both move and drag run off the actor, like the typing loop: a drag takes
+    /// about six tenths of a second of waiting, which blocking would have spent
+    /// holding every other call on the server.
     nonisolated static func moveNativePointer(
         to target: CGPoint,
         deadline: Double? = nil,
-        windows: NativeWindowLister = liveNativeWindows
-    ) throws -> String {
-        let source = try nativeEventSource(deadline: deadline)
-        try ensurePointersAreOverSafari([target], windows: windows)
-        let start = CGEvent(source: nil)?.location ?? target
-        try postPointerPath(from: start, to: target, mouseType: .mouseMoved, source: source)
-        try ensureSafariIsFrontmost(eventsAlreadySent: true)
+        windows: NativeWindowLister = liveNativeWindows,
+        pointer: NativePointer? = nil
+    ) async throws -> String {
+        let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer)
+        let start = pointer.location() ?? target
+        try await postPointerPath(from: start, to: target, mouseType: .mouseMoved, pointer: pointer)
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
         return "Moved pointer to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
@@ -653,37 +888,48 @@ extension SafariMCPServer {
         from start: CGPoint,
         to target: CGPoint,
         deadline: Double? = nil,
-        windows: NativeWindowLister = liveNativeWindows
-    ) throws -> String {
-        let source = try nativeEventSource(deadline: deadline)
+        windows: NativeWindowLister = liveNativeWindows,
+        pointer: NativePointer? = nil
+    ) async throws -> String {
+        let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
         // Both ends up front: a drag refused at its destination would otherwise
         // already have the button down at its source.
-        try ensurePointersAreOverSafari([start, target], windows: windows)
-        try postMouse(type: .mouseMoved, at: start, source: source)
-        Thread.sleep(forTimeInterval: 0.05)
-        try postMouse(type: .leftMouseDown, at: start, source: source)
-        // Pointer-sensor drag libraries arm on a delay or distance after
-        // mousedown; moving immediately can start a text selection instead.
-        Thread.sleep(forTimeInterval: 0.15)
+        try ensurePointersAreOverSafari([start, target], windows: windows, pointer: pointer)
+        try pointer.post(.mouseMoved, start)
+        try await nativePointerPause(0.05)
+        try pointer.post(.leftMouseDown, start)
         do {
+            // Pointer-sensor drag libraries arm on a delay or distance after
+            // mousedown; moving immediately can start a text selection instead.
+            try await nativePointerPause(0.15)
             try checkNativeDeadline(deadline)
-            try postPointerPath(from: start, to: target, mouseType: .leftMouseDragged, source: source, maxSteps: 16, interval: 0.02)
+            try await postPointerPath(
+                from: start, to: target, mouseType: .leftMouseDragged,
+                pointer: pointer, maxSteps: 16, interval: 0.02
+            )
+            try await nativePointerPause(0.05)
         } catch {
-            // Never leave the OS button down.
-            try? postMouse(type: .leftMouseUp, at: start, source: source)
+            // Never leave the OS button down, including when the call is cancelled.
+            try? pointer.post(.leftMouseUp, start)
             throw error
         }
-        Thread.sleep(forTimeInterval: 0.05)
-        try postMouse(type: .leftMouseUp, at: target, source: source)
-        try ensureSafariIsFrontmost(eventsAlreadySent: true)
+        try pointer.post(.leftMouseUp, target)
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
         return "Dragged from (\(Int(start.x)), \(Int(start.y))) to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
-    private nonisolated static func postMouse(
+    private nonisolated static func nativePointerPause(_ seconds: Double) async throws {
+        try await Task.sleep(for: .seconds(seconds))
+    }
+
+    /// A mouse event, not yet posted.
+    nonisolated static func mouseEvent(
         type: CGEventType,
         at point: CGPoint,
         source: CGEventSource
-    ) throws {
+    ) throws -> CGEvent {
         guard let event = CGEvent(
             mouseEventSource: source,
             mouseType: type,
@@ -692,7 +938,20 @@ extension SafariMCPServer {
         ) else {
             throw nativeInputUnavailable("macOS could not create a native mouse event.")
         }
-        event.post(tap: .cgSessionEventTap)
+        // A `.hidSystemState` source reports the modifiers that are physically
+        // down, as it does for keys: a held Command would turn a drag into a
+        // copy, or a hover into a Command-click on a link. Pointer input the
+        // caller asked for carries none.
+        event.flags = []
+        return event
+    }
+
+    private nonisolated static func postMouse(
+        type: CGEventType,
+        at point: CGPoint,
+        source: CGEventSource
+    ) throws {
+        try mouseEvent(type: type, at: point, source: source).post(tap: .cgSessionEventTap)
     }
 
     // Interpolated so boundary events (mouseout/mouseleave, dragenter/dragover)
@@ -701,10 +960,10 @@ extension SafariMCPServer {
         from start: CGPoint,
         to target: CGPoint,
         mouseType: CGEventType,
-        source: CGEventSource,
+        pointer: NativePointer,
         maxSteps: Int = 10,
         interval: TimeInterval = 0.015
-    ) throws {
+    ) async throws {
         let distance = hypot(target.x - start.x, target.y - start.y)
         let count = max(1, min(maxSteps, Int(distance / 8)))
         for step in 1...count {
@@ -713,8 +972,8 @@ extension SafariMCPServer {
                 x: start.x + (target.x - start.x) * t,
                 y: start.y + (target.y - start.y) * t
             )
-            try postMouse(type: mouseType, at: point, source: source)
-            Thread.sleep(forTimeInterval: interval)
+            try pointer.post(mouseType, point)
+            try await nativePointerPause(interval)
         }
     }
 }
