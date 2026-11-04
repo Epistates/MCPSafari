@@ -217,7 +217,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await connect("default", async ({ action, params }) => {
         sentActions.add(action);
         received.push(action);
-        requests.push({ action, tabId: params.tabId });
+        requests.push({ action, tabId: params.tabId, selector: params.selector });
         inFlight.set(action, (inFlight.get(action) ?? 0) + 1);
         peakInFlight.set(action, Math.max(peakInFlight.get(action) ?? 0, inFlight.get(action)));
         if (answerDelayMs) await new Promise((resolve) => setTimeout(resolve, answerDelayMs));
@@ -327,6 +327,37 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(peakInFlight.get("screenshot"), 1, "screenshots overlapped at the extension");
     await Promise.all([0, 1, 2, 3].map(() => tool("snapshot")));
     assert.ok(peakInFlight.get("snapshot") > 1, "the fixture never overlapped two plain reads");
+    // Not only screenshots: every tool that is not read-only can move focus, as
+    // tabs_create does by activating the new tab, so each is serialised with the
+    // rest. read_console is among them because `clear` empties its buffer.
+    const serialised = [
+        ["tabs_create", {}], ["click", { selector: "body" }], ["javascript_tool", { code: "1" }],
+        ["resize_window", { width: 800, height: 600 }], ["read_console", {}], ["read_network", {}],
+    ];
+    for (const [name, args] of serialised) {
+        await Promise.all([0, 1, 2, 3].map(() => tool(name, args)));
+        assert.equal(peakInFlight.get(name), 1, `${name} calls overlapped at the extension`);
+    }
+    // A batch holds the lock once for all its steps. Three batches of two clicks
+    // each must reach the extension as three adjacent pairs, never interleaved,
+    // and none may wait for a lock its own steps hold.
+    let batchStart = requests.length;
+    await Promise.all(["a", "b", "c"].map((id) => tool("run_steps", {
+        steps: [{ tool: "click", arguments: { selector: `#${id}1` } }, { tool: "click", arguments: { selector: `#${id}2` } }],
+    })));
+    const clicks = requests.slice(batchStart).filter(({ action }) => action === "click").map(({ selector }) => selector);
+    assert.equal(clicks.length, 6);
+    for (let index = 0; index < clicks.length; index += 2) {
+        assert.equal(clicks[index][1], clicks[index + 1][1], `batches interleaved: ${clicks}`);
+    }
+    // And a plain call queues behind a running batch rather than between its steps.
+    batchStart = requests.length;
+    await Promise.all([
+        tool("run_steps", { steps: [{ tool: "click", arguments: { selector: "#x1" } }, { tool: "click", arguments: { selector: "#x2" } }] }),
+        tool("click", { selector: "#y" }),
+    ]);
+    const mixed2 = requests.slice(batchStart).map(({ selector }) => selector);
+    assert.ok(mixed2.join() === "#x1,#x2,#y" || mixed2.join() === "#y,#x1,#x2", `a call ran between a batch's steps: ${mixed2}`);
     answerDelayMs = 0;
 
     // A call that names no tab acts on the selected one, and its own follow-ups

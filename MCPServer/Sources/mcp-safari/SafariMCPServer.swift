@@ -10,9 +10,20 @@ actor SafariMCPServer {
     private let bridge: WebSocketBridge
     private let logger: Logger
 
-    /// Held from the extension's prepare step through the act step of every tool
-    /// that depends on what has focus: native input, `screenshot`, and
-    /// `select_tab` when it brings the tab to the front.
+    /// Held for the whole of every call to a tool that is not annotated read-only.
+    ///
+    /// Almost everything that acts can move focus or change what is frontmost:
+    /// `tabs_create` activates the new tab, `close_tab` hands focus to another,
+    /// `resize_window` and `click` can raise a window, `javascript_tool` can do
+    /// any of it. And the tools that depend on focus (native input, `screenshot`)
+    /// prepare it in one bridge request and use it in the next, so none of those
+    /// may run in between. A list of the tools that move focus would be wrong
+    /// the first time one was added; the annotation each tool already carries is
+    /// the rule, and it errs towards waiting. Read-only tools touch nothing and
+    /// run alongside everything.
+    ///
+    /// A `run_steps` batch holds it once for all its steps, which run without
+    /// asking for it again: the lock is not reentrant.
     private let focusLock = AsyncFIFOLock()
 
     init(
@@ -116,7 +127,15 @@ actor SafariMCPServer {
         } catch {
             return Self.failureResult(toolFailure(for: error))
         }
-        return await dispatch(tool: params.name, arguments: args)
+        guard Self.declaresTool(params.name), !Self.readOnlyTools.contains(params.name) else {
+            return await dispatch(tool: params.name, arguments: args)
+        }
+        do {
+            return try await focusLock.withLock { await dispatch(tool: params.name, arguments: args) }
+        } catch {
+            // Cancelled while queued: it never ran.
+            return Self.failureResult(toolFailure(for: error))
+        }
     }
 
     /// Runs a tool whose arguments are already checked. A `run_steps` batch checks
@@ -416,11 +435,7 @@ actor SafariMCPServer {
     private func handleSelectTab(_ args: [String: Value]) async throws -> CallTool.Result {
         let handle = try Self.requiredTabHandle(args, tool: "select_tab")
         let params = try Self.selectTabParams(args)
-        // Bringing a tab to the front moves focus, so it queues with the other
-        // focus-sensitive tools. Selecting without it touches nothing they use.
-        let response = params["bringToFront"]?.boolValue == false
-            ? try await send("select_tab", args, params: params)
-            : try await focusLock.withLock { try await send("select_tab", args, params: params) }
+        let response = try await send("select_tab", args, params: params)
         guard response.success else { return textResult(response, as: "tab") }
         // Pinning the tab pins its profile too, so later calls that name no tab
         // stay in the browser window the caller just chose.
@@ -546,10 +561,11 @@ actor SafariMCPServer {
     // Shared flow for native input tools: permission, trace, bridge
     // preparation, then the CGEvent posting supplied by the caller.
     //
-    // Preparation and posting run under the focus lock as one unit. The
-    // extension focuses the tab or element during preparation, and the events
-    // are only right while that focus holds; a parallel call that focuses
-    // something else in between would take the keystrokes or the click.
+    // Preparation and posting are one unit. The extension focuses the tab or
+    // element during preparation, and the events are only right while that focus
+    // holds. Inside this process the call already holds the focus lock, so no
+    // parallel call can focus something else in between; across processes, the
+    // native input lock does the same for the other servers sharing the keyboard.
     private func runNativeAction(
         _ action: String,
         _ args: [String: Value],
@@ -558,7 +574,9 @@ actor SafariMCPServer {
         try Self.ensureNativeInputPermission()
         let traceSession = try await startTraceIfNeeded(args)
         do {
-            let (preparation, delivered) = try await focusLock.withLock { () -> (BridgeResponse, String?) in
+            let (preparation, delivered) = try await NativeInputLock.withLock(
+                timeout: Self.bridgeTimeout(args)
+            ) { () -> (BridgeResponse, String?) in
                 let preparation = try await send(action, args, params: interactionParams(args))
                 guard preparation.success else { return (preparation, nil) }
                 return (preparation, try await perform(preparation))
@@ -645,11 +663,7 @@ actor SafariMCPServer {
         // scrolls the page, and a refused destination should not have cost that.
         let padding = try Self.capturePadding(args)
         let scale = try Self.captureScale(args)
-        // The extension may activate the tab before capturing it, so the capture
-        // queues with the other focus-sensitive tools rather than racing them.
-        // The extension may activate the tab before capturing it, so the capture
-        // queues with the other focus-sensitive tools rather than racing them.
-        let response = try await focusLock.withLock { try await send("screenshot", args, params: params) }
+        let response = try await send("screenshot", args, params: params)
 
         guard response.success, let raw = response.data?.stringValue else {
             return textResult(response, as: "screenshot")
