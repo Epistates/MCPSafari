@@ -35,11 +35,23 @@ async function listFrames(tabId) {
     return { frames: [{ frameId: 0, parentFrameId: -1, url: "" }], enumerated: false };
 }
 
+// How a whole-page answer says what it could not read: one entry per frame that
+// would not answer, and one for a frame list that could not be read at all.
+// Not a frame, so the second has no id or origin to give. It takes the same list
+// because the caller's question is the same: is this the whole page?
+function unreachableFrame(frame) {
+    return { frameId: frame.frameId, origin: originOfUrl(frame.url) };
+}
+
+const FRAME_ENUMERATION_FAILED = { frameId: null, origin: null, reason: "frame_enumeration_failed" };
+
 // A frame whose document refuses the content script (a sandboxed or already
-// unloaded one) must not fail the whole call, so misses are dropped.
+// unloaded one) must not fail the whole call, so a miss is set aside, but not
+// forgotten: the caller is told which frames were not searched.
 async function collectFromFrames(tabId, message) {
-    const { frames } = await listFrames(tabId);
+    const { frames, enumerated } = await listFrames(tabId);
     const collected = [];
+    const unreachable = enumerated ? [] : [{ ...FRAME_ENUMERATION_FAILED }];
     for (const frame of frames) {
         try {
             collected.push({
@@ -48,9 +60,10 @@ async function collectFromFrames(tabId, message) {
             });
         } catch (err) {
             if (frame.frameId === 0) throw err;
+            unreachable.push(unreachableFrame(frame));
         }
     }
-    return collected;
+    return { collected, unreachable };
 }
 
 // The only failures that mean "the target is not in this frame". Anything else
@@ -112,12 +125,7 @@ async function waitInAnyFrame(tabId, message, frames) {
 async function snapshotAcrossFrames(tabId, params) {
     const { frames, enumerated } = await listFrames(tabId);
     const trees = new Map();
-    const unreachable = [];
-    // Not a frame, so there is no id or origin to give. It takes the same list
-    // because the caller's question is the same: is this tree the whole page?
-    if (!enumerated) {
-        unreachable.push({ frameId: null, origin: null, reason: "frame_enumeration_failed" });
-    }
+    const unreachable = enumerated ? [] : [{ ...FRAME_ENUMERATION_FAILED }];
     for (const frame of frames) {
         try {
             const tree = await sendToContentScript(
@@ -133,10 +141,7 @@ async function snapshotAcrossFrames(tabId, params) {
             // built to avoid. Safari grants "Always Allow on This Website" for
             // the top level only, so this is the ordinary case on a page with
             // third-party frames, not an exotic one.
-            unreachable.push({
-                frameId: frame.frameId,
-                origin: originOfUrl(frame.url),
-            });
+            unreachable.push(unreachableFrame(frame));
         }
     }
 
@@ -210,8 +215,12 @@ async function dispatchToContent(action, params, message) {
     }
 
     if (action === "find") {
-        const collected = await collectFromFrames(params.tabId, payload);
-        return collected.flatMap((entry) => entry.data || []);
+        const { collected, unreachable } = await collectFromFrames(params.tabId, payload);
+        const matches = collected.flatMap((entry) => entry.data || []);
+        // A list that is silently short looks complete, so a search that left
+        // frames out says which, as a snapshot does. A complete one stays a
+        // plain list.
+        return unreachable.length > 0 ? { matches, unreachableFrames: unreachable } : matches;
     }
 
     if (FRAME_SEARCHING_ACTIONS.has(action) && (params.selector || params.text)) {

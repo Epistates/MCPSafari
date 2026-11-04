@@ -286,7 +286,7 @@ test("a selector target searches frames until one resolves it", async () => {
     assert.deepEqual(sent.map((s) => s.frameId), [0, 3]);
 });
 
-test("a subframe that refuses the content script does not fail the whole read", async () => {
+test("a subframe that refuses the content script does not fail the whole read, and is named", async () => {
     const { call } = loadBackground({
         respond: (frameId) => {
             if (frameId === 0) return ok([{ uid: "f0e6", tag: "h1" }]);
@@ -296,7 +296,37 @@ test("a subframe that refuses the content script does not fail the whole read", 
 
     const results = await call('dispatchToContent("find", { tabId: 1, text: "a" })');
 
+    // A list that is silently short is the failure the snapshot's
+    // unreachableFrames exists for, so find says what it could not search too.
+    assert.deepEqual([...results.matches].map((r) => r.uid), ["f0e6"]);
+    assert.deepEqual(
+        [...results.unreachableFrames].map((f) => ({ ...f })),
+        [{ frameId: 3, origin: "https://embed.example" }]
+    );
+});
+
+test("a find that searched every frame is still a plain list", async () => {
+    const { call } = loadBackground({ respond: (frameId) => ok(frameId === 0 ? [{ uid: "f0e6" }] : []) });
+
+    const results = await call('dispatchToContent("find", { tabId: 1, text: "a" })');
+
+    assert.equal(Array.isArray(results), true);
     assert.deepEqual([...results].map((r) => r.uid), ["f0e6"]);
+});
+
+test("a find on a page whose frames cannot be listed says it searched the top frame only", async () => {
+    const { call } = loadBackground({
+        frames: new Error("webNavigation unavailable"),
+        respond: () => ok([{ uid: "f0e6", tag: "h1" }]),
+    });
+
+    const results = await call('dispatchToContent("find", { tabId: 1, text: "a" })');
+
+    assert.deepEqual([...results.matches].map((r) => r.uid), ["f0e6"]);
+    assert.deepEqual(
+        [...results.unreachableFrames].map((f) => ({ ...f })),
+        [{ frameId: null, origin: null, reason: "frame_enumeration_failed" }]
+    );
 });
 
 test("the content script is told which frame it is answering for", async () => {
