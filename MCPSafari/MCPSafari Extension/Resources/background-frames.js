@@ -246,7 +246,10 @@ const FRAME_SEARCHING_ACTIONS = new Set([
 ]);
 
 async function sendToContentScript(tabId, message, frameId = 0) {
-    const resolvedTabId = tabId || (await getActiveTabId());
+    // The router has named the tab by now (`withResolvedTab`). Not defaulted to
+    // the active tab here: a path that arrived without one would act on a page
+    // nobody chose, and ignore the tab a server pinned.
+    const resolvedTabId = tabId;
     // Before anything that can block on Safari's permission dialog. `wait` and
     // other long actions are unaffected: the probe is separate and short, and
     // the action keeps its own timing once access is established.

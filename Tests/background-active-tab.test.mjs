@@ -191,6 +191,28 @@ test("a failed request still reports the tab it resolved", async () => {
     assert.equal(response.resolvedTabId, 4);
 });
 
+test("a handler reached without a resolved tab does not pick the active tab on its own", async () => {
+    // The router names the tab before any handler runs, so a handler that
+    // defaulted to the active tab itself was only ever reachable by a path that
+    // skipped the router, and would have ignored the tab a server pinned.
+    const harness = loadBackground({ tabs: [{ id: 1, active: true, windowId: 1 }] });
+    harness.call("globalThis.__activeLookups = 0");
+    harness.call("const real = browser.tabs.query; browser.tabs.query = async (filter) => { if (filter && filter.active) __activeLookups += 1; return real(filter); }");
+
+    for (const expression of [
+        "handleScreenshot({})",
+        "handleJavaScript({ code: '1' })",
+        "handleResizeWindow({ width: 800, height: 600 })",
+        "handleNavigate({ action: 'reload' })",
+        "focusTabForNativeInput(undefined)",
+        "sendToContentScript(undefined, { action: 'snapshot' })",
+    ]) {
+        await rejection(harness.call(expression));
+    }
+
+    assert.equal(harness.call("__activeLookups"), 0, "a handler looked the active tab up itself");
+});
+
 test("tools that act on no tab report none and never default to the active one", async () => {
     const harness = loadBackground({ tabs: [{ id: 4, active: true, windowId: 1 }] });
     harness.call("globalThis.removed = []");

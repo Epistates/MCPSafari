@@ -5,7 +5,7 @@
 // ─── Navigation Handler ─────────────────────────────────────────────
 
 async function handleNavigate(params) {
-    const tabId = params.tabId || (await getActiveTabId());
+    const tabId = params.tabId;
     const action = params.action || "goto";
     // Best effort, and deliberately not gated on access to the page being left.
     // This only tells a real navigation from a same-document one, and

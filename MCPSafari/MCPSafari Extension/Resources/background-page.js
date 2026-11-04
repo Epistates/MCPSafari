@@ -6,7 +6,7 @@
 
 async function handleScreenshot(params) {
     requireTopFrameTarget(params, SCREENSHOT_TOP_FRAME_ONLY);
-    const tabId = params.tabId || (await getActiveTabId());
+    const tabId = params.tabId;
     // Before the `tabs.get` below, which blocks on Safari's dialog just like the
     // capture does. Deadlining only the capture left this line to absorb the
     // whole wait, so a blocked screenshot still took the full bridge timeout and
@@ -126,7 +126,7 @@ function evaluateUserCode(code) {
 }
 
 async function handleJavaScript(params) {
-    const tabId = params.tabId || (await getActiveTabId());
+    const tabId = params.tabId;
     await ensureTabAccess(tabId);
     const runIn = async (world) => {
         const results = await browser.scripting.executeScript({
@@ -177,7 +177,7 @@ async function handleResizeWindow(params) {
     // both `tabId` and the pin `select_tab` sets, so with the agent's tab in one
     // window and the user clicked into another, the resize landed on the user's
     // and a screenshot afterwards did not match the viewport that was asked for.
-    const tabId = params.tabId || (await getActiveTabId());
+    const tabId = params.tabId;
     // The `tabs.get` below parks on Safari's dialog like every other call that
     // reads the tab, so an ungranted tab rode the bridge timeout here.
     await ensureTabAccess(tabId);

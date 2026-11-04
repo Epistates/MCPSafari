@@ -279,7 +279,7 @@ async function assertTabShowing(tabId, windowId, purpose) {
 }
 
 async function focusTabForNativeInput(tabIdParam) {
-    const tabId = tabIdParam || (await getActiveTabId());
+    const tabId = tabIdParam;
     // Native input needs the page anyway, and this ran before any gating, so a
     // blocked tab spent the whole bridge timeout here and then blamed the bridge.
     await ensureTabAccess(tabId);
