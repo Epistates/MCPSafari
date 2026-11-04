@@ -326,13 +326,25 @@
     // A native key reaches whatever Safari has focused; when the chrome (e.g.
     // the address bar) holds focus the page never sees it. Pull focus into
     // the document unless the page already has it, and say so if that did
-    // not work rather than reporting a page ready that is not.
+    // not work rather than reporting a page ready that is not. The body is only
+    // made focusable for the moment it takes, and put back as the page had it:
+    // a body that stays focusable changes how the page tabs and clicks.
     function prepareNativeKey() {
-        if (!document.hasFocus() && document.body) {
-            document.body.setAttribute("tabindex", "-1");
-            document.body.focus({ preventScroll: true });
+        const body = document.body;
+        const pulling = !document.hasFocus() && body;
+        const previous = pulling ? body.getAttribute("tabindex") : null;
+        if (pulling) {
+            body.setAttribute("tabindex", "-1");
+            body.focus({ preventScroll: true });
         }
-        assertPageFocused("native key events");
+        try {
+            assertPageFocused("native key events");
+        } finally {
+            if (pulling) {
+                if (previous === null) body.removeAttribute("tabindex");
+                else body.setAttribute("tabindex", previous);
+            }
+        }
         return "Page ready for native key";
     }
 
