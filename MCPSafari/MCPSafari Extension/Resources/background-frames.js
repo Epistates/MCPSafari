@@ -241,34 +241,35 @@ async function sendToContentScript(tabId, message, frameId = 0) {
     message = { ...message, frameId };
     const options = { frameId };
 
+    let response;
     try {
-        const response = await browser.tabs.sendMessage(resolvedTabId, message, options);
-        if (!response) throw new Error("Receiving end does not exist");
-        if (response && response.error) {
-            throw toolErrorFromResponse(response);
-        }
-        return response ? response.data : null;
+        response = await browser.tabs.sendMessage(resolvedTabId, message, options);
     } catch (err) {
-        // Content script might not be injected yet
-        if (
-            err.message &&
-            (err.message.includes("Could not establish connection") ||
-                err.message.includes("Receiving end does not exist"))
-        ) {
-            await injectContentScripts(resolvedTabId);
-            const response = await browser.tabs.sendMessage(
-                resolvedTabId,
-                message,
-                options
-            );
-            if (!response) throw new Error("Content script did not respond after injection");
-            if (response && response.error) {
-                throw toolErrorFromResponse(response);
-            }
-            return response ? response.data : null;
-        }
-        throw err;
+        // The browser itself says nothing was listening, so the message never
+        // reached a page and sending it again cannot repeat anything. This is
+        // the only case that earns an injection and a second send.
+        if (!isNoReceiverError(err)) throw err;
+        await injectContentScripts(resolvedTabId);
+        response = await browser.tabs.sendMessage(resolvedTabId, message, options);
     }
+    return unpackReply(response, message);
+}
+
+function isNoReceiverError(err) {
+    return Boolean(err && err.message
+        && (err.message.includes("Could not establish connection")
+            || err.message.includes("Receiving end does not exist")));
+}
+
+// The content script answers every message it takes with an object, so no
+// answer at all is not "nobody home". Safari resolves undefined when the
+// document goes away before replying, and by then the message was delivered:
+// a click that navigates has clicked. That used to be turned into a no-receiver
+// error here, which injected the scripts and sent the click a second time.
+function unpackReply(response, message) {
+    if (!response) throw replyLostError(message.action);
+    if (response.error) throw toolErrorFromResponse(response);
+    return response.data;
 }
 
 // Must stay in step with `content_scripts` in the manifest, in this order:

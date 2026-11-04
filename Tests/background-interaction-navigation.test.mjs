@@ -388,6 +388,103 @@ test("an object result gets the new URL as a field instead of a trailing line", 
     assert.doesNotMatch(data.navigatedTo, /abc123/);
 });
 
+// ─── A reply that never comes ────────────────────────────────────────
+
+// When a click navigates, the document it ran in goes away before it can answer,
+// and Safari resolves the message with undefined. That says the click was
+// delivered and nothing about whether it did anything, so it is never sent
+// again. Sending it again made a pagination "Next" go two pages on, and a click
+// by uid then failed on the new document with target_not_found.
+
+const clicksSent = (harness) => harness.sent.filter((entry) => entry.message.action === "click").length;
+
+test("a click whose reply is lost to its own navigation reports the landing and is sent once", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            navigateLater(h);
+            return undefined;
+        },
+    });
+    const click = harness.request("click", { uid: "f0e12" });
+
+    await harness.advance(250);
+    assert.equal(click.done, false, "answered while the page was still loading");
+    await harness.advance(1000);
+
+    assert.equal(click.response.success, true);
+    assert.match(click.response.data, /^The click was dispatched/);
+    assert.match(click.response.data, new RegExp(`\\nPage navigated to ${NEW_URL} \\(Article\\)$`));
+    assert.equal(clicksSent(harness), 1);
+    assert.equal(harness.listenerCount(), 0, "a watcher outlived the request");
+});
+
+test("a click whose reply is lost to a navigation that lands on the same address still reports it", async () => {
+    // A form that posts back to its own URL: the address never changes, so the
+    // load itself is what says the click did something.
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            h.emit({ status: "loading" }, { status: "loading" });
+            h.later(200, () => h.emit({ status: "complete" }, { status: "complete" }));
+            return undefined;
+        },
+    });
+    const click = harness.request("click", { selector: "button[type=submit]" });
+    await harness.advance(2000);
+
+    assert.equal(click.response.success, true);
+    assert.match(click.response.data, new RegExp(`Page navigated to ${OLD_URL} `));
+    assert.equal(clicksSent(harness), 1);
+});
+
+test("a click whose reply is lost with no navigation is an error that is not retryable", async () => {
+    const harness = loadBackground({ onMessage: async () => undefined });
+    const click = harness.request("click", { uid: "f0e12" });
+
+    await harness.advance(WINDOW_MS);
+
+    assert.equal(click.done, true);
+    assert.equal(click.response.success, false);
+    assert.equal(click.response.errorCode, "reply_lost");
+    assert.equal(click.response.retryable, false);
+    assert.equal(clicksSent(harness), 1, "the click was sent again");
+    assert.equal(harness.listenerCount(), 0);
+});
+
+for (const [action, params] of [
+    ["press_key", { key: "Enter" }],
+    ["type_text", { selector: "input", text: "query", submitKey: "Enter" }],
+    ["form_input", { selector: "input", value: "x" }],
+    ["select_option", { selector: "select", value: "2" }],
+]) {
+    test(`${action} whose reply is lost to its own navigation reports the landing and is sent once`, async () => {
+        const harness = loadBackground({
+            onMessage: async (message, h) => {
+                navigateLater(h);
+                return undefined;
+            },
+        });
+        const outcome = harness.request(action, params);
+        await harness.advance(2000);
+
+        assert.equal(outcome.response.success, true);
+        assert.match(outcome.response.data, /\nPage navigated to /);
+        assert.equal(harness.sent.filter((entry) => entry.message.action === action).length, 1);
+    });
+}
+
+test("a click whose reply is lost to a navigation never reads the landing page's title when the site is not granted", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            navigateLater(h, { url: "https://elsewhere.example/inbox", title: "Private inbox" });
+            return undefined;
+        },
+    });
+    const click = harness.request("click", { uid: "f0e12" });
+    await harness.advance(2000);
+
+    assert.doesNotMatch(click.response.data, /Private inbox/);
+});
+
 // ─── wait ────────────────────────────────────────────────────────────
 
 // A wait whose document is replaced gets no answer, ever. This is that
@@ -435,6 +532,26 @@ test("a wait whose request fails because the document went away is sent again", 
             h.emit({ status: "loading" }, { status: "loading" });
             h.later(500, () => h.emit({ status: "complete" }, { status: "complete" }));
             throw new Error("The message channel closed before a response was received");
+        },
+    });
+    const wait = harness.request("wait", { text: "Done", timeout: 10 });
+    await harness.advance(2000);
+
+    assert.equal(wait.response.success, true);
+    assert.equal(wait.response.data, "Text found: \"Done\"");
+    assert.equal(waits, 2);
+});
+
+test("a wait whose reply is lost because the document went away is sent again", async () => {
+    // Unlike a click, a wait changes nothing, so asking again is the right answer.
+    let waits = 0;
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            waits += 1;
+            if (waits > 1) return { data: "Text found: \"Done\"", error: null };
+            h.emit({ status: "loading" }, { status: "loading" });
+            h.later(500, () => h.emit({ status: "complete" }, { status: "complete" }));
+            return undefined;
         },
     });
     const wait = harness.request("wait", { text: "Done", timeout: 10 });

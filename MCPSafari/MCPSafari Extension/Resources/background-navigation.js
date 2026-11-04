@@ -119,25 +119,58 @@ async function dispatchAndSettle(action, params) {
     let actionReturned;
     const returned = new Promise((resolve) => { actionReturned = resolve; });
     const settled = waitForTabLoad(tabId, beforeTab, LOAD_TIMEOUT_MS, NAVIGATION_START_WINDOW_MS, returned);
+    // Separate from the settle above because it also has to see a load that
+    // lands on the address the tab was already at, which the settle reports
+    // only as a tab.
+    const loadWatch = watchForLoadStart(tabId);
 
-    let result;
     try {
-        result = await dispatchToContent(action, params);
-    } catch (err) {
-        // The action's own failure is the answer. The watcher still has to be
-        // let go, and nothing is left to read what it settles with.
-        settled.catch(() => {});
-        throw err;
-    } finally {
-        actionReturned();
-    }
+        let result;
+        let replyLost = null;
+        try {
+            result = await dispatchToContent(action, params);
+        } catch (err) {
+            // The action's own failure is the answer. The watcher still has to
+            // be let go, and nothing is left to read what it settles with.
+            if (err.code !== REPLY_LOST_CODE) {
+                settled.catch(() => {});
+                throw err;
+            }
+            replyLost = err;
+        } finally {
+            actionReturned();
+        }
 
-    // The click has happened by now, so nothing about waiting for its load may
-    // turn it into a failure: a tab that closed itself, or a final read that
-    // never returned, only costs the report of where the page went.
-    const afterTab = await withDeadline(settled, LOAD_TIMEOUT_MS + PERMISSION_PROBE_TIMEOUT_MS)
-        .catch(() => null);
-    return withNavigationNote(result, beforeTab, afterTab);
+        // The click has happened by now, so nothing about waiting for its load
+        // may turn it into a failure: a tab that closed itself, or a final read
+        // that never returned, only costs the report of where the page went.
+        const afterTab = await withDeadline(settled, LOAD_TIMEOUT_MS + PERMISSION_PROBE_TIMEOUT_MS)
+            .catch(() => null);
+        if (replyLost) return resolveLostReply(replyLost, action, beforeTab, afterTab, loadWatch.sawLoad());
+        return withNavigationNote(result, beforeTab, afterTab);
+    } finally {
+        loadWatch.stop();
+    }
+}
+
+// The page went away without answering. That is what an interaction that
+// navigates looks like from here, so the tab decides which it was. If the tab
+// started a load the interaction did its job and the page it ran in was
+// replaced, which is the ordinary navigating click: report where it landed, with
+// no result of its own to add because the page that held it is gone. If nothing
+// loaded, the document vanished for some other reason, and what the interaction
+// did is unknown. That is the error, and it is not sent again.
+function resolveLostReply(replyLost, action, beforeTab, afterTab, sawLoad) {
+    const moved = sawLoad || Boolean(beforeTab && afterTab && afterTab.url && afterTab.url !== beforeTab.url);
+    if (!moved) throw replyLost;
+
+    const dispatched = `The ${action} was dispatched and the page navigated before it could report a result.`;
+    return afterTab && afterTab.url ? `${dispatched}\n${landingNote(afterTab)}` : dispatched;
+}
+
+function landingNote(tab) {
+    const unfinished = tab.status === "loading" ? "; it was still loading" : "";
+    return `Page navigated to ${describeLanding(tab)}${unfinished}`;
 }
 
 // A string result gets a trailing line, which is how the tools already add
@@ -145,10 +178,7 @@ async function dispatchAndSettle(action, params) {
 function withNavigationNote(result, beforeTab, afterTab) {
     if (!beforeTab || !afterTab || !afterTab.url || afterTab.url === beforeTab.url) return result;
 
-    if (typeof result === "string") {
-        const unfinished = afterTab.status === "loading" ? "; it was still loading" : "";
-        return `${result}\nPage navigated to ${describeLanding(afterTab)}${unfinished}`;
-    }
+    if (typeof result === "string") return `${result}\n${landingNote(afterTab)}`;
     if (result && typeof result === "object" && !Array.isArray(result)) {
         return { ...result, navigatedTo: redactUrlSecrets(afterTab.url) };
     }
@@ -190,8 +220,12 @@ async function waitAcrossNavigations(params, send) {
         if (outcome.error) {
             // A tool error is the content script's own answer, `wait_timeout`
             // included. What is left is the transport failing, and that only
-            // means the document went away if a load explains it.
-            if (typeof outcome.error.code === "string") throw outcome.error;
+            // means the document went away if a load explains it. A lost reply
+            // is the transport failing in just that way, and unlike a click a
+            // wait changes nothing, so asking again is safe.
+            if (typeof outcome.error.code === "string" && outcome.error.code !== REPLY_LOST_CODE) {
+                throw outcome.error;
+            }
             if (!watcher.sawLoad() && !(await tabIsLoading(tabId))) throw outcome.error;
         } else if ("value" in outcome) {
             return outcome.value;

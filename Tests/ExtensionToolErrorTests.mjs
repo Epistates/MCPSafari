@@ -40,6 +40,8 @@ function backgroundHarness(contentResponse) {
         : [contentResponse];
     const tabUpdates = [];
     const windowUpdates = [];
+    const sends = [];
+    const injections = [];
     const browser = {
         alarms: {
             create() {},
@@ -57,7 +59,14 @@ function backgroundHarness(contentResponse) {
         tabs: {
             get: async () => ({ id: 1, windowId: 7 }),
             query: async () => [{ id: 1, active: true, windowId: 7 }],
-            sendMessage: async () => contentResponses.shift(),
+            // An Error in the list is thrown, which is how the browser reports a
+            // tab with no content script; anything else is the reply.
+            sendMessage: async (tabId, message) => {
+                sends.push(message.action);
+                const next = contentResponses.shift();
+                if (next instanceof Error) throw next;
+                return next;
+            },
             update: async (...args) => { tabUpdates.push(args); },
             // Both listeners are registered at load: the access probe cache is
             // cleared when a tab closes and when it navigates, since Safari
@@ -68,7 +77,11 @@ function backgroundHarness(contentResponse) {
         windows: {
             update: async (...args) => { windowUpdates.push(args); },
         },
-        scripting: { executeScript: async () => {} },
+        scripting: {
+            executeScript: async (options) => {
+                if (options.files) injections.push(options.files);
+            },
+        },
     };
     const context = vm.createContext({
         browser,
@@ -87,6 +100,8 @@ function backgroundHarness(contentResponse) {
     );
     handleRequest.tabUpdates = tabUpdates;
     handleRequest.windowUpdates = windowUpdates;
+    handleRequest.sends = sends;
+    handleRequest.injections = injections;
     return handleRequest;
 }
 
@@ -136,23 +151,69 @@ test("background preserves content error metadata in bridge responses", async ()
     assert.equal(response.recoveryAction, "take_snapshot");
 });
 
-test("background reinjects when Safari returns no content response", async () => {
-    const handleRequest = backgroundHarness([null, {
-        data: null,
-        error: "UID expired",
-        errorCode: "stale_uid",
-        retryable: false,
-        recoveryAction: "take_snapshot",
-    }]);
+test("background injects the content script and sends again when the browser says nothing is listening", async () => {
+    // The call never reached a page, so sending it again cannot repeat anything.
+    const handleRequest = backgroundHarness([
+        new Error("Could not establish connection. Receiving end does not exist."),
+        { data: "Hovered <button>", error: null },
+    ]);
 
     const response = await handleRequest({
         id: "request-1",
-        action: "click",
-        params: { tabId: 1, uid: "e999" },
+        action: "hover",
+        params: { tabId: 1, selector: "button" },
     });
 
-    assert.equal(response.errorCode, "stale_uid");
-    assert.equal(response.recoveryAction, "take_snapshot");
+    assert.equal(response.success, true);
+    assert.equal(response.data, "Hovered <button>");
+    assert.deepEqual(handleRequest.sends, ["hover", "hover"]);
+    assert.equal(handleRequest.injections.length, 2, "the main-world interceptors and the content script");
+});
+
+test("a reply that never came is reported, and the call is not sent again", async () => {
+    // Safari answers undefined when the document goes away before it replies,
+    // which is what a click that navigates looks like. The click has run, so
+    // injecting and sending it again clicked twice: a pagination "Next" went two
+    // pages on, and a uid click then failed on the new document. The actions
+    // that wait out a navigation are covered in the interaction tests.
+    for (const action of ["hover", "scroll", "drag", "upload_file", "snapshot"]) {
+        const handleRequest = backgroundHarness([undefined, {
+            data: "done",
+            error: null,
+        }]);
+
+        const response = await handleRequest({
+            id: "request-1",
+            action,
+            params: { tabId: 1, uid: "f0e12" },
+        });
+
+        assert.equal(response.success, false, action);
+        assert.equal(response.errorCode, "reply_lost", action);
+        assert.equal(response.retryable, false, action);
+        assert.match(response.error, /not sent again/, action);
+        assert.deepEqual(handleRequest.sends, [action], `${action} was sent a second time`);
+        assert.equal(handleRequest.injections.length, 0, `${action} re-injected the content script`);
+    }
+});
+
+test("a reply that is lost after an injection is reported the same way", async () => {
+    // The first send never arrived, so the injection was right. The second one
+    // did arrive, and what happened to it is as unknown as anywhere else.
+    const handleRequest = backgroundHarness([
+        new Error("Could not establish connection. Receiving end does not exist."),
+        undefined,
+        { data: "Hovered <button>", error: null },
+    ]);
+
+    const response = await handleRequest({
+        id: "request-1",
+        action: "hover",
+        params: { tabId: 1, selector: "button" },
+    });
+
+    assert.equal(response.errorCode, "reply_lost");
+    assert.deepEqual(handleRequest.sends, ["hover", "hover"]);
 });
 
 test("native input preparation focuses only editable text targets", async () => {

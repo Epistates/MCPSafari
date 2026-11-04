@@ -73,6 +73,25 @@ function tabClosedError(tabId) {
     return error;
 }
 
+// The content script took the message and the document went away before it
+// answered, which is what a click that navigates looks like. Whether the action
+// ran is not known, so this is not retryable: sending it again is how a
+// pagination "Next" went two pages on. `dispatchAndSettle` turns it into a
+// normal result when a navigation explains it.
+const REPLY_LOST_CODE = "reply_lost";
+
+function replyLostError(action) {
+    const error = new Error(
+        `The page went away before it answered ${action}, so the result is not known. The call `
+        + `may already have run, so it was not sent again. Read the page (snapshot or read_page) `
+        + `to see where things stand before repeating it.`
+    );
+    error.code = REPLY_LOST_CODE;
+    error.retryable = false;
+    error.recoveryAction = "inspect_error";
+    return error;
+}
+
 // The origin is what Safari grants by, so it is the unit anything asking the
 // user to grant something has to speak in. Also the part of a URL with no
 // secrets in it, which is why unreachable frames are named this way.
