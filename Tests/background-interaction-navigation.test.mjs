@@ -356,7 +356,7 @@ test("a load that never finishes is given 15 seconds and then reported as unfini
     );
 });
 
-test("the reported URL is redacted and a site that was not granted gets no title", async () => {
+test("a landing on a site that was not granted names its origin and nothing else", async () => {
     const harness = loadBackground({
         onMessage: async (message, h) => {
             navigateLater(h, { url: "https://elsewhere.example/cb?token=hunter2&page=1", title: "Private inbox" });
@@ -366,14 +366,30 @@ test("the reported URL is redacted and a site that was not granted gets no title
     const click = harness.request("click", { selector: "a" });
     await harness.advance(2000);
 
-    const data = click.response.data;
-    assert.doesNotMatch(data, /hunter2/);
-    assert.match(data, /Page navigated to https:\/\/elsewhere\.example\/cb\?/);
-    assert.doesNotMatch(data, /Private inbox/);
-    assert.match(data, /title withheld/);
+    assert.equal(
+        click.response.data,
+        "Clicked <a>\nPage navigated to https://elsewhere.example "
+            + "(URL and title withheld: MCPSafari has not been granted access to this site)"
+    );
 });
 
-test("an object result gets the new URL as a field instead of a trailing line", async () => {
+test("a landing on a granted site keeps its redacted URL and title", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            navigateLater(h, { url: "https://ok.example/cb?token=hunter2&page=1", title: "Article" });
+            return { data: "Clicked <a>", error: null };
+        },
+    });
+    const click = harness.request("click", { selector: "a" });
+    await harness.advance(2000);
+
+    assert.equal(
+        click.response.data,
+        "Clicked <a>\nPage navigated to https://ok.example/cb?token=[redacted]&page=1 (Article)"
+    );
+});
+
+test("an object result gets the new origin as a field instead of a trailing line", async () => {
     const harness = loadBackground({
         onMessage: async (message, h) => {
             navigateLater(h, { url: "https://elsewhere.example/?session=abc123" });
@@ -385,8 +401,36 @@ test("an object result gets the new URL as a field instead of a trailing line", 
 
     const data = JSON.parse(click.response.data);
     assert.equal(data.clicked, true);
-    assert.match(data.navigatedTo, /^https:\/\/elsewhere\.example\//);
-    assert.doesNotMatch(data.navigatedTo, /abc123/);
+    assert.equal(data.navigatedTo, "https://elsewhere.example");
+});
+
+test("an object result keeps the redacted URL for a granted site", async () => {
+    const harness = loadBackground({
+        onMessage: async (message, h) => {
+            navigateLater(h, { url: "https://ok.example/?session=abc123" });
+            return { data: { clicked: true }, error: null };
+        },
+    });
+    const click = harness.request("click", { selector: "a" });
+    await harness.advance(2000);
+
+    assert.equal(JSON.parse(click.response.data).navigatedTo, "https://ok.example/?session=[redacted]");
+});
+
+test("back and forward name only the origin when they land on a site that was not granted", async () => {
+    const harness = loadBackground({ url: "https://ok.example/results" });
+    for (const action of ["back", "forward"]) {
+        const navigation = harness.request("navigate", { action });
+        await harness.flush();
+        harness.emit({ status: "loading" }, { status: "loading" });
+        harness.emit({ url: "https://elsewhere.example/inbox?token=hunter2" }, { url: "https://elsewhere.example/inbox?token=hunter2", title: "Private inbox" });
+        harness.emit({ status: "complete" }, { status: "complete" });
+        await harness.advance(100);
+
+        assert.match(navigation.response.data, /^Navigated (back|forward) to https:\/\/elsewhere\.example \(URL and title withheld/, action);
+        assert.doesNotMatch(navigation.response.data, /inbox|hunter2|Private/);
+        harness.tabs.get(1).url = "https://ok.example/results";
+    }
 });
 
 // ─── A settle that cannot read the tab ───────────────────────────────
@@ -409,7 +453,8 @@ test("navigate on a tab whose reads are parked on the dialog answers from the la
 
     assert.equal(navigation.done, true, "the settle rode the bridge timeout");
     assert.equal(navigation.response.success, true);
-    assert.match(navigation.response.data, new RegExp(`^Navigated to ${NEW_URL} `));
+    // No call has reached this site, so it is named by origin.
+    assert.match(navigation.response.data, /^Navigated to https:\/\/ok\.example \(URL and title withheld/);
     assert.equal(harness.listenerCount(), 0);
 });
 

@@ -124,6 +124,14 @@ function tabAccessFields(url) {
         : { access: "not_granted", accessHint: NOT_GRANTED_HINT };
 }
 
+// A URL as far as the tools may say it, wherever one is reported that is not a
+// tab listing: a granted site's address with its secrets redacted, and for any
+// other only its origin, which is as much as a listing says about it. Null when
+// there is no origin to name (`file:`, `data:`).
+function describeUrl(url) {
+    return siteIsGranted(url) ? redactUrlSecrets(url) : originOfUrl(url);
+}
+
 async function handleTabsQuery() {
     // One tab awaiting a permission decision is enough to hold up the whole
     // listing, and there is no probe that helps because the block belongs to no
@@ -159,10 +167,13 @@ async function handleTabsCreate(params) {
     const tab = await browser.tabs.create(opts);
     const url = tab.url || params.url;
     const access = tabAccessFields(url);
-    // The URL is the one the caller asked for. The title is the page's own.
+    // An address the caller asked for is theirs to be told back. One the browser
+    // chose, the homepage of a tab opened with none, is described like any other
+    // tab's. The title is the page's own either way.
+    const reported = params.url ? redactUrlSecrets(params.url) : describeUrl(tab.url);
     return {
         id: tab.id,
-        url: redactUrlSecrets(url),
+        ...(reported ? { url: reported } : {}),
         ...(access.access === "granted" ? { title: tab.title || "" } : {}),
         ...access,
     };

@@ -68,14 +68,15 @@ async function handleNavigate(params) {
     return `${message} ${describeLanding(tab)}`;
 }
 
-// Where a tab ended up, as the tools say it: the URL with its secrets redacted,
-// and the title unless the site has not been granted, because the page's own
-// title is not for a site that has not been granted.
+// Where a tab ended up, as the tools say it. A site that has been granted gets
+// its URL, with the secrets redacted, and its title. Any other gets its origin
+// and neither, the line a tab listing draws: `reload` and `goto` run on tabs the
+// user never granted, and a redirect or a back/forward can land somewhere nobody
+// named, so the landing page's own address and title are not for the caller.
 function describeLanding(tab) {
-    const title = siteIsGranted(tab.url)
-        ? `(${tab.title || ""})`
-        : "(title withheld: MCPSafari has not been granted access to this site)";
-    return `${redactUrlSecrets(tab.url)} ${title}`;
+    if (siteIsGranted(tab.url)) return `${redactUrlSecrets(tab.url)} (${tab.title || ""})`;
+    const origin = originOfUrl(tab.url);
+    return `${origin ? `${origin} ` : ""}(URL and title withheld: MCPSafari has not been granted access to this site)`;
 }
 
 // How long a page load is given to finish, for `navigate` and for the load an
@@ -180,7 +181,7 @@ function withNavigationNote(result, beforeTab, afterTab) {
 
     if (typeof result === "string") return `${result}\n${landingNote(afterTab)}`;
     if (result && typeof result === "object" && !Array.isArray(result)) {
-        return { ...result, navigatedTo: redactUrlSecrets(afterTab.url) };
+        return { ...result, navigatedTo: describeUrl(afterTab.url) };
     }
     return result;
 }

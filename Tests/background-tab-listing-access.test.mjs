@@ -289,12 +289,60 @@ test("tabs_create reports the URL it was given but withholds the title of an unr
     assert.equal(reached.access, "granted");
 });
 
+test("tabs_create with no URL withholds the homepage the browser chose, as a listing would", async () => {
+    // The caller named no address, so the one that comes back is the user's
+    // homepage: browsing history of a kind, on a site nothing has reached.
+    const harness = loadBackground();
+    harness.evaluate(
+        "browser.tabs.create = async () => ({ id: 9, url: 'https://home.example/start?session=abc', title: 'Start page' })"
+    );
+
+    const unreached = await harness.evaluate("handleTabsCreate({})");
+    assert.equal(unreached.url, "https://home.example");
+    assert.equal("title" in unreached, false);
+    assert.equal(unreached.access, "not_granted");
+
+    harness.evaluate("rememberOriginAccess('https://home.example', true)");
+    const reached = await harness.evaluate("handleTabsCreate({})");
+    assert.equal(reached.url, "https://home.example/start?session=[redacted]");
+    assert.equal(reached.title, "Start page");
+});
+
+test("tabs_create with no URL and nothing loaded yet reports no URL", async () => {
+    const harness = loadBackground();
+
+    const created = await harness.evaluate("handleTabsCreate({})");
+
+    assert.equal("url" in created, false);
+    assert.equal(created.access, "not_granted");
+});
+
+test("navigate names only the origin of a site that has not been reached", async () => {
+    // `reload` and `goto` need no access to the page, so they run on a tab the
+    // user never granted. The address they report would otherwise be the whole
+    // of what a tab listing is careful to withhold.
+    const harness = loadBackground();
+    harness.evaluate("waitForTabLoad = async (tabId) => browser.tabs.get(tabId)");
+
+    const unreached = await harness.evaluate('handleNavigate({ tabId: 2, action: "reload" })');
+    assert.equal(
+        unreached,
+        "Reloaded https://untouched.example (URL and title withheld: MCPSafari has not been granted access to this site)"
+    );
+    assert.doesNotMatch(unreached, /account|Your account/);
+
+    // A page with no origin to name says only that the address is withheld.
+    const opaque = await harness.evaluate('handleNavigate({ tabId: 6, action: "reload" })');
+    assert.doesNotMatch(opaque, /secret|someone/);
+    assert.match(opaque, /URL and title withheld/);
+});
+
 test("navigate reports a title only for a site that has been reached", async () => {
     const harness = loadBackground();
     harness.evaluate("waitForTabLoad = async (tabId) => browser.tabs.get(tabId)");
 
     const unreached = await harness.evaluate('handleNavigate({ tabId: 2, action: "reload" })');
-    assert.match(unreached, /^Reloaded https:\/\/untouched\.example\/account \(title withheld/);
+    assert.match(unreached, /^Reloaded https:\/\/untouched\.example \(URL and title withheld/);
     assert.doesNotMatch(unreached, /Your account/);
 
     await harness.evaluate("ensureTabAccess(1)");
