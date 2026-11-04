@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("gesture")) return;
     mcp.loaded.add("gesture");
-    const { aimPoint, assertPageFocused, assertReachable, firesKeypress, keyCode, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { aimPoint, assertPageFocused, assertReachable, elementAtPoint, firesKeypress, keyCode, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Scroll ──────────────────────────────────────────────────────
 
@@ -90,7 +90,7 @@
         let el = null;
         let x, y;
         if (params.x !== undefined && params.y !== undefined) {
-            el = document.elementFromPoint(params.x, params.y);
+            el = elementAtPoint(params.x, params.y);
             if (!el) {
                 throw toolError(
                     "target_not_found",

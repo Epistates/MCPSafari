@@ -7,14 +7,14 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("input")) return;
     mcp.loaded.add("input");
-    const { assertPageFocused, assertReachable, clipText, deepQueryFirst, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { assertPageFocused, assertReachable, clipText, deepQueryFirst, elementAtPoint, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Click ───────────────────────────────────────────────────────
 
     function clickElement(params) {
         // Click by coordinates
         if (params.x !== undefined && params.y !== undefined) {
-            const el = document.elementFromPoint(params.x, params.y);
+            const el = elementAtPoint(params.x, params.y);
             if (!el)
                 throw toolError(
                     "target_not_found",

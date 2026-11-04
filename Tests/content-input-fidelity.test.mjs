@@ -284,6 +284,42 @@ test("click with x/y dispatches at the requested point, not the element center",
     assert.equal(scrolled, false, "the hit-tested point is already visible; scrolling would move it");
 });
 
+test("x/y reaches into open shadow roots instead of stopping at the host", async () => {
+    // document.elementFromPoint answers with the host; the button the user sees
+    // is only found by asking the host's own root, and again for a nested one.
+    const recording = (tag) => {
+        const events = [];
+        const node = el(tag, { extra: { dispatchEvent(event) { events.push(event.type); return true; } } });
+        return { events, node };
+    };
+    const button = recording("button");
+    const nested = recording("my-nested");
+    nested.node.shadowRoot = { elementFromPoint: () => button.node };
+    const host = recording("my-widget");
+    host.node.shadowRoot = { elementFromPoint: () => nested.node };
+    const call = loadContent(el("body", {}, [host.node]), { elementFromPoint: () => host.node });
+
+    const click = await call("click", { x: 10, y: 20 });
+    const hover = await call("hover", { x: 10, y: 20 });
+
+    assert.equal(click.error, null);
+    assert.equal(hover.error, null);
+    assert.match(click.data, /<button>/);
+    assert.ok(button.events.includes("click") && button.events.includes("pointermove"));
+    assert.equal(host.events.length, 0);
+    assert.equal(nested.events.length, 0);
+});
+
+test("a shadow root with nothing under the point leaves the host as the target", async () => {
+    const events = [];
+    const host = el("my-widget", { extra: { dispatchEvent(event) { events.push(event.type); return true; } } });
+    host.shadowRoot = { elementFromPoint: () => host };
+    const call = loadContent(el("body", {}, [host]), { elementFromPoint: () => host });
+
+    assert.equal((await call("click", { x: 10, y: 20 })).error, null);
+    assert.ok(events.includes("click"));
+});
+
 test("click without x/y still dispatches at the element center", async () => {
     const { events, target } = pointTarget();
     const call = loadContent(el("body", {}, [target]), { querySelector: () => target });

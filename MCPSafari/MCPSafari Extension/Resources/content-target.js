@@ -194,6 +194,20 @@
         );
     }
 
+    // `document.elementFromPoint` stops at a shadow host: it answers with the
+    // host and never the button inside, so a coordinate click on a web
+    // component landed on the component rather than on what the user sees. Each
+    // open root is asked in turn, as a pointer would descend into it.
+    function elementAtPoint(x, y) {
+        let hit = document.elementFromPoint(x, y);
+        while (hit && hit.shadowRoot) {
+            const inner = hit.shadowRoot.elementFromPoint(x, y);
+            if (!inner || inner === hit) break;
+            hit = inner;
+        }
+        return hit;
+    }
+
     // A synthetic event reaches its target even under a modal or a banner, so
     // without this a click no user could make would still report success.
     function assertReachable(element, point) {
@@ -244,5 +258,5 @@
     // A caller-supplied point is not scrolled to: elementFromPoint already
     // proved it visible, and scrolling would move the element out from under it.
 
-    Object.assign(mcp, { aimPoint, assertReachable, findElements, resolveElement, scrollToTarget });
+    Object.assign(mcp, { aimPoint, assertReachable, elementAtPoint, findElements, resolveElement, scrollToTarget });
 })();
