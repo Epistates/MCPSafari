@@ -158,11 +158,14 @@ test("snapshot link hrefs are redacted at any depth, frames included", async () 
 });
 
 test("odd shapes from a hostile page are passed through rather than failing the call", async () => {
-    for (const data of [null, "text", 5, [], { events: "nope" }, [null, 3, { url: 7 }]]) {
+    for (const data of [null, "text", 5, [], { events: "nope" }, [null, 3, { url: 7 }], { events: [null, 3, "x", { type: "dom.mutation", value: 7 }] }]) {
         const request = loadBackground(() => data);
-        // Both the network and trace redactors, and a plain read.
-        await request("read_network", {});
-        await request("stop_trace", { id: "t" });
-        await request("read_page", { format: "text" });
+        // Both the network and trace redactors, and a plain read. `request`
+        // asserts that each succeeded; what comes back is the page's own value,
+        // untouched, which is the point of not refusing.
+        const expected = JSON.parse(JSON.stringify(data));
+        assert.deepEqual(await request("read_network", {}), expected);
+        assert.deepEqual(await request("stop_trace", { id: "t" }), expected);
+        assert.deepEqual(await request("read_page", { format: "text" }), expected);
     }
 });
