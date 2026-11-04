@@ -191,6 +191,21 @@ const SECRET_HINTS = [
     { attributes: { name: "OTPCode" } },
     { attributes: { inputmode: "one-time-code" } },
     { attributes: { autocomplete: "off", name: "pass" } },
+    // Card, key and national id names, in the spellings forms use for them.
+    { attributes: { name: "card_number" } },
+    { attributes: { name: "cardNumber" } },
+    { attributes: { name: "ccnum" } },
+    { id: "credit-card" },
+    { attributes: { name: "api_key" } },
+    { attributes: { name: "apiKey" } },
+    { attributes: { name: "x-api-key" } },
+    { attributes: { name: "private_key" } },
+    { attributes: { name: "IBAN" } },
+    { attributes: { name: "social_security_number" } },
+    // The words the page shows, when the markup says nothing useful.
+    { attributes: { name: "field7", placeholder: "Card number" } },
+    { attributes: { name: "field7", placeholder: "Your API key" } },
+    { attributes: { name: "field7", title: "Enter your IBAN" } },
 ];
 
 for (const hint of SECRET_HINTS) {
@@ -211,6 +226,28 @@ test("names that merely resemble a secret stay readable", async () => {
         field("input", { value: "g", attributes: { name: "bypass_cache" } })
     );
     assert.deepEqual([...values], ["a", "b", "c", "d", "e", "f", "g"]);
+});
+
+test("a field is redacted by the text of its label", async () => {
+    const labelled = field("input", { attributes: { name: "field7" } });
+    labelled.labels = [{ textContent: "Social  Security\nnumber" }];
+    const second = field("input", { attributes: { name: "field8" } });
+    second.labels = [{ textContent: "Billing" }, { textContent: "Card number" }];
+    const plain = field("input", { value: "ok", attributes: { name: "field9" } });
+    plain.labels = [{ textContent: "Nickname" }];
+
+    const values = await snapshotValues(labelled, second, plain);
+
+    assert.deepEqual([...values], [REDACTED, REDACTED, "ok"]);
+});
+
+test("words that only resemble a card or key stay readable", async () => {
+    const values = await snapshotValues(
+        field("input", { value: "a", attributes: { name: "scorecard_title" } }),
+        field("input", { value: "b", attributes: { name: "keyboard" } }),
+        field("input", { value: "c", attributes: { placeholder: "Card name" } })
+    );
+    assert.deepEqual([...values], ["a", "b", "c"]);
 });
 
 test("a checkbox or button named like a secret keeps its fixed value", async () => {

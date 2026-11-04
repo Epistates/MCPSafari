@@ -320,13 +320,24 @@
     // A name or label is only a hint, so short words must match whole (`pin`
     // is a secret, `shipping` is not) and long ones may sit inside a longer
     // run (`newpassword`, `confirmPassword`).
-    const SECRET_HINT_WORDS = new Set(["pass", "pwd", "pin", "otp", "cvv", "cvc", "cvn", "ssn", "secret", "token", "2fa"]);
-    const SECRET_HINT_FRAGMENTS = ["password", "passwd", "passcode", "passphrase", "pincode", "secret", "token", "onetime"];
+    const SECRET_HINT_WORDS = new Set([
+        "pass", "pwd", "pin", "otp", "cvv", "cvc", "cvn", "cvv2", "cvc2", "ssn", "secret", "token", "2fa",
+        "iban", "cardno", "ccnum",
+    ]);
+    // Matched inside the words run together, so `api_key`, `apiKey` and
+    // `x-api-key` all read as `apikey`.
+    const SECRET_HINT_FRAGMENTS = [
+        "password", "passwd", "passcode", "passphrase", "pincode", "secret", "token", "onetime",
+        "cardnum", "creditcard", "debitcard", "apikey", "privatekey", "accesskey", "socialsecurity", "routingnumber",
+    ];
+    // A hint is read from its start only. A label or placeholder can be as long
+    // as the page likes, and what names a field is not found deep inside one.
+    const MAX_HINT_CHARS = 256;
     // Types that carry a label or a fixed value rather than something typed.
     const NON_SECRET_TYPES = new Set(["button", "submit", "reset", "image", "checkbox", "radio", "file", "range", "color"]);
 
     function hintLooksSecret(hint) {
-        const words = String(hint)
+        const words = String(hint).slice(0, MAX_HINT_CHARS)
             .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
             .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
             .toLowerCase()
@@ -397,12 +408,17 @@
             tag,
             type: element.type,
             autocomplete: element.getAttribute("autocomplete"),
+            // What the page calls the field in words as well as in markup: a
+            // generic `name="field7"` is often labelled "Card number".
             hints: [
                 element.getAttribute("name"),
                 element.id,
                 element.getAttribute("aria-label"),
                 element.getAttribute("inputmode"),
                 element.getAttribute("autocomplete"),
+                element.getAttribute("placeholder"),
+                element.getAttribute("title"),
+                ...Array.from(element.labels || [], (label) => label.textContent),
             ],
         });
     }

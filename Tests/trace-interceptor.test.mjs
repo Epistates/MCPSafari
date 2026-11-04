@@ -122,6 +122,26 @@ test("no attribute of a sensitive input is recorded", () => {
     }
 });
 
+test("a field is recognised by its placeholder, title and label text, and by card and key names", () => {
+    const placeholder = fakeNode("input", { type: "text", name: "field7", placeholder: "Card number", title: "x" });
+    const titled = fakeNode("input", { type: "text", name: "field8", title: "Your API key" });
+    const labelled = fakeNode("input", { type: "text", name: "field9", title: "x" });
+    labelled.labels = [{ textContent: "Social security number" }];
+    const named = fakeNode("input", { type: "text", name: "api_key", title: "x" });
+    const ordinary = fakeNode("input", { type: "text", name: "nickname", title: "x" });
+    ordinary.labels = [{ textContent: "Nickname" }];
+
+    const events = traceMutations([
+        attributeMutation(placeholder, "title", "x"),
+        attributeMutation(titled, "class", "x"),
+        attributeMutation(labelled, "title", "x"),
+        attributeMutation(named, "title", "x"),
+        attributeMutation(ordinary, "title", "x"),
+    ]);
+
+    assert.deepEqual(Array.from(events, (event) => event.valueOmitted === true), [true, true, true, true, false]);
+});
+
 test("ordinary attributes on ordinary elements are still recorded", () => {
     const button = fakeNode("button", { class: "primary active" });
 
