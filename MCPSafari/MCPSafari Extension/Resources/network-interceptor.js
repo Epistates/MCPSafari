@@ -109,6 +109,9 @@
         if (this.__mcpMeta) {
             this.__mcpMeta.startTime = Date.now();
 
+            // Once per send. An XHR the page reuses sends again on the same
+            // object, and a listener left behind by the first send recorded
+            // every later one a second time, then a third.
             this.addEventListener("loadend", () => {
                 if (requests.length >= MAX_REQUESTS) requests.shift();
                 const request = {
@@ -125,7 +128,7 @@
                 };
                 requests.push(boundRecord(request));
                 recordTraceEvent("xhr", request);
-            });
+            }, { once: true });
         }
         return XHRSend.call(this, body);
     };

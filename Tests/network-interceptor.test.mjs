@@ -14,10 +14,21 @@ function loadInterceptor({ observerThrows = false } = {}) {
 
     // Stands in for the browser's own: it records what the wrapper hands down.
     class XMLHttpRequest {
-        constructor() { this.listeners = {}; this.status = 200; this.statusText = "OK"; }
+        constructor() { this.listeners = []; this.status = 200; this.statusText = "OK"; }
         open(...args) { this.opened = args; }
         send() {}
-        addEventListener(type, listener) { this.listeners[type] = listener; }
+        addEventListener(type, listener, options) {
+            this.listeners.push({ type, listener, once: Boolean(options && options.once) });
+        }
+
+        /** Fires an event the way the browser does: once-listeners are spent by it. */
+        emit(type) {
+            for (const entry of [...this.listeners]) {
+                if (entry.type !== type) continue;
+                if (entry.once) this.listeners.splice(this.listeners.indexOf(entry), 1);
+                entry.listener();
+            }
+        }
     }
 
     // A Request carries its own method and url, which is all the wrapper reads.
@@ -301,10 +312,30 @@ test("XMLHttpRequest.open with a lowercase method is captured upper-cased", () =
 
     xhr.open("post", "https://example.test/api/feed");
     xhr.send();
-    xhr.listeners.loadend();
+    xhr.emit("loadend");
 
     assert.deepEqual(readNetwork(window, { type: "xhr" }).map((r) => [r.method, r.url]), [
         ["POST", "https://example.test/api/feed"],
+    ]);
+});
+
+test("an XMLHttpRequest the page reuses records each request once", () => {
+    const { window, XMLHttpRequest } = loadInterceptor();
+    const xhr = new XMLHttpRequest();
+
+    // Open, send and finish three times on the one object. A listener left
+    // behind by each send recorded the first request once, the second twice and
+    // the third three times.
+    for (const path of ["one", "two", "three"]) {
+        xhr.open("GET", `https://example.test/api/${path}`);
+        xhr.send();
+        xhr.emit("loadend");
+    }
+
+    assert.deepEqual(readNetwork(window, { type: "xhr" }).map((r) => r.url), [
+        "https://example.test/api/one",
+        "https://example.test/api/two",
+        "https://example.test/api/three",
     ]);
 });
 
