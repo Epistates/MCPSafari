@@ -125,7 +125,9 @@ Each node has a `uid`, `tag`, and `role`, and may carry `name`, `text`, `value`,
 
 A node leaves `name` out when it would only repeat `text` (compared with whitespace collapsed), so a plain `<a>Home</a>` reports `text: "Home"` and nothing more. `name` appears when it adds something: inline markup, an `aria-label`, an image `alt`, a label from elsewhere, or content that sits in children. When a link, button or heading has a `name`, that is its label; otherwise its `text` is. `find` always reports the name, and `text` targeting does not depend on whether the tree shows it.
 
-A name is built from what the snapshot shows. Content that is hidden (`aria-hidden`, `display: none`) is left out, a nested `aria-label` or image `alt` stands in for what it wraps, block-level children are separated by a space, and form controls contribute nothing, so a field's value, redacted or not, never appears in a name. Names and text are cut to 500 characters, ending in `...`.
+A name is built from what the snapshot shows. Content that is hidden (`aria-hidden`, `display: none`) is left out, a nested `aria-label` or image `alt` stands in for what it wraps, block-level children are separated by a space, and form controls contribute nothing, so a field's value, redacted or not, never appears in a name. Names, text and field values are cut to 500 characters, ending in `...`, and a link's `href` and an iframe's `frameSrc` to 2,048. `find` cuts the strings it describes the same way.
+
+Beyond the per-string caps a snapshot has a budget of 2,000,000 characters in all, counted across every string it carries. A page at the default node limit does not come near it; it is there for a request for many nodes on a page whose nodes each carry long strings. A snapshot that reaches it stops there and marks the root `truncated: true`, and the node whose later children were dropped carries `childrenTruncated: true`, the same as when it stops at `maxNodes`.
 
 ### Tab handles
 

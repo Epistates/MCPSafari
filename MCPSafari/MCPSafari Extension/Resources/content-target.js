@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("target")) return;
     mcp.loaded.add("target");
-    const { allRoots, clipText, deepQueryAll, deepQueryFirst, getAccessibleName, getElementByUid, getRole, getUid, isVisible, toolError, walkRootFor } = mcp;
+    const { allRoots, clipText, deepQueryAll, deepQueryFirst, getAccessibleName, getElementByUid, getRole, getUid, isVisible, toolError, truncateText, walkRootFor } = mcp;
 
     // ─── Element Finding ─────────────────────────────────────────────
 
@@ -92,7 +92,7 @@
         if (role) desc.role = role;
         if (name) desc.name = name;
         if (text && text !== name) desc.text = text;
-        if (element.id) desc.id = element.id;
+        if (element.id) desc.id = truncateText(element.id);
         if (element.className && typeof element.className === "string") {
             desc.className = clipText(element.className, 100);
         }

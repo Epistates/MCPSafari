@@ -120,18 +120,31 @@
 
     const MAX_TREE_DEPTH = 30;
     const MAX_SNAPSHOT_NODES = 2000;
-    // One cap for the strings a node carries, its text and its name alike.
+    // One cap for the strings a node carries: its text, its name and its value.
+    // Every string in a node comes from the page, so each has one. A single
+    // `aria-label` of a megabyte, referenced by every node that names it, would
+    // otherwise be copied into the tree once per node.
     const MAX_TEXT_CHARS = 500;
+    // URLs get more room, since cutting one makes it useless as a link. A
+    // frame's `src` is what the background matches the frame on, so a URL cut
+    // here leaves that frame attached to its parent and counted as unmatched.
+    const MAX_URL_CHARS = 2048;
+    // The caps above hold each string, and the node limit holds the count, but
+    // together they allow a tree of many megabytes: 10,000 nodes asked for with
+    // five strings each. This is the ceiling for the whole tree, well above
+    // anything a real page produces at the default node limit, and a snapshot
+    // that reaches it stops there and says so, as it does for the node limit.
+    const MAX_SNAPSHOT_CHARS = 2000000;
 
-    function truncateText(text) {
-        return text.length <= MAX_TEXT_CHARS ? text : `${clipText(text, MAX_TEXT_CHARS - 3)}...`;
+    function truncateText(text, max = MAX_TEXT_CHARS) {
+        return text.length <= max ? text : `${clipText(text, max - 3)}...`;
     }
 
     function takeSnapshot(params = {}) {
         const root = document.body || document.documentElement;
         for (const shadowRoot of allRoots()) watchForPasswordFields(shadowRoot);
         const requested = Number(params.maxNodes);
-        const budget = { remaining: requested > 0 ? requested : MAX_SNAPSHOT_NODES, cut: false };
+        const budget = { remaining: requested > 0 ? requested : MAX_SNAPSHOT_NODES, chars: 0, cut: false };
         const tree = buildTree(root, 0, budget);
         // Marked on the root as well, so a caller reading the top of a large
         // tree can tell a cut snapshot from a complete one without scanning it.
@@ -139,10 +152,20 @@
         return tree;
     }
 
+    const budgetSpent = (budget) => budget.remaining <= 0 || budget.chars >= MAX_SNAPSHOT_CHARS;
+
+    // Counts a string against the budget as it goes into the tree, and returns
+    // it. The check is on entering a node, so the tree can run over by what one
+    // node carries, which the per-string caps bound.
+    function charge(budget, text) {
+        budget.chars += text.length;
+        return text;
+    }
+
     function buildTree(element, depth, budget) {
         if (depth > MAX_TREE_DEPTH) return null;
         if (!isVisible(element)) return null;
-        if (budget.remaining <= 0) {
+        if (budgetSpent(budget)) {
             budget.cut = true;
             return null;
         }
@@ -158,7 +181,9 @@
         // Value for inputs. Secrets report their presence, not their contents,
         // so a snapshot of a filled login or payment form is safe to hand to a model.
         if (element.value !== undefined && element.value !== "") {
-            node.value = isSensitiveInput(element) ? REDACTED : String(element.value);
+            node.value = isSensitiveInput(element)
+                ? REDACTED
+                : charge(budget, truncateText(String(element.value)));
         }
 
         // States
@@ -170,15 +195,16 @@
         }
 
         // Href for links
-        if (tag === "a" && element.href) {
-            node.href = element.href;
+        // (An SVG anchor's `href` is an object, not a string, and is left out.)
+        if (tag === "a" && element.href && typeof element.href === "string") {
+            node.href = charge(budget, truncateText(element.href, MAX_URL_CHARS));
         }
 
         // A frame's document belongs to a different content script, so the
         // background splices it in here. It matches on the resolved src and
         // drops this marker afterwards.
         if (tag === "iframe" || tag === "frame") {
-            node.frameSrc = element.src || "";
+            node.frameSrc = charge(budget, truncateText(element.src || "", MAX_URL_CHARS));
         }
 
         // Children
@@ -187,7 +213,7 @@
         for (const child of renderedChildren(element)) {
             const childNode = buildTree(child, depth + 1, budget);
             if (childNode) children.push(childNode);
-            else if (budget.remaining <= 0) droppedChildren = true;
+            else if (budgetSpent(budget)) droppedChildren = true;
         }
         if (droppedChildren) node.childrenTruncated = true;
         if (children.length === 0 && hasClosedShadowRoot(element)) node.shadowClosed = true;
@@ -205,7 +231,7 @@
         let text = "";
         if (rawText && !(tag === "textarea" && isSensitiveInput(element))) {
             text = rawText.trim();
-            if (text) node.text = truncateText(text);
+            if (text) node.text = charge(budget, truncateText(text));
         }
 
         // A name that only repeats the node's text adds nothing, and content
@@ -213,7 +239,7 @@
         // says something the text does not: inline markup, an aria-label, an
         // alt, a label from elsewhere. find and click read the name from the
         // page, not from the tree, so omitting it here loses no way to match.
-        if (name && name !== truncateText(text.replace(/\s+/g, " "))) node.name = name;
+        if (name && name !== truncateText(text.replace(/\s+/g, " "))) node.name = charge(budget, name);
 
         if (children.length > 0) node.children = children;
 
@@ -408,7 +434,15 @@
         return inputRoles[type] || "textbox";
     }
 
+    // Capped here, at the one place a name leaves, so that no source of one
+    // (an attribute, a label, a referenced element) can hand back more than a
+    // node is allowed to carry.
     function getAccessibleName(element) {
+        const name = accessibleNameFrom(element);
+        return name ? truncateText(name) : name;
+    }
+
+    function accessibleNameFrom(element) {
         // aria-label
         const ariaLabel = element.getAttribute("aria-label");
         if (ariaLabel) return ariaLabel;
@@ -536,5 +570,5 @@
     }
 
 
-    Object.assign(mcp, { allRoots, deepQueryAll, deepQueryFirst, getAccessibleName, getPageText, getRole, isVisible, readPage, takeSnapshot, walkRootFor });
+    Object.assign(mcp, { allRoots, deepQueryAll, deepQueryFirst, getAccessibleName, getPageText, getRole, isVisible, readPage, takeSnapshot, truncateText, walkRootFor });
 })();
