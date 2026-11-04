@@ -26,6 +26,7 @@
 // A handler is given the port of the server that made the request as well, for
 // the two that keep per-server state: the tab `select_tab` pins is that
 // server's own.
+/** @type {Map<string, (params: any, serverPort: number) => Promise<any>>} */
 const BACKGROUND_HANDLERS = new Map([
     ["tabs_query", () => handleTabsQuery()],
     ["tabs_create", (params) => handleTabsCreate(params)],
