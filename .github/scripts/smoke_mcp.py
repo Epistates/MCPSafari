@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise stdio initialization, discovery and bridge status without Safari."""
 import json
+import os
 import selectors
 import subprocess
 import sys
@@ -9,11 +10,15 @@ import time
 
 
 def smoke(binary: str) -> None:
-    # File-backed stderr avoids a full pipe blocking the server.
-    with tempfile.TemporaryFile(mode="w+") as errors:
+    # File-backed stderr avoids a full pipe blocking the server. The token files go
+    # to a directory of their own: a running Safari extension finds a server by the
+    # ones in the standard location and would dial this one.
+    with tempfile.TemporaryFile(mode="w+") as errors, \
+            tempfile.TemporaryDirectory(prefix="mcpsafari-smoke-") as token_root:
         process = subprocess.Popen(
             [binary, "--port", "0"], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1,
+            env={**os.environ, "MCP_SAFARI_TOKEN_ROOT": token_root},
         )
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
@@ -54,6 +59,7 @@ def smoke(binary: str) -> None:
             assert status["listener"] == "listening", status
             assert status["requestedPort"] == 0 and status["port"] > 0, status
             assert status["tokenFileSecure"] is True, status
+            assert status["tokenRootOverride"] == token_root, status
             print(f"MCP initialize, tools/list, status passed; loopback port {status['port']}")
         finally:
             selector.close()
