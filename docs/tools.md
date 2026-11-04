@@ -135,6 +135,8 @@ Safari runs a separate, complete instance of the extension in every profile, and
 
 A call that names no tab acts on the selected tab, and its follow-ups stay on that same tab: the extension reports which tab it resolved, and the post-action wait, the `includeSnapshot` snapshot and the end of a trace are sent to it, so switching tabs while a call runs does not split it across two pages. A `run_steps` batch that names no tab does the same, taking the first step's tab for every later step and for its final snapshot and trace. (An older extension reports no tab, and then each request picks the selected tab itself.)
 
+The tab `select_tab` pins belongs to the MCP client that pinned it. When two clients run two servers at once, each has its own pin, and one client's `select_tab` does not change where the other's calls with no `tabId` land.
+
 Naming a profile that is not connected fails with `profile_not_connected` rather than falling back to another one, because answering from a different browser window is worse than refusing.
 
 `tabs_context`, `tabs_create` and `select_tab` mark each tab `access: "granted"` or `"not_granted"`, with an `accessHint` pointing at the toolbar popup when it is not granted. `select_tab` on such a tab still succeeds and pins the tab's profile. The result also says in prose, once for a whole listing, that reading or acting on those tabs will fail with `permission_required` until the user grants the site.
@@ -170,7 +172,9 @@ No tool takes a frame argument. A UID names the frame that minted it (`f3e12` is
 
 A frame that will not answer at all is named in `unreachableFrames` on the root of the snapshot, one entry per frame with its `frameId` and `origin` (`null` for `about:` and sandboxed frames, which have no origin to grant). The key is absent when every frame answered. The usual cause is website access: **Always Allow on This Website** covers the top-level page only, so a page with third-party frames reads as top-frame-only until the broad grant is given. Treat a non-empty list as a partial page, since the tree is otherwise indistinguishable from a complete one.
 
-If Safari cannot list the page's frames at all, the snapshot still reads the top frame and says so with one entry in the same list, `{"frameId": null, "origin": null, "reason": "frame_enumeration_failed"}`. `find` has no envelope to carry that note, so on such a page it searches the top frame only.
+If Safari cannot list the page's frames at all, the snapshot still reads the top frame and says so with one entry in the same list, `{"frameId": null, "origin": null, "reason": "frame_enumeration_failed"}`.
+
+`find` says the same thing when it could not search every frame. A search that reached them all returns the list of matches. One that left frames out returns an object instead, with the list as `matches` and the frames it missed as `unreachableFrames`, in the entries above, so a short list is not mistaken for a complete one.
 
 Three limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `screenshot` refuses a `uid` or `selector` inside an iframe for the same reason. `read_console` and `read_network` report the top frame only.
 
@@ -185,7 +189,9 @@ So a tool that needs a page it has not been granted fails with `permission_requi
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
 
-Safari reports a URL and title for every tab, granted or not, which would otherwise let an agent read your browsing history. `tabs_context` therefore describes only tabs on sites MCPSafari has reached. Every other tab still appears with its handle, window, position, and state, so it stays usable, but carries no `url` or `title`, and reports `"access": "not_granted"` with an `accessHint` saying the user can grant the site from the MCPSafari button in Safari's toolbar. Tabs it can describe report `"access": "granted"`. `tabs_create` and `navigate` withhold the page title the same way, and `tabs_create` reports its `access` too.
+Safari reports a URL and title for every tab, granted or not, which would otherwise let an agent read your browsing history. `tabs_context` therefore describes only tabs on sites MCPSafari has reached. Every other tab still appears with its handle, window, position, and state, so it stays usable, but carries no `url` or `title`, and reports `"access": "not_granted"` with an `accessHint` saying the user can grant the site from the MCPSafari button in Safari's toolbar. Tabs it can describe report `"access": "granted"`. `tabs_create` and `navigate` withhold the page title the same way, and `tabs_create` reports its `access` too. Where a tab ends up is held to the same rule: `navigate` and the "Page navigated to" note after a click name only the origin of a landing page on a site that is not granted, with a note that the URL and title are withheld, including a redirect or a back or forward entry nobody asked for. A `tabs_create` with no `url`, which opens the browser's homepage, is described the same way. A URL you passed to `tabs_create` is reported back as given.
+
+A call on a tab that has closed fails with `tab_closed`, not with `permission_required`, and a granted site is not forgotten because one call on it was slow.
 
 A site counts as reached once a call has run on a page there. MCPSafari does not check ahead, because asking Safari about a site it has not been granted is what raises the permission dialog, and a listing would raise one per site. So right after the user grants a site, its tabs still read as `not_granted` until a call reads one of them, such as `snapshot` on that tab, and the next `tabs_context` shows them.
 
@@ -284,11 +290,13 @@ Most interaction tools support `includeSnapshot: true`, which returns the update
 
 ### Interactions that load a page
 
-`click`, `press_key`, `form_input`, `select_option`, and `type_text` with a `submitKey` can start a page load: a link, a form submit, a select that routes on change. After one of them is dispatched the extension watches the tab for 400 milliseconds, and if a navigation starts it answers only once the new page has loaded, so the next read, `includeSnapshot`, and any post-action wait run against the new page. The result then ends with a line such as `Page navigated to https://example.com/article (Title)`, with credentials in the URL redacted, and the title replaced by a notice when MCPSafari has not been granted that site. A navigation that has not finished after 15 seconds is reported with `; it was still loading`. Where the page changed only its address without loading, as single-page apps do, the call settles half a second after the address changes and reports it the same way.
+`click`, `press_key`, `form_input`, `select_option`, and `type_text` with a `submitKey` can start a page load: a link, a form submit, a select that routes on change. After one of them is dispatched the extension watches the tab for 400 milliseconds, and if a navigation starts it answers only once the new page has loaded, so the next read, `includeSnapshot`, and any post-action wait run against the new page. The result then ends with a line such as `Page navigated to https://example.com/article (Title)`, with credentials in the URL redacted. When MCPSafari has not been granted the site it landed on, the line gives the origin only and a notice that the URL and title are withheld. A navigation that has not finished after 15 seconds is reported with `; it was still loading`. Where the page changed only its address without loading, as single-page apps do, the call settles half a second after the address changes and reports it the same way.
+
+A click that navigates replaces the page that would have reported its result, so Safari can answer with nothing at all. That is never taken for "nobody was listening": the interaction is not sent again, which is what made a pagination "Next" go two pages on. When the tab did load a page the call succeeds, saying that the interaction was dispatched and the page navigated before it could report a result, followed by the `Page navigated to` line. When nothing loaded, what the interaction did is not known and the call fails with `reply_lost`, which is not retryable. Read the page before repeating it.
 
 An interaction that starts no navigation pays the 400 millisecond watch and answers as before. A navigation the page starts later than that, from a timer or after a request, is not waited for. A `click` on a link that opens a new tab (`target="_blank"`) does not navigate the tab you clicked in, so it answers after the watch with no note; call `tabs_context` to find the new tab. Native `press_key` and `type_text` are sent from the server rather than through the page, so they are not watched, though a `wait` sent afterwards is safe (below).
 
-`wait` survives a navigation that starts while it is pending, including one the page started itself. The extension notices the tab begin to load, waits for the load, and runs the wait again in the new page with the time that remains, instead of leaving the request to time out inside the page that was replaced. If the time runs out first, it fails with the retryable `wait_timeout` and says the page navigated while waiting.
+`wait` survives a navigation that starts while it is pending, including one the page started itself. The extension notices the tab begin to load, waits for the load, and runs the wait again in the new page with the time that remains, instead of leaving the request to time out inside the page that was replaced. If the time runs out first, it fails with the retryable `wait_timeout` and says the page navigated while waiting. A `wait` for a number of `seconds` is a sleep and has nothing to time out on, so when a navigation outlasts it, it reports the time waited.
 
 ### Post-action waits
 
@@ -298,7 +306,7 @@ An interaction that starts no navigation pays the 400 millisecond watch and answ
 
 Interaction tools support `trace: true` and `traceDuration` to return a short page trace after the action. Use `eventTypes` for an exact-match allowlist such as `["dom.mutation", "network.fetch"]`; omit it to capture all URL/history, console, fetch/XHR, and DOM mutation events during the action window.
 
-Attribute mutation events carry the attribute's old and new value, cut to 512 characters with `truncated: true`. They never carry the `value` or `checked` attribute, because frameworks mirror what a user types into `value`, nor any attribute of a field the snapshot would redact, such as a password or one-time-code input. Those events say `valueOmitted: true` instead.
+Attribute mutation events carry the attribute's old and new value, cut to 512 characters with `truncated: true`. They never carry the `value` or `checked` attribute, because frameworks mirror what a user types into `value`, nor any attribute of a field the snapshot would redact, such as a password or one-time-code input. Those events say `valueOmitted: true` instead. When the attribute holds a URL, such as `href`, `src` or `action`, the old and new value are redacted like any other URL in a result.
 
 ### Bounded action batches
 
@@ -335,6 +343,8 @@ Console messages retain at most 8,192 UTF-16 code units; network string fields r
 at most 2,048. Shortened records have `truncated: true`. Console object serialization
 also limits traversal and arguments; omitted values are marked. Existing count
 limits (1,000 console messages, 500 network requests and 500 resource entries) apply.
+
+`read_network` matches `urlPattern` against the URLs as it reports them, with credentials already redacted, so a pattern can only test what you can see: `token=\[redacted\]` finds a request that carried a token, and a guess at the token itself finds nothing. `maxResults` and `clear` apply to the entries that matched.
 
 `pattern` and `urlPattern` support a bounded regex subset: literals, dots, anchors,
 character classes, escaped characters, and alternation, up to 200 characters.
