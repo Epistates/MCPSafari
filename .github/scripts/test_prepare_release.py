@@ -150,5 +150,65 @@ class QualificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "differs"):
                 qualification("v0.4.0", root)
 
+    def _qualified_repo(self, root):
+        def git(*args):
+            return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+        git("init", "-q")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "user.name", "Qualification Test")
+        for name in ("MCPServer/source.swift", "MCPSafari/app.swift", "Tests/a.test.mjs",
+                     ".github/scripts/build.py", ".github/actions/select-xcode/action.yml",
+                     ".github/workflows/release.yml", ".github/workflows/ci.yml",
+                     ".github/workflows/security-codeql.yml", "README.md", "CHANGELOG.md"):
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text("original")
+        git("add", ".")
+        git("commit", "-qm", "candidate")
+        evidence = {
+            "version": "0.4.0", "sourceCommit": git("rev-parse", "HEAD"),
+            "macOS": "test-os", "safari": "test-browser", "testedBy": "test", "testedAt": "2026-09-23",
+            "checks": {name: {"status": "passed", "evidence": "test evidence"} for name in
+                       ("profileRouting", "profileReconnect", "permissions", "privateByDefault")},
+        }
+        (root / ".github/release-qualification.json").write_text(json.dumps(evidence))
+        git("add", ".")
+        git("commit", "-qm", "evidence")
+        return git, evidence
+
+    def test_only_what_builds_or_tests_the_product_voids_qualification(self):
+        voiding = ("MCPServer/source.swift", "MCPSafari/app.swift", "Tests/a.test.mjs",
+                   ".github/scripts/build.py", ".github/actions/select-xcode/action.yml",
+                   ".github/workflows/release.yml")
+        harmless = (".github/workflows/ci.yml", ".github/workflows/security-codeql.yml",
+                    "README.md", "CHANGELOG.md")
+        for name in voiding + harmless:
+            with self.subTest(changed=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                git, _ = self._qualified_repo(root)
+                qualification("v0.4.0", root)
+                (root / name).write_text("changed")
+                git("add", ".")
+                git("commit", "-qm", f"change {name}")
+                if name in voiding:
+                    with self.assertRaisesRegex(ValueError, "differs"):
+                        qualification("v0.4.0", root)
+                else:
+                    qualification("v0.4.0", root)
+
+    def test_source_commit_must_be_a_full_lowercase_sha(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, evidence = self._qualified_repo(root)
+            path = root / ".github/release-qualification.json"
+            full = evidence["sourceCommit"]
+            for bad in (full[:12], full.upper(), "", None, 12345, f"{full}0", f" {full}"):
+                with self.subTest(sourceCommit=bad):
+                    path.write_text(json.dumps({**evidence, "sourceCommit": bad}))
+                    with self.assertRaisesRegex(ValueError, "tested source commit"):
+                        qualification("v0.4.0", root)
+            path.write_text(json.dumps({**evidence, "sourceCommit": "0" * 40}))
+            with self.assertRaises(subprocess.CalledProcessError):
+                qualification("v0.4.0", root)
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,9 @@ on:
       - '**.md'
       - 'LICENSE'
       - '.gitignore'
+  # The release workflow runs this whole file as its test gate, so a release is
+  # held to exactly what CI checks and the two cannot drift apart.
+  workflow_call:
 
 # Building and testing needs nothing but the source. Stated per workflow rather
 # than left to the repository default, so widening that default later cannot
@@ -28,9 +31,24 @@ concurrency:
 
 jobs:
   build:
-    name: Build & Test
-    runs-on: macos-26
-    timeout-minutes: 30
+    name: Build & Test (Xcode ${{ matrix.xcode }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    # Two toolchains. Xcode 27.1 is what releases are built with and what a
+    # maintainer qualifies against; it runs on GitHub's `xcode-27` image, which
+    # GitHub still labels preview. Xcode 26.6 on the GA image keeps the oldest
+    # supported compiler honest, since Package.swift asks only for Swift 6.3,
+    # and it is the newest toolchain CodeQL can analyse.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: xcode-27
+            xcode: '27.1'
+            swift: '6.4'
+          - runner: macos-26
+            xcode: '26.6'
+            swift: '6.3'
 
     steps:
       - name: Checkout
@@ -43,25 +61,19 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: '26'
 
-      - name: Select Xcode 26.6
-        run: |
-          set -euo pipefail
+      # Runs the pinned TypeScript for the extension type check (`bunx`).
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
 
-          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app /Applications/Xcode.app; do
-            if [ -d "$app/Contents/Developer" ]; then
-              sudo xcode-select -s "$app/Contents/Developer"
-              break
-            fi
-          done
-
-          xcodebuild -version
-          swift --version
-          swift --version | grep -q "Apple Swift version 6.3" || {
-            echo "::error::Swift 6.3 is required to build MCPServer"
-            exit 1
-          }
+      - name: Select Xcode
+        uses: ./.github/actions/select-xcode
+        with:
+          xcode: ${{ matrix.xcode }}
+          swift: ${{ matrix.swift }}
 
       - name: Build MCP Server
         run: |
@@ -85,7 +97,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          npx --yes -p typescript@7.0.2 tsc -p tsconfig.json --pretty false > "$RUNNER_TEMP/tsc.log" 2>&1 || status=$?
+          bunx --package typescript@7.0.2 tsc -p tsconfig.json --pretty false > "$RUNNER_TEMP/tsc.log" 2>&1 || status=$?
           cat "$RUNNER_TEMP/tsc.log"
           # A crash or a bad config prints no file-level diagnostics, so
           # without this a broken checker would look like a clean one.
@@ -118,6 +130,19 @@ jobs:
             build \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO
+
+      # Release is the configuration that treats warnings as errors and is the
+      # one that ships. Without this the first Release build of a change would
+      # be the tagged release run, after its approval gate.
+      - name: Build Safari Extension (Release)
+        run: |
+          cd MCPSafari
+          xcodebuild -project MCPSafari.xcodeproj \
+            -scheme "MCPSafari" \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/release-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
       # The extension's token reader is the only path a token takes to Safari,
       # and every way it can fail is silent, so its unit tests run here too.

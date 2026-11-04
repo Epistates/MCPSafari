@@ -1,0 +1,7 @@
+# `xcode-27` is a GitHub-hosted image (macOS 27 with Xcode 27) that GitHub
+# still labels preview, so actionlint's built-in list does not know it yet.
+# It is not self-hosted; this key is simply where actionlint takes extra labels.
+# Remove the entry once actionlint recognises the label.
+self-hosted-runner:
+  labels:
+    - xcode-27
