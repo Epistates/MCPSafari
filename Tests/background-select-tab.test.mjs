@@ -182,6 +182,28 @@ test("a lookup parked behind a dialog does not stop the pin", async () => {
     assert.equal(harness.evaluate("pinnedTabs.get(8089) ?? null"), 7);
 });
 
+test("restoring a pin does not hold startup on a tab parked behind a dialog, and keeps the pin", async () => {
+    // Startup restores the pins before it connects to any server, so a tab.get
+    // that never answers would keep every server waiting. A tab that is parked
+    // is a tab that exists.
+    const harness = loadBackground({
+        granted: true,
+        session: { pinnedTabs: { 8089: 7 } },
+        getTab: () => new Promise(() => {}),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.evaluate("setTimeout = (callback) => { globalThis.__fire = callback; return 1; }");
+
+    const restoring = harness.evaluate("restoreSessionState()");
+    for (let attempt = 0; attempt < 50 && !harness.evaluate("globalThis.__fire"); attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    harness.evaluate("globalThis.__fire()");
+    await restoring;
+
+    assert.equal(harness.evaluate("pinnedTabs.get(8089)"), 7);
+});
+
 // ─── Storage that refuses a write ────────────────────────────────────
 
 test("a storage write that is rejected does not become an unhandled rejection", async () => {

@@ -419,7 +419,14 @@ async function restoreSessionState() {
                 const port = Number(key);
                 try {
                     if (!Number.isInteger(port) || !Number.isInteger(tabId)) throw new Error("not a pin");
-                    await browser.tabs.get(tabId);
+                    // Startup waits on this before it connects to any server, and
+                    // a tab parked on Safari's dialog never answers. A tab that is
+                    // parked is a tab that exists, so the pin is kept.
+                    try {
+                        await withDeadline(browser.tabs.get(tabId), PERMISSION_PROBE_TIMEOUT_MS);
+                    } catch (err) {
+                        if (!(err instanceof DeadlineExceeded)) throw err;
+                    }
                     pinnedTabs.set(port, tabId);
                 } catch {
                     dropped = true;
