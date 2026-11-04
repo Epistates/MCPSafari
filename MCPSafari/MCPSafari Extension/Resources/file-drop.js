@@ -34,8 +34,23 @@
         };
     }
 
+    // The content script marks the target wherever it found it, which includes
+    // inside an open shadow root, and `document.querySelector` does not look
+    // there. Each open root is searched in turn, so a drop zone in a web
+    // component is found like any other.
+    function findMarked(selector, root) {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll("*")) {
+            if (!element.shadowRoot) continue;
+            const inner = findMarked(selector, element.shadowRoot);
+            if (inner) return inner;
+        }
+        return null;
+    }
+
     function dropFiles(params) {
-        const target = document.querySelector(`[data-mcp-drop-target="${params.marker}"]`);
+        const target = findMarked(`[data-mcp-drop-target="${params.marker}"]`, document);
         if (!target) throw new Error("Drop target not found in page");
 
         const dataTransfer = new DataTransfer();

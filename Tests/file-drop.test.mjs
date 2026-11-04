@@ -63,7 +63,7 @@ function makeTarget() {
 
 // Loads file-drop.js and returns a function that posts a bridge request and
 // resolves with the page's reply.
-function loadFileDrop({ target, DataTransfer = FakeDataTransfer } = {}) {
+function loadFileDrop({ target, DataTransfer = FakeDataTransfer, document } = {}) {
     let onMessage;
     const replies = [];
     const window = {
@@ -73,7 +73,10 @@ function loadFileDrop({ target, DataTransfer = FakeDataTransfer } = {}) {
 
     vm.runInNewContext(source, {
         window,
-        document: { querySelector: (selector) => (selector.includes("marker-1") ? target : null) },
+        document: document || {
+            querySelector: (selector) => (selector.includes("marker-1") ? target : null),
+            querySelectorAll: () => [],
+        },
         DataTransfer,
         DragEvent: FakeEvent,
     });
@@ -144,6 +147,24 @@ test("drop leaves a null entry alone", () => {
     request({ marker: "marker-1", files: [PNG] });
 
     assert.equal(target.events[2].dataTransfer.items[0].webkitGetAsEntry(), null);
+});
+
+test("drop finds a target inside an open shadow root, however deeply nested", () => {
+    const target = makeTarget();
+    const find = (marked) => (selector) => (selector.includes("marker-1") ? marked : null);
+    const inner = { querySelector: find(target), querySelectorAll: () => [] };
+    const middle = { querySelector: find(null), querySelectorAll: () => [{ shadowRoot: inner }] };
+    const document = {
+        querySelector: find(null),
+        querySelectorAll: () => [{ shadowRoot: null }, { shadowRoot: middle }],
+    };
+    const request = loadFileDrop({ document });
+
+    const reply = request({ marker: "marker-1", files: [PNG] });
+
+    assert.equal(reply.error, undefined);
+    assert.equal(reply.data.dropped, 1);
+    assert.deepEqual(target.events.map((event) => event.type), ["dragenter", "dragover", "drop"]);
 });
 
 test("drop reports a missing target instead of dispatching", () => {
