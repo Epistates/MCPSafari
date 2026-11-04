@@ -18,7 +18,16 @@ struct NativeTypingTests {
         _ args: [String: Value],
         layout: [String: SafariMCPServer.ResolvedCharacter] = qwerty
     ) throws -> SafariMCPServer.NativeInputPlan {
-        try SafariMCPServer.nativeInputPlan(args, resolveCharacter: { layout[$0] }, permission: {})
+        try SafariMCPServer.nativeInputPlan(args, layouts: .init(table: layout), permission: {})
+    }
+
+    // Select-all is Command plus a key, so it is read from the ASCII-capable
+    // layout. A Russian layout has no `a` of its own, and clearFirst used to be
+    // refused there although Command+A works in every app.
+    @Test func clearFirstSelectsAllWithTheKeyShortcutsReadAsAOnARussianLayout() throws {
+        let layouts = SafariMCPServer.KeyboardLayouts(typed: [:], shortcut: Self.qwerty)
+        let plan = try SafariMCPServer.nativeInputPlan(["text": "x", "clearFirst": true], layouts: layouts, permission: {})
+        #expect(plan.selectAllKeyCode == 0)
     }
 
     // clearFirst used to post Command plus keycode 0. That is `a` on QWERTY and

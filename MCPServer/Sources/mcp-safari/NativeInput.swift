@@ -38,11 +38,11 @@ extension SafariMCPServer {
         let submitKeyCode: CGKeyCode?
     }
 
-    /// The resolver and the permission check are parameters so the plan can be
+    /// The layouts and the permission check are parameters so the plan can be
     /// tested without a particular keyboard layout or an Accessibility grant.
     nonisolated static func nativeInputPlan(
         _ args: [String: Value],
-        resolveCharacter: (String) -> ResolvedCharacter? = currentLayoutKeyCode(for:),
+        layouts: KeyboardLayouts = .live,
         permission: () throws -> Void = ensureNativeInputPermission
     ) throws -> NativeInputPlan {
         guard let text = args["text"]?.stringValue else {
@@ -63,7 +63,7 @@ extension SafariMCPServer {
         let submitKey = args["submitKey"]?.stringValue
         let submitKeyCode = try nativeSubmitKeyCode(for: submitKey)
         let clearFirst = args["clearFirst"]?.boolValue == true
-        let selectAllKeyCode = try clearFirst ? resolveSelectAllKeyCode(resolveCharacter: resolveCharacter) : nil
+        let selectAllKeyCode = try clearFirst ? resolveSelectAllKeyCode(layouts: layouts) : nil
         try permission()
 
         return NativeInputPlan(
@@ -75,14 +75,12 @@ extension SafariMCPServer {
         )
     }
 
-    /// Command plus the key that types `a` on the active layout. Keycode 0 is `a`
+    /// Command plus the key macOS reads as `a` in a shortcut. Keycode 0 is `a`
     /// on QWERTY and `q` on AZERTY, so a constant here sends Command-Q, which
     /// quits Safari, to a French or Belgian user. A layout with no unshifted `a`
     /// is refused rather than guessed at, and never falls back to keycode 0.
-    private nonisolated static func resolveSelectAllKeyCode(
-        resolveCharacter: (String) -> ResolvedCharacter?
-    ) throws -> CGKeyCode {
-        guard let resolved = resolveCharacter("a"), !resolved.needsShift else {
+    private nonisolated static func resolveSelectAllKeyCode(layouts: KeyboardLayouts) throws -> CGKeyCode {
+        guard let resolved = layouts.shortcut("a"), !resolved.needsShift else {
             let layout = currentKeyboardLayoutName().map { " on \($0)" } ?? ""
             throw ToolInputError("Native type_text cannot select the field's text first because there is no plain a key\(layout). Switch the keyboard layout, or omit clearFirst and clear the field another way.")
         }
@@ -345,6 +343,32 @@ extension SafariMCPServer {
         let needsShift: Bool
     }
 
+    /// The two keyboards a native key press has to ask.
+    ///
+    /// Typed characters and Option or Control combinations follow the layout in
+    /// use. A Command shortcut does not: macOS reads it from the ASCII-capable
+    /// layout, so Command+C is Copy on a Russian layout as well, where the key
+    /// that types `с` is the one that sits where `c` does on QWERTY. Asking the
+    /// layout in use for `c` there finds no such key, or a different one, and the
+    /// shortcut that was meant is not the one posted.
+    struct KeyboardLayouts {
+        /// Where the layout in use puts a character.
+        let typed: (String) -> ResolvedCharacter?
+        /// Where a Command shortcut finds a character.
+        let shortcut: (String) -> ResolvedCharacter?
+        /// The unshifted character a Command shortcut reads from a key: the
+        /// reverse of `shortcut`, which says what a posted keycode will mean.
+        let shortcutCharacter: (CGKeyCode) -> String?
+
+        static var live: KeyboardLayouts {
+            KeyboardLayouts(
+                typed: currentLayoutKeyCode(for:),
+                shortcut: shortcutLayoutKeyCode(for:),
+                shortcutCharacter: shortcutLayoutCharacter(forKeyCode:)
+            )
+        }
+    }
+
     /// Which physical key produces `character` on the keyboard layout that is
     /// active right now.
     ///
@@ -352,12 +376,29 @@ extension SafariMCPServer {
     /// `q` on AZERTY, so a hardcoded table turns `Meta+a` into Command-Q — Quit
     /// Safari — for a French or Belgian user. Ask the layout instead.
     nonisolated static func currentLayoutKeyCode(for character: String) -> ResolvedCharacter? {
-        guard let layout = currentKeyboardLayout() else { return nil }
+        guard let layout = keyboardLayout(.current) else { return nil }
+        return keyCode(for: character, layout: layout.data, command: false)
+    }
+
+    /// Which physical key a Command shortcut reads as `character`: the key that
+    /// types it on the ASCII-capable layout, with Command held, as macOS does.
+    nonisolated static func shortcutLayoutKeyCode(for character: String) -> ResolvedCharacter? {
+        guard let layout = keyboardLayout(.asciiCapable) else { return nil }
+        return keyCode(for: character, layout: layout.data, command: true)
+    }
+
+    /// What Command plus `code` reads as in a shortcut, unshifted.
+    nonisolated static func shortcutLayoutCharacter(forKeyCode code: CGKeyCode) -> String? {
+        guard let layout = keyboardLayout(.asciiCapable) else { return nil }
+        return character(forKeyCode: code, shifted: false, command: true, layout: layout.data)
+    }
+
+    private nonisolated static func keyCode(for character: String, layout: Data, command: Bool) -> ResolvedCharacter? {
         for shifted in [false, true] {
             // Ascending, so the main block wins over the numeric keypad, which
             // produces the same digits from a different position.
             for code in CGKeyCode(0)...CGKeyCode(127)
-            where self.character(forKeyCode: code, shifted: shifted, layout: layout.data) == character {
+            where self.character(forKeyCode: code, shifted: shifted, command: command, layout: layout) == character {
                 return ResolvedCharacter(keyCode: code, needsShift: shifted)
             }
         }
@@ -365,7 +406,7 @@ extension SafariMCPServer {
     }
 
     nonisolated static func currentKeyboardLayoutName() -> String? {
-        currentKeyboardLayout()?.name
+        keyboardLayout(.current)?.name
     }
 
     /// HIToolbox aborts the whole process if the Text Input Sources API is
@@ -375,11 +416,21 @@ extension SafariMCPServer {
     /// goes through this lock.
     private nonisolated static let keyboardLayoutLock = NSLock()
 
-    private nonisolated static func currentKeyboardLayout() -> (data: Data, name: String)? {
+    private enum LayoutKind {
+        case current
+        /// The layout in use when it can type ASCII, otherwise the one macOS
+        /// falls back to for shortcuts.
+        case asciiCapable
+    }
+
+    private nonisolated static func keyboardLayout(_ kind: LayoutKind) -> (data: Data, name: String)? {
         keyboardLayoutLock.lock()
         defer { keyboardLayoutLock.unlock() }
 
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+        let copy = kind == .current
+            ? TISCopyCurrentKeyboardLayoutInputSource()
+            : TISCopyCurrentASCIICapableKeyboardLayoutInputSource()
+        guard let source = copy?.takeRetainedValue(),
               let dataPointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
         else { return nil }
 
@@ -391,22 +442,26 @@ extension SafariMCPServer {
         return (data, name ?? "the active keyboard layout")
     }
 
+    /// `command` translates with Command held, which a layout such as Dvorak -
+    /// QWERTY answers with the QWERTY letter and most others answer as usual.
     private nonisolated static func character(
         forKeyCode code: CGKeyCode,
         shifted: Bool,
+        command: Bool = false,
         layout: Data
     ) -> String? {
         let capacity = 4
         var characters = [UniChar](repeating: 0, count: capacity)
         var length = 0
         var deadKeyState: UInt32 = 0
+        let modifiers = (shifted ? shiftKey : 0) | (command ? cmdKey : 0)
         let status = layout.withUnsafeBytes { raw -> OSStatus in
             guard let base = raw.baseAddress else { return OSStatus(-1) }
             return UCKeyTranslate(
                 base.assumingMemoryBound(to: UCKeyboardLayout.self),
                 UInt16(code),
                 UInt16(kUCKeyActionDown),
-                shifted ? UInt32(shiftKey >> 8) : 0,
+                UInt32(modifiers >> 8),
                 UInt32(LMGetKbdType()),
                 OptionBits(kUCKeyTranslateNoDeadKeysBit),
                 &deadKeyState,
@@ -421,7 +476,7 @@ extension SafariMCPServer {
 
     nonisolated static func nativeKeyCombo(
         _ keyString: String,
-        resolveCharacter: (String) -> ResolvedCharacter? = currentLayoutKeyCode(for:)
+        layouts: KeyboardLayouts = .live
     ) throws -> NativeKeyCombo {
         var parts = keyString.split(separator: "+", omittingEmptySubsequences: true).map(String.init)
         guard let key = parts.popLast(), !key.isEmpty else {
@@ -441,21 +496,32 @@ extension SafariMCPServer {
 
         let normalized = key.lowercased()
         if let code = namedKeyCodes[normalized] {
-            try refuseBlockedCombo(identity: namedKeyIdentity(code: code), flags: flags, label: keyString)
+            try refuseBlockedCombo(identities: [namedKeyIdentity(code: code)], flags: flags, label: keyString)
             return NativeKeyCombo(keyCode: code, flags: flags, label: keyString)
         }
 
         guard normalized.count == 1 else {
             throw ToolInputError("Native press_key does not support \(key). Use Enter, Tab, Escape, Space, Backspace, Delete, arrows, Home, End, PageUp, PageDown, F1-F12, or a single character.")
         }
-        // Judged on the character the caller asked for, not on the keycode it
-        // resolves to: Meta+q on AZERTY is keycode 0, and still Command-Q.
-        try refuseBlockedCombo(identity: normalized, flags: flags, label: keyString)
-        guard let resolved = resolveCharacter(normalized) else {
+        // Judged on the character the caller asked for first: Meta+q on AZERTY is
+        // keycode 0, and still Command-Q.
+        try refuseBlockedCombo(identities: [normalized], flags: flags, label: keyString)
+
+        // A Command shortcut is read from the ASCII-capable layout, and the
+        // others from the layout in use.
+        let commandHeld = flags.contains(.maskCommand)
+        guard let resolved = (commandHeld ? layouts.shortcut : layouts.typed)(normalized) else {
             let layout = currentKeyboardLayoutName().map { " on \($0)" } ?? ""
             throw ToolInputError("Native press_key cannot type \(key)\(layout). Switch the keyboard layout, or use a named key such as Enter, Tab, or the arrows.")
         }
         if resolved.needsShift { flags.insert(.maskShift) }
+
+        // And again on the key that will actually be posted, with the modifiers
+        // that will actually be held. The character the caller named is not what
+        // macOS acts on, the keycode is: `Meta+й` on a Russian layout resolves
+        // to the key that is Q, and Shift added for `#` makes Command+Shift+3.
+        let landed = commandHeld ? layouts.shortcutCharacter(resolved.keyCode) : nil
+        try refuseBlockedCombo(identities: [landed], flags: flags, label: keyString)
         return NativeKeyCombo(keyCode: resolved.keyCode, flags: flags, label: keyString)
     }
 
@@ -469,21 +535,35 @@ extension SafariMCPServer {
         let name: String
     }
 
-    /// Everything here ends the session or takes Safari away from the caller:
-    /// quit, close, hide, minimize, switch application, log out, lock, force
-    /// quit, or empty the Trash. A real key event cannot be told apart from the
-    /// user's own, so unlike a synthetic one there is no page to contain it. Kept
-    /// short on purpose; documented in docs/tools.md.
+    /// Everything here ends the session, takes Safari away from the caller, or
+    /// opens something outside the page: quit, close, hide, minimize, switch
+    /// application or Space, show the desktop, take a screenshot, log out, lock,
+    /// force quit, empty the Trash, or raise the open, save or print sheet. A
+    /// real key event cannot be told apart from the user's own, so unlike a
+    /// synthetic one there is no page to contain it. Kept short on purpose;
+    /// documented in docs/tools.md.
     nonisolated static let blockedNativeCombos: [BlockedNativeCombo] = [
         .init(modifiers: .maskCommand, key: "q", name: "Command+Q"),
         .init(modifiers: .maskCommand, key: "w", name: "Command+W"),
         .init(modifiers: .maskCommand, key: "h", name: "Command+H"),
         .init(modifiers: .maskCommand, key: "m", name: "Command+M"),
+        .init(modifiers: .maskCommand, key: "o", name: "Command+O"),
+        .init(modifiers: .maskCommand, key: "s", name: "Command+S"),
+        .init(modifiers: .maskCommand, key: "p", name: "Command+P"),
         .init(modifiers: .maskCommand, key: "tab", name: "Command+Tab"),
         .init(modifiers: .maskCommand, key: "space", name: "Command+Space"),
         .init(modifiers: .maskControl, key: "space", name: "Control+Space"),
+        .init(modifiers: .maskControl, key: "arrowleft", name: "Control+ArrowLeft"),
+        .init(modifiers: .maskControl, key: "arrowright", name: "Control+ArrowRight"),
+        .init(modifiers: .maskControl, key: "arrowup", name: "Control+ArrowUp"),
+        .init(modifiers: .maskControl, key: "arrowdown", name: "Control+ArrowDown"),
         .init(modifiers: [.maskCommand, .maskAlternate], key: "escape", name: "Command+Option+Escape"),
         .init(modifiers: [.maskCommand, .maskShift], key: "delete", name: "Command+Shift+Delete"),
+        .init(modifiers: [.maskCommand, .maskShift], key: "3", name: "Command+Shift+3"),
+        .init(modifiers: [.maskCommand, .maskShift], key: "4", name: "Command+Shift+4"),
+        .init(modifiers: [.maskCommand, .maskShift], key: "5", name: "Command+Shift+5"),
+        .init(modifiers: [], key: "f3", name: "F3"),
+        .init(modifiers: [], key: "f11", name: "F11"),
     ]
 
     private nonisolated static func namedKeyIdentity(code: CGKeyCode) -> String? {
@@ -492,15 +572,24 @@ extension SafariMCPServer {
         case 49: "space"
         case 53: "escape"
         case 51, 117: "delete" // Backspace and forward delete are both "Delete" to Finder.
+        case 123: "arrowleft"
+        case 124: "arrowright"
+        case 125: "arrowdown"
+        case 126: "arrowup"
+        case 99: "f3" // Mission Control
+        case 103: "f11" // Show Desktop
         default: nil
         }
     }
 
-    private nonisolated static func refuseBlockedCombo(identity: String?, flags: CGEventFlags, label: String) throws {
-        guard let identity,
-              let blocked = blockedNativeCombos.first(where: { $0.key == identity && flags.isSuperset(of: $0.modifiers) })
-        else { return }
-        throw ToolInputError("Native press_key does not send \(label): it includes \(blocked.name), which quits, closes, hides, or leaves Safari, or locks, logs out, or empties the Trash, and a real key event cannot be contained to the page. Use close_tab to close a tab, or omit native to send the key to the page only.")
+    /// Refuses when any of the identities a key can be known by is blocked with
+    /// the modifiers held: the character the caller named, and the one the
+    /// posted keycode reads as.
+    private nonisolated static func refuseBlockedCombo(identities: [String?], flags: CGEventFlags, label: String) throws {
+        guard let blocked = blockedNativeCombos.first(where: { combo in
+            identities.contains { $0 == combo.key } && flags.isSuperset(of: combo.modifiers)
+        }) else { return }
+        throw ToolInputError("Native press_key does not send \(label): it includes \(blocked.name), which quits, closes, hides, or leaves Safari, switches Spaces, shows the desktop, takes a screenshot, opens a file or print sheet, or locks, logs out, or empties the Trash, and a real key event cannot be contained to the page. Use close_tab to close a tab, or omit native to send the key to the page only.")
     }
 
     nonisolated static func pressNativeKey(_ combo: NativeKeyCombo, deadline: Double? = nil) throws -> String {
