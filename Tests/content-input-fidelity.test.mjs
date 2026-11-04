@@ -341,6 +341,26 @@ test("hover dispatches pointer and mouse families in real pointer order", async 
     assert.match(response.data, /CSS :hover is not applied/);
 });
 
+test("hover's enter events do not bubble, where its over and move events do", async () => {
+    const events = [];
+    const target = el("a", {
+        id: "t",
+        extra: { dispatchEvent(event) { events.push(event); return true; } },
+    });
+    const call = loadContent(el("body", {}, [target]), { querySelector: () => target });
+
+    await call("hover", { selector: "#t" });
+
+    const byType = Object.fromEntries(events.map((event) => [event.type, event]));
+    for (const type of ["pointerenter", "mouseenter"]) {
+        assert.equal(byType[type].bubbles, false, `${type} does not bubble`);
+        assert.equal(byType[type].cancelable, false, `${type} cannot be cancelled`);
+    }
+    for (const type of ["pointerover", "mouseover", "pointermove", "mousemove"]) {
+        assert.equal(byType[type].bubbles, true, `${type} bubbles`);
+    }
+});
+
 test("hover accepts x and y like click", async () => {
     const events = [];
     const target = el("div", {

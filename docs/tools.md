@@ -43,7 +43,7 @@ This reference describes `main`, which may include tools and options not yet in 
 | `type_text` | Type into an element with optional `clearFirst` and `submitKey`; `native: true` sends macOS key events |
 | `form_input` | Batch fill form fields (CSS selector → value map) |
 | `select_option` | Select a dropdown option by value or label |
-| `scroll` | Scroll page or element in any direction |
+| `scroll` | Scroll page or element in any direction; the scroll has finished when the call returns |
 | `press_key` | Press key combinations (e.g., `Enter`, `Meta+a`, `Control+c`); `native: true` sends a real macOS key event |
 | `hover` | Hover to trigger tooltips, menus, or hover handlers (pointer + mouse events); `native: true` moves the real OS pointer for true `:hover` |
 | `drag` | Drag and drop between elements along an interpolated pointer path; `native: true` performs a real macOS mouse drag |

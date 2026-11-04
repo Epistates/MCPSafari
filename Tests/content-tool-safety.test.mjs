@@ -488,3 +488,14 @@ test("scroll treats amount 0 as an explicit no-op distance", async () => {
     assert.equal(call.scrolls[0].top, 0);
     assert.equal(call.scrolls[0].left, 0);
 });
+
+test("scroll has finished moving by the time it answers", async () => {
+    // A smooth scroll is still in flight when the tool replies, so whatever
+    // reads the page next sees it part-way.
+    const call = loadContent(el("body", {}, []));
+
+    await call("scroll", { direction: "down", amount: 300 });
+
+    assert.equal(call.scrolls[0].behavior, "instant");
+    assert.equal(call.scrolls[0].top, 300);
+});

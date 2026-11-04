@@ -37,11 +37,10 @@
             );
         }
 
-        if (target === window) {
-            window.scrollBy({ ...scroll, behavior: "smooth" });
-        } else {
-            target.scrollBy({ ...scroll, behavior: "smooth" });
-        }
+        // Instant, because the tool answers as soon as this returns: a smooth
+        // scroll is still moving then, so the next read, or a `click` aimed by
+        // a position measured mid-scroll, would see a page that has not arrived.
+        target.scrollBy({ ...scroll, behavior: "instant" });
 
         return `Scrolled ${params.direction} by ${amount}px`;
     }
@@ -129,11 +128,16 @@
         };
         const pointerOpts = { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true };
 
+        // Enter events do not bubble and cannot be cancelled: a page that
+        // listens for them on an ancestor expects the ancestor's own entry, and
+        // a bubbling one would fire it for every child the pointer crossed.
+        const enterOpts = { bubbles: false, cancelable: false };
+
         // Real pointer order: pointer family first, over before enter.
         el.dispatchEvent(pointerEvent("pointerover", pointerOpts));
-        el.dispatchEvent(pointerEvent("pointerenter", pointerOpts));
+        el.dispatchEvent(pointerEvent("pointerenter", { ...pointerOpts, ...enterOpts }));
         el.dispatchEvent(new MouseEvent("mouseover", eventOpts));
-        el.dispatchEvent(new MouseEvent("mouseenter", eventOpts));
+        el.dispatchEvent(new MouseEvent("mouseenter", { ...eventOpts, ...enterOpts }));
         el.dispatchEvent(pointerEvent("pointermove", pointerOpts));
         el.dispatchEvent(new MouseEvent("mousemove", eventOpts));
 
