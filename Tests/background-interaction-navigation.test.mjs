@@ -705,6 +705,40 @@ test("a wait that finishes before any navigation is untouched", async () => {
     assert.equal(harness.listenerCount(), 0);
 });
 
+test("a sleep that a navigation outlasts has still slept, and does not fail as a timeout", async () => {
+    // A sleep waits for nothing, so it has nothing to time out on: when the
+    // navigation uses up the time, the time has been waited.
+    const harness = loadBackground({ onMessage: async () => new Promise(() => {}) });
+    const sleep = harness.request("wait", { seconds: 2 });
+
+    await harness.advance(1000);
+    harness.emit({ status: "loading" }, { status: "loading" });
+    await harness.advance(5000);
+
+    assert.equal(sleep.done, true);
+    assert.equal(sleep.response.success, true, sleep.response.error);
+    assert.equal(sleep.response.data, "Waited 2 seconds");
+    assert.equal(harness.listenerCount(), 0);
+});
+
+test("a sleep resumed after a navigation reports the time it was asked for", async () => {
+    let sleeps = 0;
+    const harness = loadBackground({
+        onMessage: async (message) => {
+            sleeps += 1;
+            if (sleeps === 1) return new Promise(() => {});
+            return { data: `Waited ${message.params.seconds} seconds`, error: null };
+        },
+    });
+    const sleep = harness.request("wait", { seconds: 4 });
+    await harness.advance(1000);
+    harness.emit({ status: "loading" }, { status: "loading" });
+    harness.emit({ status: "complete" }, { status: "complete" });
+    await harness.advance(10);
+
+    assert.equal(sleep.response.data, "Waited 4 seconds", "the remainder leaked into the answer");
+});
+
 test("a timed wait that a navigation interrupts is sent again for the time that is left", async () => {
     let waits = 0;
     const harness = loadBackground({

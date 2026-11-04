@@ -229,24 +229,36 @@ async function waitAcrossNavigations(params, send) {
             }
             if (!watcher.sawLoad() && !(await tabIsLoading(tabId))) throw outcome.error;
         } else if ("value" in outcome) {
-            return outcome.value;
+            // A sleep resumed after a navigation was asked for the time left,
+            // and says so; the caller asked for all of it.
+            return params.seconds && current !== params ? sleptMessage(params.seconds) : outcome.value;
         }
 
         await waitForLoadComplete(tabId, deadline - Date.now());
         const remainingMs = deadline - Date.now();
-        if (remainingMs <= 0) throw waitInterruptedError(params);
+        // A sleep waits for nothing, so there is nothing for it to time out on:
+        // when the navigation uses up the time, the time has been waited.
+        if (remainingMs <= 0) {
+            if (params.seconds) return sleptMessage(params.seconds);
+            throw waitInterruptedError(params);
+        }
         current = params.seconds
             ? { ...params, seconds: remainingMs / 1000, timeout: remainingMs / 1000 }
             : { ...params, timeout: remainingMs / 1000 };
     }
 }
 
+// What the content script says when a sleep ends (`waitFor` in content-io.js).
+function sleptMessage(seconds) {
+    return `Waited ${seconds} seconds`;
+}
+
 // What the content script would have said for the same wait that ran out,
 // with the reason it ran out added, since the page it started on is gone.
+// Only a wait for a selector or text can run out: a sleep is never interrupted
+// into this.
 function waitInterruptedError(params) {
-    const target = params.selector
-        ? `selector: ${params.selector}`
-        : params.text ? `text: "${params.text}"` : `${params.seconds} seconds`;
+    const target = params.selector ? `selector: ${params.selector}` : `text: "${params.text}"`;
     const error = new Error(
         `Timeout waiting for ${target} (the page navigated while waiting and the time ran out on the new page)`
     );
