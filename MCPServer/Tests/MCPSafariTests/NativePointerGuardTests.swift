@@ -237,7 +237,14 @@ struct NativePointerGuardTests {
                 windows: overSafari, pointer: fake.pointer
             )
         }
-        try await Task.sleep(for: .milliseconds(120))
+        // Cancel once the button is actually down. A fixed sleep raced the drag on
+        // a loaded runner: the cancel landed before the press, so there was no
+        // press to release and the test failed with nothing wrong.
+        let pressed = "\(CGEventType.leftMouseDown.rawValue):"
+        let giveUp = ContinuousClock.now + .seconds(5)
+        while !fake.posted.contains(where: { $0.hasPrefix(pressed) }), ContinuousClock.now < giveUp {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         task.cancel()
         var cancelled = false
         do { _ = try await task.value } catch is CancellationError { cancelled = true }

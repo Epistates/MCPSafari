@@ -165,7 +165,11 @@ struct HandshakeHygieneTests {
         // Refusing the newest only works if silent sockets age out, otherwise a
         // handful of them would hold every slot and the refusal would land on
         // the extension instead.
-        try await withStartedBridge(handshakeDeadline: .milliseconds(200)) { bridge, port in
+        //
+        // The deadline also bounds the connection that arrives afterwards, which
+        // has to finish all three handshake steps inside it. 200 ms was too tight
+        // for a loaded CI runner running the suite in parallel.
+        try await withStartedBridge(handshakeDeadline: .seconds(1)) { bridge, port in
             let squatters = try (0..<8).map { _ in try #require(RawSocket.dial(port: port)) }
             for socket in squatters { #expect(socket.reply() == .upgraded) }
             // Each is hung up on once its deadline passes.
