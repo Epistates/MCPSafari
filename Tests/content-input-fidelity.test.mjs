@@ -217,6 +217,110 @@ test("type_text submitKey follows the same keypress rule", async () => {
     assert.deepEqual(events.slice(-3), ["keydown", "keypress", "keyup"]);
 });
 
+// ─── type_text Enter: implicit submission ────────────────────────────
+
+// A form with `siblings` as the rest of its controls. `submissions` collects
+// what reached the page: a requestSubmit, or a click on a submit button.
+function formHarness({ tag = "input", type = "text", siblings = () => [], cancel = null } = {}) {
+    const submissions = [];
+    const field = el(tag, {
+        id: "f",
+        extra: {
+            type,
+            value: "",
+            dispatchEvent(event) {
+                return !(cancel && event.type === cancel);
+            },
+        },
+    });
+    field.form = {
+        elements: [field, ...siblings(submissions)],
+        requestSubmit() { submissions.push("requestSubmit"); },
+    };
+    const call = loadContent(el("body", {}, [field]), { querySelector: () => field });
+    return { call, submissions, enter: () => call("type_text", { selector: "#f", text: "x", submitKey: "Enter" }) };
+}
+
+const textField = () => ({ tagName: "INPUT", type: "text" });
+const submitButton = (submissions, extra = {}) => ({
+    tagName: "BUTTON",
+    type: "submit",
+    disabled: false,
+    click() { submissions.push("click"); },
+    ...extra,
+});
+
+test("Enter in a lone text field submits the form", async () => {
+    const { enter, submissions } = formHarness();
+
+    assert.equal((await enter()).error, null);
+    assert.deepEqual(submissions, ["requestSubmit"]);
+});
+
+test("Enter clicks the form's default button rather than submitting around it", async () => {
+    const { enter, submissions } = formHarness({
+        siblings: (log) => [textField(), submitButton(log), submitButton(log)],
+    });
+
+    await enter();
+
+    assert.deepEqual(submissions, ["click"], "the first submit button, once");
+});
+
+test("a disabled default button means Enter submits nothing", async () => {
+    const { enter, submissions } = formHarness({ siblings: (log) => [submitButton(log, { disabled: true })] });
+
+    await enter();
+
+    assert.deepEqual(submissions, []);
+});
+
+test("Enter in a form with several text fields and no submit button submits nothing", async () => {
+    const { enter, submissions } = formHarness({ siblings: () => [textField()] });
+
+    await enter();
+
+    assert.deepEqual(submissions, []);
+});
+
+test("Enter in a textarea does not submit", async () => {
+    const { enter, submissions } = formHarness({ tag: "textarea", type: "textarea" });
+
+    await enter();
+
+    assert.deepEqual(submissions, []);
+});
+
+test("Enter in a field that does not block implicit submission does not submit", async () => {
+    const { enter, submissions } = formHarness({ type: "checkbox" });
+
+    await enter();
+
+    assert.deepEqual(submissions, []);
+});
+
+test("a page that cancels the keydown or keypress is left to handle Enter itself", async () => {
+    for (const cancel of ["keydown", "keypress"]) {
+        const { enter, submissions } = formHarness({ cancel });
+
+        assert.equal((await enter()).error, null);
+        assert.deepEqual(submissions, [], `a cancelled ${cancel} must not submit`);
+    }
+});
+
+test("a cancelled keydown suppresses the keypress", async () => {
+    const events = [];
+    const field = el("input", {
+        id: "f",
+        extra: { type: "text", value: "", dispatchEvent(event) { events.push(event.type); return event.type !== "keydown"; } },
+    });
+    const call = loadContent(el("body", {}, [field]), { querySelector: () => field });
+
+    await call("type_text", { selector: "#f", text: "x", submitKey: "Enter" });
+
+    assert.deepEqual(events.slice(-2), ["keydown", "keyup"]);
+});
+
 // ─── hover pointer events and parity ─────────────────────────────────
 
 test("hover dispatches pointer and mouse families in real pointer order", async () => {

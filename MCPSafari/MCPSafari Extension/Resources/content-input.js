@@ -245,19 +245,56 @@
                 bubbles: true,
                 cancelable: true,
             };
-            el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
-            if (firesKeypress(params.submitKey, keyOpts)) {
-                el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
+            // A page that handles the key cancels it, and the browser then does
+            // nothing more with it. That includes the submission below.
+            let handled = !el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
+            if (!handled && firesKeypress(params.submitKey, keyOpts)) {
+                handled = !el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
             }
             el.dispatchEvent(new KeyboardEvent("keyup", keyOpts));
 
-            // For Enter, also submit the form if present
-            if (params.submitKey === "Enter" && el.form) {
-                el.form.requestSubmit();
-            }
+            if (params.submitKey === "Enter" && !handled) submitImplicitly(el);
         }
 
         return `Typed "${text}" into <${el.tagName.toLowerCase()}>${params.submitKey ? ` then pressed ${params.submitKey}` : ""}`;
+    }
+
+    // Enter in a text field submits its form, by the HTML implicit submission
+    // rules. A bare `requestSubmit()` is not that: it submitted from a textarea,
+    // which takes Enter as a newline, and it skipped the form's default button,
+    // so the click handlers and the submitter the page expected never ran.
+    //
+    // These are the types the spec calls fields that block implicit submission.
+    const IMPLICIT_SUBMIT_TYPES = new Set([
+        "text", "search", "url", "tel", "email", "password",
+        "date", "month", "week", "time", "datetime-local", "number",
+    ]);
+
+    function submitImplicitly(field) {
+        const form = field.form;
+        if (!form || field.tagName.toLowerCase() !== "input" || !IMPLICIT_SUBMIT_TYPES.has(field.type)) return;
+
+        const controls = Array.from(form.elements);
+        const isSubmitButton = (control) => {
+            const tag = control.tagName.toLowerCase();
+            return (tag === "button" && control.type === "submit")
+                || (tag === "input" && (control.type === "submit" || control.type === "image"));
+        };
+
+        // With a submit button, Enter clicks the first one, and a disabled one
+        // means the form does not submit at all.
+        const defaultButton = controls.find(isSubmitButton);
+        if (defaultButton) {
+            if (!defaultButton.disabled) defaultButton.click();
+            return;
+        }
+
+        // Without one, Enter submits only when it cannot be ambiguous which
+        // field it was meant for.
+        const typed = controls.filter(
+            (control) => control.tagName.toLowerCase() === "input" && IMPLICIT_SUBMIT_TYPES.has(control.type)
+        );
+        if (typed.length <= 1) form.requestSubmit();
     }
 
     // ─── Form Input ──────────────────────────────────────────────────
