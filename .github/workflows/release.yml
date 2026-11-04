@@ -29,13 +29,17 @@ env:
   RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
 
 jobs:
-  # Everything that can be checked without a secret is checked here, and the
-  # jobs that hold secrets wait for it. Without this a pushed tag would sign,
-  # notarize and publish a commit that no test had ever seen.
+  # Everything that can be checked without a secret is checked by `ci` and
+  # `verify`, and the jobs that hold secrets wait for both. Without this a
+  # pushed tag would sign, notarize and publish a commit that no test had seen.
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
   verify:
     name: Verify source
-    runs-on: macos-26
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -67,43 +71,6 @@ jobs:
         if: env.REQUIRE_SIGNING == 'true'
         run: python3 .github/scripts/prepare_release.py notes "$RELEASE_VERSION" "$RUNNER_TEMP/release-notes.md"
 
-      - name: Set up Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '24'
-
-      - name: Select Xcode 26.6
-        run: |
-          set -euo pipefail
-
-          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app /Applications/Xcode.app; do
-            if [ -d "$app/Contents/Developer" ]; then
-              sudo xcode-select -s "$app/Contents/Developer"
-              break
-            fi
-          done
-
-          xcodebuild -version
-          swift --version
-          swift --version | grep -q "Apple Swift version 6.3" || {
-            echo "::error::Swift 6.3 is required to build MCPServer"
-            exit 1
-          }
-
-      - name: Test MCP Server
-        run: |
-          cd MCPServer
-          swift test --force-resolved-versions
-
-      - name: Test extension scripts
-        run: node --test Tests/*.mjs
-
-      - name: Test MCP tool result contracts
-        run: node --test .github/scripts/test_mcp_results.mjs
-
-      - name: Test release preparation
-        run: python3 .github/scripts/test_prepare_release.py
-
       - name: Test SwiftPM OSV audit
         run: python3 .github/scripts/test_audit_swiftpm_osv.py
 
@@ -112,8 +79,10 @@ jobs:
 
   build:
     name: Build (${{ matrix.arch }})
-    runs-on: macos-26
-    needs: verify
+    # The toolchain a maintainer qualifies against locally, so the build that
+    # ships is the build that was tested in Safari.
+    runs-on: xcode-27
+    needs: [ci, verify]
     timeout-minutes: 60
     # The Apple credentials live in the release environment, whose protection
     # rules (required reviewers, tags only) are what stand between them and a
@@ -137,23 +106,11 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Select Xcode 26.6
-        run: |
-          set -euo pipefail
-
-          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app /Applications/Xcode.app; do
-            if [ -d "$app/Contents/Developer" ]; then
-              sudo xcode-select -s "$app/Contents/Developer"
-              break
-            fi
-          done
-
-          xcodebuild -version
-          swift --version
-          swift --version | grep -q "Apple Swift version 6.3" || {
-            echo "::error::Swift 6.3 is required to build MCPServer"
-            exit 1
-          }
+      - name: Select Xcode
+        uses: ./.github/actions/select-xcode
+        with:
+          xcode: '27.1'
+          swift: '6.4'
 
       # ── Build (unsigned) ────────────────────────────────────────
       #
@@ -402,7 +359,7 @@ jobs:
 
   release:
     name: Validate distribution
-    runs-on: macos-26
+    runs-on: xcode-27
     needs: build
     timeout-minutes: 45
     # Only ever runs when signing is required, so it always holds the Apple ID
@@ -430,8 +387,23 @@ jobs:
           path: release-artifacts
 
       - name: Validate artifacts and create universal CLI binary
+        env:
+          EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          # A valid signature is not enough: an ad-hoc one is valid too. Every
+          # binary that ships must carry our team and the hardened runtime.
+          check_cli() {
+            local binary="$1" details team
+            codesign --verify --strict "$binary"
+            details="$(codesign -dv --verbose=4 "$binary" 2>&1)"
+            team="$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -n 1)"
+            [ "$team" = "$EXPECTED_TEAM_ID" ] || fail "$(basename "$binary") is signed by team '${team:-none}', expected '$EXPECTED_TEAM_ID'"
+            grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime' <<<"$details" || fail "$(basename "$binary") was signed without the hardened runtime"
+          }
+
           mkdir -p final-release
           for arch in arm64 x86_64; do
             dir="release-artifacts/$arch"
@@ -440,7 +412,7 @@ jobs:
             test -s "$dir/$binary"
             test -s "$dir/$archive"
             (cd "$dir" && shasum -a 256 -c "$binary.sha256" "$archive.sha256")
-            codesign --verify --strict "$dir/$binary"
+            check_cli "$dir/$binary"
             lipo "$dir/$binary" -verify_arch "$arch"
             cp "$dir/$binary" "$dir/$archive" final-release/
           done
@@ -449,7 +421,7 @@ jobs:
             -output final-release/MCPSafari-Server-universal-apple-darwin
           chmod +x final-release/MCPSafari-Server-*
           lipo final-release/MCPSafari-Server-universal-apple-darwin -verify_arch arm64 x86_64
-          codesign --verify --strict final-release/MCPSafari-Server-universal-apple-darwin
+          check_cli final-release/MCPSafari-Server-universal-apple-darwin
 
       - name: Notarize distributed CLI binaries
         env:

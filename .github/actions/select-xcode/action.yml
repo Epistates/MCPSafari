@@ -1,0 +1,54 @@
+name: Select Xcode
+description: >-
+  Selects an installed Xcode by version and fails unless it reports that exact
+  version and the expected Swift. Runner images move their default Xcode, so a
+  job that only took the default could build with a different compiler from one
+  run to the next without saying so.
+
+inputs:
+  xcode:
+    description: Xcode version as the runner image names it, for example 27.1
+    required: true
+  swift:
+    description: Swift version that Xcode must report, for example 6.4
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode ${{ inputs.xcode }}
+      shell: bash
+      env:
+        XCODE_VERSION: ${{ inputs.xcode }}
+        SWIFT_VERSION: ${{ inputs.swift }}
+      run: |
+        set -euo pipefail
+
+        selected=""
+        for app in "/Applications/Xcode_${XCODE_VERSION}.app" "/Applications/Xcode_${XCODE_VERSION}.0.app"; do
+          if [ -d "$app/Contents/Developer" ]; then
+            selected="$app"
+            break
+          fi
+        done
+        if [ -z "$selected" ]; then
+          echo "::error::Xcode ${XCODE_VERSION} is not installed on this runner image"
+          ls -d /Applications/Xcode*.app || true
+          exit 1
+        fi
+        sudo xcode-select -s "$selected/Contents/Developer"
+
+        xcodebuild -version
+        swift --version
+        actual_xcode="$(xcodebuild -version | sed -n 's/^Xcode //p')"
+        case "$actual_xcode" in
+          "$XCODE_VERSION"|"$XCODE_VERSION".*) ;;
+          *)
+            echo "::error::Selected Xcode reports ${actual_xcode}, expected ${XCODE_VERSION}"
+            exit 1
+            ;;
+        esac
+        swift --version 2>&1 | grep -q "Apple Swift version ${SWIFT_VERSION}" || {
+          echo "::error::Xcode ${XCODE_VERSION} does not provide Swift ${SWIFT_VERSION}"
+          exit 1
+        }

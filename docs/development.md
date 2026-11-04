@@ -4,7 +4,7 @@
 
 ## Build and test
 
-Source builds require macOS 14+, Safari 17+, Swift 6.3+, and Xcode 26.6 (the version selected by CI).
+Source builds require macOS 14+, Safari 17+, Swift 6.3+, and Xcode 26.6 or later. Releases are built with Xcode 27.1, and CI builds and tests with both Xcode 27.1 and Xcode 26.6. The tests need Node 24 or later (CI uses Node 26), and the type check below needs [Bun](https://bun.sh).
 
 Clone the repository, then build from its root. The parentheses keep each command group in its own directory.
 
@@ -36,7 +36,7 @@ The binary is `MCPServer/.build/release/MCPSafari`.
 
 ## CI
 
-[ci.yml](../.github/workflows/ci.yml) builds and tests the Swift server, runs the Node extension tests, type-checks the extension scripts, checks the MCP handshake, and builds the Safari extension. Its path filters skip Markdown-only changes. Security scans have [separate workflows](../.github/workflows).
+[ci.yml](../.github/workflows/ci.yml) builds and tests the Swift server, runs the Node extension tests, type-checks the extension scripts, checks the MCP handshake, and builds the Safari extension in Debug and Release. It runs once per toolchain, Xcode 27.1 and Xcode 26.6. Its path filters skip Markdown-only changes. The release workflow runs the same file as its test gate before anything is signed. Security scans have [separate workflows](../.github/workflows).
 
 The type check exists because the extension scripts share globals across files with no imports, so a misspelled name is a `ReferenceError` that only surfaces when that code path runs. It fails on undeclared names and calls with too many arguments, and ignores the remaining type-shape diagnostics, which plain JavaScript produces in bulk. To run it locally:
 

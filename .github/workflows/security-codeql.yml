@@ -30,23 +30,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Select Xcode 26.6
-        run: |
-          set -euo pipefail
-
-          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app /Applications/Xcode.app; do
-            if [ -d "$app/Contents/Developer" ]; then
-              sudo xcode-select -s "$app/Contents/Developer"
-              break
-            fi
-          done
-
-          xcodebuild -version
-          swift --version
-          swift --version | grep -q "Apple Swift version 6.3" || {
-            echo "::error::Swift 6.3 is required to build MCPServer"
-            exit 1
-          }
+      # Not the Xcode releases are built with: CodeQL's Swift extractor
+      # supports Swift up to 6.3, so this stays on Xcode 26.6 until it catches
+      # up. CI builds and tests with both toolchains, so the source analysed
+      # here is known to compile the same way under the newer one.
+      - name: Select Xcode
+        uses: ./.github/actions/select-xcode
+        with:
+          xcode: '26.6'
+          swift: '6.3'
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
