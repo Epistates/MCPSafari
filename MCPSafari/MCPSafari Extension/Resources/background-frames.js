@@ -253,20 +253,92 @@ async function sendToContentScript(tabId, message, frameId = 0) {
     await ensureTabAccess(resolvedTabId);
     // The frame learns its own id from the request it is answering.
     message = { ...message, frameId };
-    const options = { frameId };
+    const ask = () => browser.tabs.sendMessage(resolvedTabId, message, { frameId });
+
+    // Safari's `tabs.sendMessage` does not throw when no content script is
+    // listening: it resolves undefined, exactly as it does when the document
+    // goes away before replying. After the fact the two cannot be told apart,
+    // and guessing wrong either never injects (a tab opened before the extension
+    // was enabled fails every action) or sends a click twice. So an action that
+    // must not run twice asks first, with a message that changes nothing.
+    const repeatable = isRepeatSafe(message);
+    if (!repeatable) await ensureListener(resolvedTabId, frameId);
 
     let response;
     try {
-        response = await browser.tabs.sendMessage(resolvedTabId, message, options);
+        response = await ask();
+        // Cheaper than a ping for an action that can simply be asked again.
+        if (!response && repeatable) {
+            await injectContentScripts(resolvedTabId);
+            response = await ask();
+        }
     } catch (err) {
-        // The browser itself says nothing was listening, so the message never
-        // reached a page and sending it again cannot repeat anything. This is
-        // the only case that earns an injection and a second send.
+        // The thrown form, which other engines use and the test fake does too.
+        // The message never reached a page, so a second send repeats nothing.
         if (!isNoReceiverError(err)) throw err;
         await injectContentScripts(resolvedTabId);
-        response = await browser.tabs.sendMessage(resolvedTabId, message, options);
+        response = await ask();
     }
     return unpackReply(response, message);
+}
+
+// Actions that change nothing, or that leave the page as one run leaves it, so
+// that asking twice is harmless. Everything else is sent once and only once.
+//   - read_page, get_page_text, snapshot, find: read the page. A snapshot may
+//     mint uids, and asking again mints or reuses them, which no caller can see.
+//   - element_rect, native_pointer_points: measure, scrolling the target into
+//     view, which a second scroll to the same place does not change.
+//   - prepare_native_input, prepare_native_key: focus the target, and focusing
+//     what is already focused does nothing.
+//   - wait: polls or sleeps. `waitAcrossNavigations` already asks it again.
+//   - get_console_messages, get_network_requests: reads, but see below.
+//   - ping: answers and nothing else.
+// Not here: click, type_text, form_input, select_option, press_key, hover, drag
+// and the file actions dispatch events, scroll is relative, start_trace,
+// stop_trace and handle_dialog hold state that a second call would reset or
+// consume.
+const REPEAT_SAFE_ACTIONS = new Set([
+    "read_page",
+    "get_page_text",
+    "snapshot",
+    "find",
+    "element_rect",
+    "native_pointer_points",
+    "prepare_native_input",
+    "prepare_native_key",
+    "wait",
+    "get_console_messages",
+    "get_network_requests",
+    "ping",
+]);
+
+function isRepeatSafe(message) {
+    if (!REPEAT_SAFE_ACTIONS.has(message.action)) return false;
+    // A read that clears what it read empties the buffer, so a second one would
+    // answer with nothing the first had not already taken.
+    const params = message.params || {};
+    return !params.clear && !params.clearIds;
+}
+
+// Makes sure a content script is listening in this frame, injecting it if not.
+// Safari reports a tab with nothing listening as undefined, not as an error, so
+// the question is put as a ping: no answer means nobody is there.
+async function ensureListener(tabId, frameId) {
+    if (await contentScriptAnswers(tabId, frameId)) return;
+    await injectContentScripts(tabId);
+    if (!(await contentScriptAnswers(tabId, frameId))) {
+        throw new Error("Content script did not respond after injection");
+    }
+}
+
+async function contentScriptAnswers(tabId, frameId) {
+    try {
+        const response = await browser.tabs.sendMessage(tabId, { action: "ping", frameId }, { frameId });
+        return Boolean(response) && !response.error;
+    } catch (err) {
+        if (isNoReceiverError(err)) return false;
+        throw err;
+    }
 }
 
 function isNoReceiverError(err) {
@@ -275,11 +347,11 @@ function isNoReceiverError(err) {
             || err.message.includes("Receiving end does not exist")));
 }
 
-// The content script answers every message it takes with an object, so no
-// answer at all is not "nobody home". Safari resolves undefined when the
-// document goes away before replying, and by then the message was delivered:
-// a click that navigates has clicked. That used to be turned into a no-receiver
-// error here, which injected the scripts and sent the click a second time.
+// The content script answers every message it takes with an object, so by now
+// no answer at all means the document went away before replying, and the
+// message was delivered: a click that navigates has clicked. It used to be
+// turned into a no-receiver error here, which injected the scripts and sent the
+// click a second time.
 function unpackReply(response, message) {
     if (!response) throw replyLostError(message.action);
     if (response.error) throw toolErrorFromResponse(response);

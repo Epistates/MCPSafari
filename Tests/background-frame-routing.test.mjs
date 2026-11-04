@@ -43,6 +43,9 @@ function loadBackground({ frames = [TOP, EMBED], respond, refuseAccess = false }
             update: async () => {},
             sendMessage: async (tabId, message, options) => {
                 const frameId = options ? options.frameId : 0;
+                // Asked before an action that must not run twice, and answered
+                // by any page that has the content script.
+                if (message.action === "ping") return ok({ ready: true });
                 sent.push({ tabId, frameId, action: message.action, params: message.params });
                 return respond(frameId, message);
             },

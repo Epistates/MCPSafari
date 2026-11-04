@@ -36,6 +36,8 @@
 
     async function handleAction(action, params) {
         switch (action) {
+            case "ping":
+                return { ready: true };
             case "read_page":
                 return readPage(params);
             case "get_page_text":

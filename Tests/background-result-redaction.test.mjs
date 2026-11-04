@@ -27,7 +27,9 @@ function loadBackground(respond) {
         tabs: {
             get: async (id) => ({ id, active: true, windowId: 1, url: "https://ok.example/" }),
             query: async () => [{ id: 1, active: true, windowId: 1 }],
-            sendMessage: async (_tabId, message) => ({ data: respond(message), error: null }),
+            sendMessage: async (_tabId, message) => (
+                message.action === "ping" ? { data: { ready: true }, error: null } : { data: respond(message), error: null }
+            ),
             onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },

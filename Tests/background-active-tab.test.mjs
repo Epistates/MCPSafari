@@ -37,6 +37,7 @@ function loadBackground({
             }),
             query: async (filter = {}) => (filter.active ? tabs.filter((tab) => tab.active) : tabs),
             sendMessage: async (tabId, message, options) => {
+                if (message.action === "ping") return { data: { ready: true }, error: null };
                 sent.push({ tabId, frameId: options ? options.frameId : 0, action: message.action });
                 afterSend(tabs);
                 return { data: [], error: null };

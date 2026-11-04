@@ -50,7 +50,11 @@ function loadBackground({ granted = false, getTab, activeCalls = [], session = {
             }),
             query: async (filter = {}) => (filter.active ? tabs.filter((candidate) => candidate.active) : tabs),
             update: async (id, info) => { activeCalls.push(["tabs.update", id, { ...info }]); },
-            sendMessage: async (tabId) => { sent.push(tabId); return { data: "page text", error: null }; },
+            sendMessage: async (tabId, message) => {
+                if (message.action === "ping") return { data: { ready: true }, error: null };
+                sent.push(tabId);
+                return { data: "page text", error: null };
+            },
             onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },

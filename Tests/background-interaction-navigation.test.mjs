@@ -53,6 +53,9 @@ function loadBackground({ onMessage, url = OLD_URL } = {}) {
             },
             query: async () => [...tabs.values()].map((tab) => ({ ...tab })),
             sendMessage: async (tabId, message, options) => {
+                // Asked before an action that must not run twice, and answered
+                // by any page that has the content script.
+                if (message.action === "ping") return { data: { ready: true }, error: null };
                 sent.push({ tabId, message, at: clock.now, loading: tabs.get(tabId).status === "loading" });
                 return onMessage
                     ? onMessage(message, harness, options)
@@ -433,6 +436,54 @@ test("back and forward name only the origin when they land on a site that was no
     }
 });
 
+// ─── A tab with no content script ────────────────────────────────────
+
+test("a click on a tab with no content script injects it and is delivered exactly once", async () => {
+    // Safari resolves undefined for a message nobody is listening for, the same
+    // as for a reply the page went away before sending. The click must not be
+    // taken for either of them: not skipped for want of an injection, and not
+    // sent twice.
+    const harness = loadBackground();
+    harness.evaluate(`
+        globalThis.__listening = false;
+        globalThis.__clicks = 0;
+        globalThis.__injections = 0;
+        browser.scripting.executeScript = async (options) => {
+            if (options.files) {
+                __injections += 1;
+                if (options.files.includes("content.js")) __listening = true;
+            }
+            return [{ result: true }];
+        };
+        browser.tabs.sendMessage = async (tabId, message) => {
+            if (!__listening) return undefined;
+            if (message.action === "ping") return { data: { ready: true }, error: null };
+            if (message.action === "click") __clicks += 1;
+            return { data: "Clicked <a>", error: null };
+        };
+    `);
+    const click = harness.request("click", { selector: "a" });
+
+    await harness.advance(WINDOW_MS + 500);
+
+    assert.equal(click.response.success, true, click.response.error);
+    assert.equal(click.response.data, "Clicked <a>");
+    assert.equal(harness.evaluate("__clicks"), 1);
+    assert.equal(harness.evaluate("__injections"), 2);
+});
+
+test("a click that a listening page takes and does not answer is not delivered again", async () => {
+    const harness = loadBackground({ onMessage: async () => undefined });
+    harness.evaluate("globalThis.__injections = 0; browser.scripting.executeScript = async (o) => { if (o.files) __injections += 1; return [{ result: true }]; }");
+    const click = harness.request("click", { selector: "a" });
+
+    await harness.advance(WINDOW_MS + 500);
+
+    assert.equal(click.response.errorCode, "reply_lost");
+    assert.equal(clicksSent(harness), 1);
+    assert.equal(harness.evaluate("__injections"), 0, "re-injected into a page that was listening");
+});
+
 // ─── A settle that cannot read the tab ───────────────────────────────
 
 // On an origin Safari has not decided, `tabs.get` parks on the permission dialog
@@ -656,7 +707,9 @@ test("a wait whose reply is lost because the document went away is sent again", 
 
     assert.equal(wait.response.success, true);
     assert.equal(wait.response.data, "Text found: \"Done\"");
-    assert.equal(waits, 2);
+    // Asked again once by the send itself and once more when the navigation is
+    // noticed. Harmless for a wait, which is why it is allowed to be.
+    assert.ok(waits >= 2);
 });
 
 test("a wait that times out on its own page is not sent again", async () => {
