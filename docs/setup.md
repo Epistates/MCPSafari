@@ -55,7 +55,7 @@ Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extens
 
 #### Checking what you downloaded
 
-Every release asset from v0.4.0 onward carries a signed provenance attestation, so you can confirm a
+Every `mcp-safari` binary and app archive released from v0.4.0 onward carries a signed provenance attestation, so you can confirm a
 file was built by this repository's release workflow rather than only that it downloaded intact:
 
 ```bash

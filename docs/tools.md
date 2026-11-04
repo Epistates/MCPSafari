@@ -220,7 +220,7 @@ Every successful tool result includes an object in `structuredContent`, alongsid
 | `status` | `status` with listener, authentication and profile details |
 | `tabs_context` | `tabs` and `profileFailures`; an incomplete listing names the missing profiles |
 | `tabs_create`, `select_tab`, `close_tab` | `tab`, with the profile-qualified handle; close returns `id` and `closed` |
-| `read_page`, `snapshot`, `find` | `page`, `snapshot`, `matches` respectively |
+| `read_page`, `snapshot`, `find` | `page`, `snapshot`, `matches` respectively; `find` adds `unreachableFrames` when it could not search every frame |
 | `read_console`, `read_network` | `messages`, `requests` respectively |
 | `javascript_tool`, interaction and navigation tools | `result`; interactions can additionally return `wait`, `trace`, and `snapshot` when requested and supported |
 | `wait`, `resize_window` | `wait`, `window` respectively |

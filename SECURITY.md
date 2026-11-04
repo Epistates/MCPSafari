@@ -42,8 +42,9 @@ This repository includes automated security scanning via GitHub Actions:
 
 These checks run on pull requests, pushes to the default branch, and on a weekly schedule.
 
-Release assets from v0.4.0 onward carry a signed SLSA build provenance attestation, minted by the
-release workflow through Sigstore. `gh attestation verify <file> --repo Epistates/MCPSafari` ties a
+From v0.4.0 onward, the five release artifacts (the three `mcp-safari` binaries and the two app
+archives) carry a signed SLSA build provenance attestation, minted by the release workflow through
+Sigstore. The checksum files are not attested; the attestation already records each artifact's digest. `gh attestation verify <file> --repo Epistates/MCPSafari` ties a
 downloaded file back to the workflow run and commit that produced it, which a checksum cannot do.
 Every workflow action is pinned by commit SHA, and dependency resolution is locked to
 `Package.resolved`.
@@ -147,13 +148,13 @@ The extension requests these permissions in `manifest.json`:
 
 | Permission | Purpose |
 |-|-|
-| `tabs` | List and manage tabs |
-| `activeTab` | Access the active tab |
-| `scripting` | Inject content scripts and execute JS |
-| `webNavigation` | Navigate tabs (back/forward/reload) |
-| `nativeMessaging` | Auth token exchange with host app |
-| `alarms` | Service worker keepalive |
-| `storage` | Persist selected tab across suspensions |
+| `tabs` | List, open, close and switch tabs, and read a granted tab's URL and title |
+| `activeTab` | Access to the page in front when the user invokes the extension; standing access still comes from Safari's per-site grants |
+| `scripting` | Inject content scripts and run `javascript_tool` |
+| `webNavigation` | List a page's frames, so tools can reach into iframes |
+| `nativeMessaging` | Read the per-port token files through the extension's own native handler (`TokenStore.swift`); the host app never handles a token |
+| `alarms` | Keepalive that rereads token files and redials servers |
+| `storage` | `storage.session`: the tab each server pinned with `select_tab`. `storage.local`: the sites known to be granted and manually added ports |
 
 | Host access / injection | Purpose and scope |
 |-|-|

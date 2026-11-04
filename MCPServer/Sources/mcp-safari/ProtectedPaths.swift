@@ -10,8 +10,9 @@ import Foundation
 /// same user account that holds it is the one the file tools run as. So a tool
 /// that reads a caller-named path, or points the browser at one, has to refuse
 /// these directories: `upload_file` would hand the token to a page as a file, and
-/// a `file:` URL would let Safari render it back through `read_page`. Both roots
-/// are covered, since the legacy one is still written.
+/// a `file:` URL would let Safari render it back through `read_page`. The legacy
+/// `~/.config` root is covered too: nothing writes there now, but a token an
+/// older server left behind is still a credential.
 ///
 /// Comparison is on resolved paths and ignores case, Unicode composition and the
 /// `/System/Volumes/Data` prefix, because the default macOS volume is

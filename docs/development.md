@@ -69,14 +69,19 @@ A Swift executable using the official [modelcontextprotocol/swift-sdk](https://g
 - `Diagnostics.swift` — CLI flag parsing and the `doctor` checks
 - `TabHandle.swift` / `FileAttachment.swift` — Profile-qualified tab handles, and loading local files for upload
 - `ClientCapabilityTransport.swift` — Repairs the one `initialize` shape swift-sdk 0.12.1 cannot decode
+- `RunStepsPlan.swift` — Validates a whole `run_steps` batch before any of it runs
+- `ProtectedPaths.swift` — The token directories, and whether a caller-named path or `file:` URL reaches into them
+- `AsyncFIFOLock.swift` — The in-process lock that serialises every tool that is not read-only, held across `await`
+- `NativeInputLock.swift` — The `flock` that keeps two server processes from posting native input at once
 
-Four `extension SafariMCPServer` files carry the parts that need no actor state, so the actor file stays about dispatch and handlers:
+Six `extension SafariMCPServer` files carry the parts that need no actor state, so the actor file stays about dispatch and handlers:
 
 - `ToolCatalog.swift` — Every advertised `inputSchema` and the fragments they are built from
+- `ToolArguments.swift` — Reading optional arguments so a wrong type is refused rather than read as absent
+- `ToolParameters.swift` — What each tool sends the extension, validated, shared by the handlers and `preflight`
 - `NativeInput.swift` — Real keyboard and mouse events for the `native: true` paths (Carbon, `CGEvent`)
 - `ScreenshotCapture.swift` — Writing, clipping, scaling and describing a capture
 - `ResultFormatting.swift` — Turning a bridge response or an error into a `CallTool.Result`
-- `RunStepsPlan.swift` — Validates a whole `run_steps` batch before any of it runs
 
 In those files, an `internal` member is one the handlers call; everything else is `private`. Swift scopes `private` to the file, so the access level marks the seam between a subsystem and the rest of the server.
 
@@ -106,6 +111,7 @@ A Manifest V3 Safari Web Extension with:
 - `dialog-interceptor.js` — Patches `window.alert/confirm/prompt` before page scripts run
 - `console-interceptor.js` — Captures console messages for `read_console`
 - `network-interceptor.js` — Captures XHR/fetch requests for `read_network`
+- `file-drop.js` — Dispatches `drop_file`'s drag events from the page's own world, so page listeners see files they can read
 - `popup.html/js/css` — Extension popup showing connection status
 
 ### macOS host app
