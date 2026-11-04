@@ -70,7 +70,17 @@ def release_notes(tag: str, root: Path = ROOT) -> str:
     )
 
 
-SOURCE_PATHS = ("MCPServer", "MCPSafari", ".github/workflows", ".github/scripts", "Tests")
+# What a Safari qualification vouches for: the product, its tests, and what
+# builds and packages it. The other workflows only decide which checks run, so
+# editing them must not send a maintainer back through a manual Safari pass.
+SOURCE_PATHS = (
+    "MCPServer",
+    "MCPSafari",
+    ".github/actions",
+    ".github/workflows/release.yml",
+    ".github/scripts",
+    "Tests",
+)
 
 
 def qualification(tag: str, root: Path = ROOT) -> None:
