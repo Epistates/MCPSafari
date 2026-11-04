@@ -346,12 +346,6 @@ extension SafariMCPServer {
         }
     }
 
-    private nonisolated static func ensureSafariIsFrontmost(eventsAlreadySent: Bool = false) throws {
-        guard safariIsActive() else {
-            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: eventsAlreadySent))
-        }
-    }
-
     private nonisolated static func safariIsActive() -> Bool {
         // NSWorkspace.frontmostApplication freezes at first touch in this
         // run-loop-less process; a fresh fetch reads current state.
@@ -696,11 +690,23 @@ extension SafariMCPServer {
         throw ToolInputError("Native press_key does not send \(label): it includes \(blocked.name), which quits, closes, hides, or leaves Safari, switches Spaces, shows the desktop, takes a screenshot, opens a file or print sheet, or locks, logs out, or empties the Trash, and a real key event cannot be contained to the page. Use close_tab to close a tab, or omit native to send the key to the page only.")
     }
 
-    nonisolated static func pressNativeKey(_ combo: NativeKeyCombo, deadline: Double? = nil) throws -> String {
-        let source = try nativeEventSource(deadline: deadline)
-        try postKey(code: combo.keyCode, flags: combo.flags, source: source)
-        Thread.sleep(forTimeInterval: 0.005)
-        try ensureSafariIsFrontmost(eventsAlreadySent: true)
+    /// Off the actor like the typing loop: the pause is a suspension, so the
+    /// caller's executor is free while it lasts.
+    nonisolated static func pressNativeKey(
+        _ combo: NativeKeyCombo,
+        deadline: Double? = nil,
+        keyboard: NativeKeyboard? = nil
+    ) async throws -> String {
+        try checkNativeDeadline(deadline)
+        let keyboard = try keyboard ?? NativeKeyboard.live()
+        guard keyboard.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
+        }
+        try keyboard.postKey(combo.keyCode, combo.flags)
+        try await nativeKeystrokePause()
+        guard keyboard.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
         return "Pressed \(combo.label) with native input"
     }
 
@@ -734,15 +740,29 @@ extension SafariMCPServer {
         )
     }
 
-    // Deadline check, frontmost guard, and event source in one call; every
-    // native posting path starts here.
-    private nonisolated static func nativeEventSource(deadline: Double? = nil) throws -> CGEventSource {
-        try checkNativeDeadline(deadline)
-        try ensureSafariIsFrontmost()
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
-            throw nativeInputUnavailable("macOS could not create a native input event.")
+    /// What native pointer movement needs from the machine, so the paths below
+    /// can be driven by a fake in tests without the pointer moving.
+    struct NativePointer: Sendable {
+        let safariIsFrontmost: @Sendable () -> Bool
+        let safariProcessIDs: @Sendable () -> Set<pid_t>
+        /// Where the pointer is now, when macOS will say.
+        let location: @Sendable () -> CGPoint?
+        let post: @Sendable (CGEventType, CGPoint) throws -> Void
+
+        static func live() throws -> NativePointer {
+            guard let source = CGEventSource(stateID: .hidSystemState) else {
+                throw nativeInputUnavailable("macOS could not create a native input event.")
+            }
+            let box = EventSourceBox(source)
+            return NativePointer(
+                safariIsFrontmost: { SafariMCPServer.safariIsActive() },
+                safariProcessIDs: {
+                    Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").map(\.processIdentifier))
+                },
+                location: { CGEvent(source: nil)?.location },
+                post: { try SafariMCPServer.postMouse(type: $0, at: $1, source: box.source) }
+            )
         }
-        return source
     }
 
     /// One on-screen window as the window server reports it. `bounds` are in
@@ -819,26 +839,48 @@ extension SafariMCPServer {
         )
     }
 
-    private nonisolated static func ensurePointersAreOverSafari(_ points: [CGPoint], windows: NativeWindowLister) throws {
+    private nonisolated static func ensurePointersAreOverSafari(
+        _ points: [CGPoint],
+        windows: NativeWindowLister,
+        pointer: NativePointer
+    ) throws {
         let windows = windows()
-        let safariProcessIDs = Set(
-            NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").map(\.processIdentifier)
-        )
+        let safariProcessIDs = pointer.safariProcessIDs()
         for point in points {
             try ensurePointerIsOverSafari(at: point, windows: windows, safariProcessIDs: safariProcessIDs)
         }
     }
 
+    /// The deadline, then Safari being in front, then the pointer. Every native
+    /// pointer path starts here.
+    private nonisolated static func startNativePointer(
+        deadline: Double?,
+        pointer: NativePointer?
+    ) throws -> NativePointer {
+        try checkNativeDeadline(deadline)
+        let pointer = try pointer ?? NativePointer.live()
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
+        }
+        return pointer
+    }
+
+    /// Both move and drag run off the actor, like the typing loop: a drag takes
+    /// about six tenths of a second of waiting, which blocking would have spent
+    /// holding every other call on the server.
     nonisolated static func moveNativePointer(
         to target: CGPoint,
         deadline: Double? = nil,
-        windows: NativeWindowLister = liveNativeWindows
-    ) throws -> String {
-        let source = try nativeEventSource(deadline: deadline)
-        try ensurePointersAreOverSafari([target], windows: windows)
-        let start = CGEvent(source: nil)?.location ?? target
-        try postPointerPath(from: start, to: target, mouseType: .mouseMoved, source: source)
-        try ensureSafariIsFrontmost(eventsAlreadySent: true)
+        windows: NativeWindowLister = liveNativeWindows,
+        pointer: NativePointer? = nil
+    ) async throws -> String {
+        let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer)
+        let start = pointer.location() ?? target
+        try await postPointerPath(from: start, to: target, mouseType: .mouseMoved, pointer: pointer)
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
         return "Moved pointer to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
@@ -846,30 +888,40 @@ extension SafariMCPServer {
         from start: CGPoint,
         to target: CGPoint,
         deadline: Double? = nil,
-        windows: NativeWindowLister = liveNativeWindows
-    ) throws -> String {
-        let source = try nativeEventSource(deadline: deadline)
+        windows: NativeWindowLister = liveNativeWindows,
+        pointer: NativePointer? = nil
+    ) async throws -> String {
+        let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
         // Both ends up front: a drag refused at its destination would otherwise
         // already have the button down at its source.
-        try ensurePointersAreOverSafari([start, target], windows: windows)
-        try postMouse(type: .mouseMoved, at: start, source: source)
-        Thread.sleep(forTimeInterval: 0.05)
-        try postMouse(type: .leftMouseDown, at: start, source: source)
-        // Pointer-sensor drag libraries arm on a delay or distance after
-        // mousedown; moving immediately can start a text selection instead.
-        Thread.sleep(forTimeInterval: 0.15)
+        try ensurePointersAreOverSafari([start, target], windows: windows, pointer: pointer)
+        try pointer.post(.mouseMoved, start)
+        try await nativePointerPause(0.05)
+        try pointer.post(.leftMouseDown, start)
         do {
+            // Pointer-sensor drag libraries arm on a delay or distance after
+            // mousedown; moving immediately can start a text selection instead.
+            try await nativePointerPause(0.15)
             try checkNativeDeadline(deadline)
-            try postPointerPath(from: start, to: target, mouseType: .leftMouseDragged, source: source, maxSteps: 16, interval: 0.02)
+            try await postPointerPath(
+                from: start, to: target, mouseType: .leftMouseDragged,
+                pointer: pointer, maxSteps: 16, interval: 0.02
+            )
+            try await nativePointerPause(0.05)
         } catch {
-            // Never leave the OS button down.
-            try? postMouse(type: .leftMouseUp, at: start, source: source)
+            // Never leave the OS button down, including when the call is cancelled.
+            try? pointer.post(.leftMouseUp, start)
             throw error
         }
-        Thread.sleep(forTimeInterval: 0.05)
-        try postMouse(type: .leftMouseUp, at: target, source: source)
-        try ensureSafariIsFrontmost(eventsAlreadySent: true)
+        try pointer.post(.leftMouseUp, target)
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
         return "Dragged from (\(Int(start.x)), \(Int(start.y))) to (\(Int(target.x)), \(Int(target.y))) with native input"
+    }
+
+    private nonisolated static func nativePointerPause(_ seconds: Double) async throws {
+        try await Task.sleep(for: .seconds(seconds))
     }
 
     /// A mouse event, not yet posted.
@@ -908,10 +960,10 @@ extension SafariMCPServer {
         from start: CGPoint,
         to target: CGPoint,
         mouseType: CGEventType,
-        source: CGEventSource,
+        pointer: NativePointer,
         maxSteps: Int = 10,
         interval: TimeInterval = 0.015
-    ) throws {
+    ) async throws {
         let distance = hypot(target.x - start.x, target.y - start.y)
         let count = max(1, min(maxSteps, Int(distance / 8)))
         for step in 1...count {
@@ -920,8 +972,8 @@ extension SafariMCPServer {
                 x: start.x + (target.x - start.x) * t,
                 y: start.y + (target.y - start.y) * t
             )
-            try postMouse(type: mouseType, at: point, source: source)
-            Thread.sleep(forTimeInterval: interval)
+            try pointer.post(mouseType, point)
+            try await nativePointerPause(interval)
         }
     }
 }

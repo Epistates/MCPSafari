@@ -617,7 +617,7 @@ actor SafariMCPServer {
         }
         let combo = try Self.nativeKeyCombo(Self.requiredKey(args))
         return try await runNativeAction("native_press_key", args) { _ in
-            try Self.pressNativeKey(combo, deadline: Self.numberValue(args["_batchDeadline"]))
+            try await Self.pressNativeKey(combo, deadline: Self.numberValue(args["_batchDeadline"]))
         }
     }
 
@@ -629,7 +629,7 @@ actor SafariMCPServer {
         }
         return try await runNativeAction("native_pointer", args) { preparation in
             let targets = try Self.nativePointerTargets(from: preparation.data)
-            _ = try Self.moveNativePointer(to: targets.from, deadline: Self.numberValue(args["_batchDeadline"]))
+            _ = try await Self.moveNativePointer(to: targets.from, deadline: Self.numberValue(args["_batchDeadline"]))
             return "Hovered with native input; pointer at (\(Int(targets.from.x)), \(Int(targets.from.y)))"
         }
     }
@@ -643,7 +643,7 @@ actor SafariMCPServer {
             guard let to = targets.to else {
                 throw ToolInputError("drag requires toUid or toSelector")
             }
-            return try Self.dragNativePointer(from: targets.from, to: to, deadline: Self.numberValue(args["_batchDeadline"]))
+            return try await Self.dragNativePointer(from: targets.from, to: to, deadline: Self.numberValue(args["_batchDeadline"]))
         }
     }
 

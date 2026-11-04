@@ -5,7 +5,7 @@ import Testing
 /// anything was delivered, and the difference decides whether an agent is
 /// invited to send the whole input a second time.
 ///
-/// Driving this through `ensureSafariIsFrontmost` would test whichever
+/// Driving this through the live frontmost check would test whichever
 /// application happened to be frontmost on the machine running the suite, so
 /// the decision itself is what gets exercised.
 struct NativeFocusFailureTests {
