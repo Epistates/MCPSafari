@@ -460,7 +460,7 @@ actor SafariMCPServer {
 
     private func handleFind(_ args: [String: Value]) async throws -> CallTool.Result {
         let response = try await send("find", args, params: try Self.findParams(args))
-        return textResult(response, as: "matches")
+        return findResult(response)
     }
 
     /// Reads the caller's local files, then runs the interaction with them attached.

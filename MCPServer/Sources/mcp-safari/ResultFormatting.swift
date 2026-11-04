@@ -58,6 +58,29 @@ extension SafariMCPServer {
         )
     }
 
+    func findResult(_ response: BridgeResponse) -> CallTool.Result {
+        guard response.success else {
+            return Self.failureResult(response.toolFailure)
+        }
+        return CallTool.Result(
+            content: [Self.textContent(responseText(response))],
+            structuredContent: Optional(Self.findStructuredContent(response.data)),
+            isError: false
+        )
+    }
+
+    /// `matches` is always the list. The extension sends the list alone when it
+    /// searched every frame and `{matches, unreachableFrames}` when it could not,
+    /// and wrapping the second shape like the first nested the list a level down
+    /// exactly when the caller most needed to notice the missing frames.
+    static func findStructuredContent(_ data: AnyCodable?) -> Value {
+        let payload = structuredPayload(data)
+        if case .object(let fields) = payload, case .array? = fields["matches"] {
+            return .object(fields.filter { $0.key == "matches" || $0.key == "unreachableFrames" })
+        }
+        return .object(["matches": payload])
+    }
+
     /// background.js stringifies anything that is not already a string, so a
     /// listing reaches the server as JSON text. Parsing it back means the
     /// structured half is data rather than a string that happens to contain data,

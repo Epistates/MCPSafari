@@ -184,7 +184,7 @@ A frame that will not answer at all is named in `unreachableFrames` on the root 
 
 If Safari cannot list the page's frames at all, the snapshot still reads the top frame and says so with one entry in the same list, `{"frameId": null, "origin": null, "reason": "frame_enumeration_failed"}`.
 
-`find` says the same thing when it could not search every frame. A search that reached them all returns the list of matches. One that left frames out returns an object instead, with the list as `matches` and the frames it missed as `unreachableFrames`, in the entries above, so a short list is not mistaken for a complete one.
+`find` says the same thing when it could not search every frame. Its structured result always carries the list as `matches`. A search that left frames out adds `unreachableFrames` beside it, in the entries above, so a short list is not mistaken for a complete one.
 
 Three limits are worth knowing. Native input (`native: true`) reaches the top frame only, because a subframe measures elements in its own viewport and cannot read a cross-origin parent's offset; it fails with `invalid_input` rather than clicking the wrong point. `screenshot` refuses a `uid` or `selector` inside an iframe for the same reason. `read_console` and `read_network` report the top frame only.
 

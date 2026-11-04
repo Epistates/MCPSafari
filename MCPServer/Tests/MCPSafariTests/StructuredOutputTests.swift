@@ -31,6 +31,24 @@ struct StructuredOutputTests {
         #expect(root["children"]?.arrayValue?.first?.objectValue?["uid"]?.stringValue == "f0e6")
     }
 
+    /// `find` that searched every frame sends the list alone, and one that left
+    /// frames out sends the list with the frames it missed. Either way a caller
+    /// reads the list at `matches`, and the missed frames sit beside it.
+    @Test func findKeepsMatchesAtTheTopWhetherOrNotFramesWereMissed() throws {
+        let complete = SafariMCPServer.findStructuredContent(AnyCodable(#"[{"uid":"f0e6"}]"#))
+        let completeObject = try #require(complete.objectValue)
+        #expect(completeObject["matches"]?.arrayValue?.first?.objectValue?["uid"]?.stringValue == "f0e6")
+        #expect(completeObject["unreachableFrames"] == nil)
+
+        let partial = SafariMCPServer.findStructuredContent(AnyCodable(
+            #"{"matches":[{"uid":"f0e6"}],"unreachableFrames":[{"frameId":5,"origin":"https://ads.example"}]}"#
+        ))
+        let partialObject = try #require(partial.objectValue)
+        #expect(partialObject["matches"]?.arrayValue?.first?.objectValue?["uid"]?.stringValue == "f0e6")
+        #expect(partialObject["matches"]?.objectValue == nil)
+        #expect(partialObject["unreachableFrames"]?.arrayValue?.first?.objectValue?["frameId"] == .int(5))
+    }
+
     /// `read_page` with `format: "text"` returns whatever the page says, and a
     /// page is free to say something that parses as JSON.
     @Test func pageTextStaysText() {
