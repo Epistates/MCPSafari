@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("input")) return;
     mcp.loaded.add("input");
-    const { assertPageFocused, assertReachable, clipText, deepQueryFirst, elementAtPoint, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { assertPageFocused, assertReachable, clipText, deepQueryFirst, elementAtPoint, eventInit, firesKeypress, keyboardEvent, mouseEvent, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Click ───────────────────────────────────────────────────────
 
@@ -48,8 +48,6 @@
         const { x, y } = point;
 
         const eventOpts = {
-            bubbles: true,
-            cancelable: true,
             view: window,
             clientX: x,
             clientY: y,
@@ -64,21 +62,21 @@
         // re-toggling what pointerdown just opened.
         const press = () => {
             const pressed = element.dispatchEvent(pointerEvent("pointerdown", { ...pointerOpts, buttons: 1 }));
-            if (pressed && element.dispatchEvent(new MouseEvent("mousedown", { ...eventOpts, buttons: 1 }))) {
+            if (pressed && element.dispatchEvent(mouseEvent("mousedown", { ...eventOpts, buttons: 1 }))) {
                 element.focus();
             }
             element.dispatchEvent(pointerEvent("pointerup", pointerOpts));
-            if (pressed) element.dispatchEvent(new MouseEvent("mouseup", eventOpts));
-            element.dispatchEvent(new MouseEvent("click", eventOpts));
+            if (pressed) element.dispatchEvent(mouseEvent("mouseup", eventOpts));
+            element.dispatchEvent(mouseEvent("click", eventOpts));
         };
 
         element.dispatchEvent(pointerEvent("pointerover", pointerOpts));
-        element.dispatchEvent(new MouseEvent("mouseover", eventOpts));
+        element.dispatchEvent(mouseEvent("mouseover", eventOpts));
         press();
 
         if (doubleClick) {
             press();
-            element.dispatchEvent(new MouseEvent("dblclick", eventOpts));
+            element.dispatchEvent(mouseEvent("dblclick", eventOpts));
         }
     }
 
@@ -107,8 +105,8 @@
         }
 
         // Dispatch events that React and other frameworks listen for
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("input", eventInit("input")));
+        el.dispatchEvent(new Event("change", eventInit("change")));
     }
 
     // Model-backed editors (ProseMirror, Lexical, Slate) apply edits from the
@@ -138,15 +136,14 @@
         // execCommand returns false when the edit is refused (e.g. a canceled
         // beforeinput); synthesize the same edit shape ourselves.
         const detail = {
-            bubbles: true,
             inputType: value === "" ? "deleteContentBackward" : "insertText",
             data: value || null,
         };
-        const before = new InputEvent("beforeinput", { ...detail, cancelable: true });
+        const before = new InputEvent("beforeinput", eventInit("beforeinput", detail));
         if (el.dispatchEvent(before)) {
             el.textContent = append ? el.textContent + value : value;
         }
-        el.dispatchEvent(new InputEvent("input", detail));
+        el.dispatchEvent(new InputEvent("input", eventInit("input", detail)));
     }
 
     // ─── Type Text ───────────────────────────────────────────────────
@@ -242,16 +239,14 @@
             const keyOpts = {
                 key: params.submitKey,
                 code: params.submitKey,
-                bubbles: true,
-                cancelable: true,
             };
             // A page that handles the key cancels it, and the browser then does
             // nothing more with it. That includes the submission below.
-            let handled = !el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
+            let handled = !el.dispatchEvent(keyboardEvent("keydown", keyOpts));
             if (!handled && firesKeypress(params.submitKey, keyOpts)) {
-                handled = !el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
+                handled = !el.dispatchEvent(keyboardEvent("keypress", keyOpts));
             }
-            el.dispatchEvent(new KeyboardEvent("keyup", keyOpts));
+            el.dispatchEvent(keyboardEvent("keyup", keyOpts));
 
             if (params.submitKey === "Enter" && !handled) submitImplicitly(el);
         }
@@ -443,8 +438,8 @@
         } else {
             option.selected = true;
         }
-        select.dispatchEvent(new Event("input", { bubbles: true }));
-        select.dispatchEvent(new Event("change", { bubbles: true }));
+        select.dispatchEvent(new Event("input", eventInit("input")));
+        select.dispatchEvent(new Event("change", eventInit("change")));
     }
 
 

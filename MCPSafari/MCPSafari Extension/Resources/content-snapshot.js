@@ -16,9 +16,13 @@
     // call. Cut it and say so, rather than returning a clipped page that reads
     // like the whole thing.
     const MAX_PAGE_CHARS = 100000;
+    // What a caller may ask for. The server brings `maxChars` down to this
+    // before it sends, so it only matters to a caller that did not go through
+    // the server: the limit has to hold here too.
+    const MAX_REQUESTED_PAGE_CHARS = 1000000;
 
     function clampText(value, limit) {
-        const max = limit > 0 ? limit : MAX_PAGE_CHARS;
+        const max = limit > 0 ? Math.min(limit, MAX_REQUESTED_PAGE_CHARS) : MAX_PAGE_CHARS;
         if (value.length <= max) return value;
         const kept = clipText(value, max);
         return `${kept}\n\n[truncated: ${value.length} characters total, `
@@ -40,8 +44,11 @@
         }
     }
 
-    function getPageText() {
-        return document.body ? document.body.innerText : "";
+    // No tool sends this action today, so the server's clamp does not stand in
+    // front of it. It reads the page as `read_page` text does, with the same
+    // default, ceiling and truncation notice.
+    function getPageText(params = {}) {
+        return readPage({ format: "text", maxChars: params.maxChars });
     }
 
     // ─── Shadow DOM Traversal ────────────────────────────────────────

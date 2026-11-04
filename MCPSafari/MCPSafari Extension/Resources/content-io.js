@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("io")) return;
     mcp.loaded.add("io");
-    const { deepQueryFirst, nextRequestId, requestMainWorld, resolveElement, toolError } = mcp;
+    const { deepQueryFirst, dragEvent, eventInit, nextRequestId, requestMainWorld, resolveElement, toolError } = mcp;
 
     // ─── File Attachment ─────────────────────────────────────────────
 
@@ -62,8 +62,8 @@
         if (input.disabled) throw new Error("File input is disabled");
 
         input.files = transferFor(files).files;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.dispatchEvent(new Event("input", eventInit("input")));
+        input.dispatchEvent(new Event("change", eventInit("change")));
 
         return `Attached ${describeFiles(files)} to file input`;
     }
@@ -102,8 +102,6 @@
         target.scrollIntoView({ behavior: "instant", block: "center" });
         const rect = target.getBoundingClientRect();
         const baseOpts = {
-            bubbles: true,
-            cancelable: true,
             view: window,
             clientX: rect.left + rect.width / 2,
             clientY: rect.top + rect.height / 2,
@@ -111,7 +109,7 @@
         };
 
         for (const type of ["dragenter", "dragover", "drop"]) {
-            target.dispatchEvent(new DragEvent(type, baseOpts));
+            target.dispatchEvent(dragEvent(type, baseOpts));
         }
     }
 

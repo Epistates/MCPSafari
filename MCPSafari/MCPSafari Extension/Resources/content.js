@@ -39,7 +39,7 @@
             case "read_page":
                 return readPage(params);
             case "get_page_text":
-                return getPageText();
+                return getPageText(params);
             case "snapshot":
                 return takeSnapshot(params);
             case "find":

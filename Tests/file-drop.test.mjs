@@ -167,6 +167,24 @@ test("drop finds a target inside an open shadow root, however deeply nested", ()
     assert.deepEqual(target.events.map((event) => event.type), ["dragenter", "dragover", "drop"]);
 });
 
+test("a drop inside a shadow root reaches a listener on its host", () => {
+    // The drop zone is in a component's shadow root; the page's handler is on
+    // the host. The events get across only if they are composed.
+    const reachedHost = [];
+    const target = makeTarget();
+    target.dispatchEvent = function (event) {
+        this.events.push(event);
+        if (event.bubbles && event.composed) reachedHost.push(event.type);
+        return true;
+    };
+    const request = loadFileDrop({ target });
+
+    request({ marker: "marker-1", files: [PNG] });
+
+    assert.deepEqual(reachedHost, ["dragenter", "dragover", "drop"]);
+    assert.ok(target.events.every((event) => event.bubbles && event.cancelable));
+});
+
 test("drop reports a missing target instead of dispatching", () => {
     const target = makeTarget();
     const request = loadFileDrop({ target });

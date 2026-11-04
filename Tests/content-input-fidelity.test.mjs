@@ -519,6 +519,21 @@ function dragHarness({ throwOn, fromRect, toRect, coverFrom, coverTo } = {}) {
     return { fromEvents, toEvents, scrolled, call };
 }
 
+test("every drag event is composed, and only dragend cannot be cancelled", async () => {
+    const { fromEvents, toEvents, call } = dragHarness();
+    const done = call("drag", { fromSelector: "#from", toSelector: "#to" });
+    setTimeout(() => FakeMutationObserver.active?.mutate(), 100);
+    await done;
+
+    const events = [...fromEvents, ...toEvents];
+    assert.ok(events.some((event) => event.type === "drop"));
+    for (const event of events) {
+        assert.equal(event.composed, true, `${event.type} is composed`);
+        assert.equal(event.bubbles, true, `${event.type} bubbles`);
+        assert.equal(event.cancelable, event.type !== "dragend", `${event.type} cancelable`);
+    }
+});
+
 test("drag moves along an interpolated pointer path and completes at the target", async () => {
     const { fromEvents, toEvents, call } = dragHarness();
     const done = call("drag", { fromSelector: "#from", toSelector: "#to" });

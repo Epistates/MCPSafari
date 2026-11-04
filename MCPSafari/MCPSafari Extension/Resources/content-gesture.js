@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("gesture")) return;
     mcp.loaded.add("gesture");
-    const { aimPoint, assertPageFocused, assertReachable, elementAtPoint, firesKeypress, keyCode, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { aimPoint, assertPageFocused, assertReachable, dragEvent, elementAtPoint, firesKeypress, keyboardEvent, keyCode, mouseEvent, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Scroll ──────────────────────────────────────────────────────
 
@@ -65,8 +65,6 @@
         const eventOpts = {
             key,
             code: keyCode(key),
-            bubbles: true,
-            cancelable: true,
             ctrlKey: modifiers.includes("control") || modifiers.includes("ctrl"),
             shiftKey: modifiers.includes("shift"),
             altKey: modifiers.includes("alt") || modifiers.includes("option"),
@@ -74,11 +72,11 @@
         };
 
         const target = document.activeElement || document.body;
-        target.dispatchEvent(new KeyboardEvent("keydown", eventOpts));
+        target.dispatchEvent(keyboardEvent("keydown", eventOpts));
         if (firesKeypress(key, eventOpts)) {
-            target.dispatchEvent(new KeyboardEvent("keypress", eventOpts));
+            target.dispatchEvent(keyboardEvent("keypress", eventOpts));
         }
-        target.dispatchEvent(new KeyboardEvent("keyup", eventOpts));
+        target.dispatchEvent(keyboardEvent("keyup", eventOpts));
 
         return `Pressed ${keyString}`;
     }
@@ -118,8 +116,6 @@
         }
 
         const eventOpts = {
-            bubbles: true,
-            cancelable: true,
             view: window,
             clientX: x,
             clientY: y,
@@ -128,18 +124,16 @@
         };
         const pointerOpts = { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true };
 
-        // Enter events do not bubble and cannot be cancelled: a page that
-        // listens for them on an ancestor expects the ancestor's own entry, and
-        // a bubbling one would fire it for every child the pointer crossed.
-        const enterOpts = { bubbles: false, cancelable: false };
-
-        // Real pointer order: pointer family first, over before enter.
+        // Real pointer order: pointer family first, over before enter. The enter
+        // events neither bubble nor can be cancelled, which the event helpers
+        // apply: a bubbling one would fire an ancestor's listener for every
+        // child the pointer crossed.
         el.dispatchEvent(pointerEvent("pointerover", pointerOpts));
-        el.dispatchEvent(pointerEvent("pointerenter", { ...pointerOpts, ...enterOpts }));
-        el.dispatchEvent(new MouseEvent("mouseover", eventOpts));
-        el.dispatchEvent(new MouseEvent("mouseenter", { ...eventOpts, ...enterOpts }));
+        el.dispatchEvent(pointerEvent("pointerenter", pointerOpts));
+        el.dispatchEvent(mouseEvent("mouseover", eventOpts));
+        el.dispatchEvent(mouseEvent("mouseenter", eventOpts));
         el.dispatchEvent(pointerEvent("pointermove", pointerOpts));
-        el.dispatchEvent(new MouseEvent("mousemove", eventOpts));
+        el.dispatchEvent(mouseEvent("mousemove", eventOpts));
 
         return `Hovered over <${el.tagName.toLowerCase()}> (synthetic events; CSS :hover is not applied)`;
     }
@@ -180,7 +174,7 @@
         const { x: fromX, y: fromY } = from;
         const { x: toX, y: toY } = to;
 
-        const baseOpts = { bubbles: true, cancelable: true, view: window };
+        const baseOpts = { view: window };
         const pointerBase = { ...baseOpts, pointerId: 1, pointerType: "mouse", isPrimary: true };
 
         let mutated = false;
@@ -199,7 +193,7 @@
         let pending = [];
         try {
             fromEl.dispatchEvent(pointerEvent("pointerdown", { ...pointerBase, clientX: fromX, clientY: fromY, button: 0, buttons: 1 }));
-            fromEl.dispatchEvent(new MouseEvent("mousedown", { ...baseOpts, clientX: fromX, clientY: fromY, button: 0, buttons: 1 }));
+            fromEl.dispatchEvent(mouseEvent("mousedown", { ...baseOpts, clientX: fromX, clientY: fromY, button: 0, buttons: 1 }));
 
             // Distance-threshold drag libraries (dnd-kit PointerSensor) only start
             // a drag after real movement; a single jump at the source never begins one.
@@ -209,19 +203,19 @@
                 const x = fromX + ((toX - fromX) * i) / steps;
                 const y = fromY + ((toY - fromY) * i) / steps;
                 fromEl.dispatchEvent(pointerEvent("pointermove", { ...pointerBase, clientX: x, clientY: y, button: 0, buttons: 1 }));
-                fromEl.dispatchEvent(new MouseEvent("mousemove", { ...baseOpts, clientX: x, clientY: y, button: 0, buttons: 1 }));
+                fromEl.dispatchEvent(mouseEvent("mousemove", { ...baseOpts, clientX: x, clientY: y, button: 0, buttons: 1 }));
                 if (i === 1) {
-                    fromEl.dispatchEvent(new DragEvent("dragstart", { ...baseOpts, clientX: fromX, clientY: fromY, dataTransfer }));
+                    fromEl.dispatchEvent(dragEvent("dragstart", { ...baseOpts, clientX: fromX, clientY: fromY, dataTransfer }));
                 }
                 await new Promise((resolve) => setTimeout(resolve, 25));
             }
 
-            toEl.dispatchEvent(new DragEvent("dragenter", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
-            toEl.dispatchEvent(new DragEvent("dragover", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
-            toEl.dispatchEvent(new DragEvent("drop", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
+            toEl.dispatchEvent(dragEvent("dragenter", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
+            toEl.dispatchEvent(dragEvent("dragover", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
+            toEl.dispatchEvent(dragEvent("drop", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
             toEl.dispatchEvent(pointerEvent("pointerup", { ...pointerBase, clientX: toX, clientY: toY, button: 0, buttons: 0 }));
-            toEl.dispatchEvent(new MouseEvent("mouseup", { ...baseOpts, clientX: toX, clientY: toY, button: 0, buttons: 0 }));
-            fromEl.dispatchEvent(new DragEvent("dragend", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
+            toEl.dispatchEvent(mouseEvent("mouseup", { ...baseOpts, clientX: toX, clientY: toY, button: 0, buttons: 0 }));
+            fromEl.dispatchEvent(dragEvent("dragend", { ...baseOpts, clientX: toX, clientY: toY, dataTransfer }));
 
             // A gesture nothing reacted to is a silent no-op: give the page a
             // frame to respond, then fail rather than claim a drag that never started.

@@ -62,9 +62,48 @@
         );
     }
 
+    // Whether an event of this type bubbles, can be cancelled, and crosses a
+    // shadow boundary is the browser's to say, per UI Events and HTML, and a
+    // page's listeners are written against that. A synthetic event that is not
+    // composed stops at the edge of the shadow root it was dispatched in, so a
+    // listener on the host, or anywhere outside, never sees a click that a real
+    // one would have reached it with. Every event the content scripts dispatch
+    // takes its flags from here, and these tables win over the caller's.
+    //
+    // Enter, leave and focus events do not bubble, and cannot be cancelled.
+    // Neither can `input`, `change`, `dragend` and `dragleave`. Everything else
+    // is cancelable, and only `change` is not composed.
+    const NON_BUBBLING_EVENTS = new Set(["pointerenter", "pointerleave", "mouseenter", "mouseleave", "focus", "blur"]);
+    const NON_CANCELABLE_EVENTS = new Set([
+        "pointerenter", "pointerleave", "mouseenter", "mouseleave", "focus", "blur",
+        "input", "change", "dragend", "dragleave",
+    ]);
+    const NON_COMPOSED_EVENTS = new Set(["change"]);
+
+    function eventInit(type, opts = {}) {
+        return {
+            ...opts,
+            bubbles: !NON_BUBBLING_EVENTS.has(type),
+            cancelable: !NON_CANCELABLE_EVENTS.has(type),
+            composed: !NON_COMPOSED_EVENTS.has(type),
+        };
+    }
+
     function pointerEvent(type, opts) {
         const Ctor = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
-        return new Ctor(type, opts);
+        return new Ctor(type, eventInit(type, opts));
+    }
+
+    function mouseEvent(type, opts) {
+        return new MouseEvent(type, eventInit(type, opts));
+    }
+
+    function dragEvent(type, opts) {
+        return new DragEvent(type, eventInit(type, opts));
+    }
+
+    function keyboardEvent(type, opts) {
+        return new KeyboardEvent(type, eventInit(type, opts));
     }
 
     // Every cut of page-controlled text goes through here. A plain slice ends
@@ -277,6 +316,6 @@
 
     window.__mcpSafari = Object.assign(
         { loaded: new Set(["core"]) },
-        { assertPageFocused, clipText, escapeCssString, firesKeypress, getElementByUid, getUid, keyCode, nextRequestId, pointerEvent, requestMainWorld, setFrameId, toolError }
+        { assertPageFocused, clipText, dragEvent, escapeCssString, eventInit, firesKeypress, getElementByUid, getUid, keyboardEvent, keyCode, mouseEvent, nextRequestId, pointerEvent, requestMainWorld, setFrameId, toolError }
     );
 })();

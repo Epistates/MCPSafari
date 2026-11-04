@@ -166,6 +166,8 @@ A native `click`, `hover`, or `drag` (`native: true`) makes the same check for e
 
 Every targeting strategy reaches into open shadow roots, so pages built on web components (Lit, Stencil, Salesforce Lightning, most design-system elements) are readable and clickable. `snapshot` follows the flattened tree the user actually sees, so content passed into a `<slot>` is reported once, where the slot places it.
 
+The events the interaction tools dispatch carry the flags a browser's own do: they bubble, can be cancelled, and cross shadow boundaries (`composed`), except where the UI Events and HTML specs say otherwise. `pointerenter` and `mouseenter` do not bubble, `input`, `change` and `dragend` cannot be cancelled, and `change` is not composed. So a listener on a shadow host, or outside the component, sees a click on a button inside it as it would a real one.
+
 Closed shadow roots are unreadable by any API. Rather than reporting such an element as empty, `snapshot` marks it `"shadowClosed": true` so a missing control is distinguishable from one the tools cannot see.
 
 ### Iframes
