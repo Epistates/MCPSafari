@@ -345,11 +345,7 @@ async function handleNativePointer(params) {
 // Object keys are strings, so ports come back as text and are turned into
 // numbers again on restore.
 function persistPinnedTabs() {
-    try {
-        if (browser.storage && browser.storage.session) {
-            browser.storage.session.set({ pinnedTabs: Object.fromEntries(pinnedTabs) });
-        }
-    } catch (_) { /* storage may not be available */ }
+    writeStorage("session", { pinnedTabs: Object.fromEntries(pinnedTabs) });
 }
 
 // True only while a read that outran its deadline is still in flight. Writing
@@ -358,11 +354,7 @@ let grantedOriginsReadPending = false;
 
 function persistGrantedOrigins() {
     if (grantedOriginsReadPending) return;
-    try {
-        if (browser.storage && browser.storage.local) {
-            browser.storage.local.set({ grantedOrigins: [...grantedOrigins] });
-        }
-    } catch (_) { /* storage may not be available */ }
+    writeStorage("local", { grantedOrigins: [...grantedOrigins] });
 }
 
 // Runs before the bridge connects, so it is ahead of the first `tabs_query`

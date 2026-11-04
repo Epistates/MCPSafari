@@ -275,6 +275,17 @@ function rememberOriginAccess(origin, granted) {
     if (!known || evicted) persistGrantedOrigins();
 }
 
+// What is kept in storage is a convenience across a suspension, so a write that
+// fails (a quota, an I/O error, no storage at all) is dropped. `set` returns a
+// promise, so a try/catch around the call sees none of that; the rejection has
+// to be caught on the promise or it surfaces as an unhandled one.
+function writeStorage(area, values) {
+    try {
+        const storage = browser.storage && browser.storage[area];
+        if (storage) Promise.resolve(storage.set(values)).catch(() => {});
+    } catch (_) { /* storage may not be available */ }
+}
+
 function failureResponse(id, error, resolvedTabId = null) {
     return {
         id,

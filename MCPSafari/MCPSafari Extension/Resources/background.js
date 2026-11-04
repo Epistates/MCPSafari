@@ -170,11 +170,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 function persistManualPorts() {
-    try {
-        if (browser.storage && browser.storage.local) {
-            browser.storage.local.set({ manualPorts: [...manualPorts] });
-        }
-    } catch (_) { /* ignore */ }
+    writeStorage("local", { manualPorts: [...manualPorts] });
 }
 
 // ─── Service Worker Keepalive ─────────────────────────────────────────

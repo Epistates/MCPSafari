@@ -9,7 +9,7 @@ const source = backgroundScriptSource();
 // The tab in these tests sits on a site the user has not granted: the access
 // probe is refused. Selecting it only records which tab later calls mean, so it
 // must work anyway, and the first call that reads the page must still refuse.
-function loadBackground({ granted = false, getTab, activeCalls = [], session = {} } = {}) {
+function loadBackground({ granted = false, getTab, activeCalls = [], session = {}, rejectWrites = false } = {}) {
     const stored = {};
     const tab = { id: 7, windowId: 3, active: false, url: "https://ungranted.example/account?token=abc", title: "Your account" };
     // The one the user is looking at, which no pin is on.
@@ -32,8 +32,15 @@ function loadBackground({ granted = false, getTab, activeCalls = [], session = {
             },
         },
         storage: {
-            local: { get: async () => ({}), set() {} },
-            session: { get: async () => session, set: (values) => { Object.assign(stored, values); }, remove: async () => {} },
+            local: { get: async () => ({}), set: () => (rejectWrites ? Promise.reject(new Error("quota exceeded")) : undefined) },
+            session: {
+                get: async () => session,
+                set: (values) => {
+                    if (rejectWrites) return Promise.reject(new Error("quota exceeded"));
+                    Object.assign(stored, values);
+                },
+                remove: async () => {},
+            },
         },
         tabs: {
             get: getTab || (async (id) => {
@@ -173,6 +180,31 @@ test("a lookup parked behind a dialog does not stop the pin", async () => {
     assert.equal(response.success, true);
     assert.equal(JSON.parse(response.data).access, "not_granted");
     assert.equal(harness.evaluate("pinnedTabs.get(8089) ?? null"), 7);
+});
+
+// ─── Storage that refuses a write ────────────────────────────────────
+
+test("a storage write that is rejected does not become an unhandled rejection", async () => {
+    // `storage.*.set` returns a promise, so the try/catch around the call saw
+    // nothing of a quota or an I/O failure. The write is a convenience across a
+    // suspension; losing it must not be an error that surfaces anywhere else.
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+        const harness = loadBackground({ granted: true, rejectWrites: true });
+
+        const response = await harness.request("select_tab", { tabId: 7, bringToFront: false });
+        harness.evaluate("persistManualPorts()");
+        harness.evaluate('rememberOriginAccess("https://granted.example", true)');
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+
+        assert.equal(response.success, true, "the pin itself still worked");
+        assert.deepEqual(unhandled.map(String), []);
+    } finally {
+        process.off("unhandledRejection", onUnhandled);
+    }
 });
 
 // ─── Two servers ─────────────────────────────────────────────────────
