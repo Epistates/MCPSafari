@@ -152,6 +152,8 @@ Targeting options vary by tool. `click` accepts all four:
 | **Text** | `text: "Sign In"` | Interactive elements are ranked higher |
 | **Coordinates** | `x: 100, y: 200` | Last resort — click at exact position |
 
+Text is matched against what a user sees, not against the page source. Hidden content (`hidden`, `display: none`, `visibility: hidden`, `opacity: 0`, `aria-hidden`) is skipped along with everything inside it, as are `<script>`, `<style>` and `<template>`, form controls contribute no text, and block-level neighbours are separate words. This is the same rule the snapshot uses to decide what to show, and `find` by text or role follows it too, so `<button>Cancel<span hidden>Delete account</span></button>` is not found by "Delete account". `find` by `selector` is a plain CSS query and still returns hidden elements.
+
 Text resolves to one element or fails. An exact match beats a longer label that contains the text, and a control beats plain text. When several elements still tie, the call fails with `ambiguous_target` and lists their UIDs.
 
 A synthetic `click`, `hover`, or `drag` hit-tests the middle of the target's visible part first. It fails with `target_covered` when something else is there, such as a modal, a cookie banner, or the page behind a `pointer-events: none` control, and names that element. It fails with `target_not_visible` when no part of the target is inside the viewport after scrolling. `force: true` dispatches anyway. Coordinates target whatever is at the point, so they never fail this way. The check runs inside the target's own frame, so an overlay drawn by a parent page over an iframe is not detected.

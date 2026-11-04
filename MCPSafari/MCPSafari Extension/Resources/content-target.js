@@ -7,13 +7,17 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("target")) return;
     mcp.loaded.add("target");
-    const { allRoots, clipText, deepQueryAll, deepQueryFirst, getAccessibleName, getElementByUid, getRole, getUid, isVisible, toolError, truncateText, walkRootFor } = mcp;
+    const { clipText, deepQueryAll, deepQueryFirst, getAccessibleName, getElementByUid, getRole, getUid, renderedElements, toolError, truncateText } = mcp;
 
     // ─── Element Finding ─────────────────────────────────────────────
 
     // One cap for every match strategy, so a broad selector cannot return an
     // unbounded result set and swamp the caller's context.
     const MAX_FIND_RESULTS = 50;
+
+    // What the rendered text of an element is compared with: the same
+    // whitespace collapsing and lower case that renderedElements applies to it.
+    const collapseText = (text) => text.trim().replace(/\s+/g, " ").toLowerCase();
 
     function findElements(params) {
         if (!params.selector && !params.text && !params.role) {
@@ -34,45 +38,26 @@
         }
 
         if (params.text) {
-            const needle = params.text.toLowerCase();
+            const needle = collapseText(params.text);
             // Also match the accessible name, so an icon button labelled only
             // by aria-label is reachable by the name snapshots report for it.
-            const matches = (node) =>
-                node.textContent?.toLowerCase().includes(needle) ||
-                getAccessibleName(node)?.toLowerCase().includes(needle);
-            for (const root of allRoots()) {
+            const matches = renderedElements((node, text) =>
+                text.includes(needle) ||
+                getAccessibleName(node)?.toLowerCase().includes(needle)
+            );
+            for (const { element, text } of matches) {
                 if (results.length >= MAX_FIND_RESULTS) break;
-                const walkRoot = walkRootFor(root);
-                if (!walkRoot) continue;
-                const walker = document.createTreeWalker(
-                    walkRoot,
-                    NodeFilter.SHOW_ELEMENT,
-                    {
-                        acceptNode: (node) =>
-                            matches(node) && isVisible(node)
-                                ? NodeFilter.FILTER_ACCEPT
-                                : NodeFilter.FILTER_SKIP,
-                    }
-                );
-                let node;
-                while ((node = walker.nextNode()) && results.length < MAX_FIND_RESULTS) {
-                    // Only include leaf-ish elements (avoid returning <body> etc.)
-                    if (
-                        node.children.length === 0 ||
-                        node.textContent.trim().length < 200
-                    ) {
-                        results.push(describeElement(node));
-                    }
+                // Only include leaf-ish elements (avoid returning <body> etc.)
+                if (element.children.length === 0 || text.length < 200) {
+                    results.push(describeElement(element));
                 }
             }
         }
 
         if (params.role) {
-            for (const el of deepQueryAll("*")) {
+            for (const { element } of renderedElements((node) => getRole(node) === params.role)) {
                 if (results.length >= MAX_FIND_RESULTS) break;
-                if (getRole(el) === params.role && isVisible(el)) {
-                    results.push(describeElement(el));
-                }
+                results.push(describeElement(element));
             }
         }
 
@@ -156,34 +141,19 @@
         // Both sides have their whitespace collapsed, because source markup
         // wraps lines and indents between inline pieces while the name a
         // snapshot reports, which is what a caller copies from, does not.
-        const needle = text.trim().replace(/\s+/g, " ").toLowerCase();
-        const matches = [];
-        for (const root of allRoots()) {
-            const walkRoot = walkRootFor(root);
-            if (!walkRoot) continue;
-            const walker = document.createTreeWalker(
-                walkRoot,
-                NodeFilter.SHOW_ELEMENT,
-                {
-                    acceptNode: (node) =>
-                        node.textContent &&
-                        node.textContent.replace(/\s+/g, " ").toLowerCase().includes(needle) &&
-                        isVisible(node) &&
-                        node.getClientRects().length > 0
-                            ? NodeFilter.FILTER_ACCEPT
-                            : NodeFilter.FILTER_SKIP,
-                }
-            );
-            let node;
-            while ((node = walker.nextNode())) matches.push(node);
-        }
+        const needle = collapseText(text);
+        // The text is what a user sees: a hidden child, a script or a style
+        // inside a control does not make the control match.
+        const matches = renderedElements((node, rendered) =>
+            rendered.includes(needle) && node.getClientRects().length > 0
+        );
         const enclosing = new Set();
-        for (const node of matches) {
-            for (let up = node.parentElement; up && !enclosing.has(up); up = up.parentElement) {
-                enclosing.add(up);
+        for (const { parent } of matches) {
+            for (let up = parent; up && !enclosing.has(up.element); up = up.parent) {
+                enclosing.add(up.element);
             }
         }
-        const innermost = matches.filter((node) => !enclosing.has(node));
+        const innermost = matches.filter((match) => !enclosing.has(match.element));
         if (innermost.length === 0)
             throw toolError(
                 "target_not_found",
@@ -198,10 +168,10 @@
         // which overflows the call stack on a page with enough of them, and
         // scoring twice walked every candidate's ancestors twice over.
         let best = 0;
-        const scored = innermost.map((node) => {
+        const scored = innermost.map(({ element: node, text: rendered }) => {
             // Act on the control that holds the text, as a real click would focus it.
             const control = node.closest(INTERACTIVE_SELECTOR);
-            const exact = node.textContent.trim().replace(/\s+/g, " ").toLowerCase() === needle;
+            const exact = rendered === needle;
             const value = (exact ? 2 : 0) + (control ? 1 : 0);
             if (value > best) best = value;
             return { target: control || node, value };

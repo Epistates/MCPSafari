@@ -77,13 +77,6 @@
         return found;
     }
 
-    // A walker rooted at the document would offer <html> and <body> themselves
-    // as matches, which the leaf-ish filters downstream exist to exclude. A
-    // shadow root has no such wrapper, so it is walked as-is.
-    function walkRootFor(root) {
-        return root === document ? document.body : root;
-    }
-
     // A shadow host renders its shadow root, and the host's own children only
     // appear where a <slot> puts them, so walking both would report slotted
     // content twice. This follows the flattened tree the user actually sees.
@@ -556,6 +549,18 @@
     // password or card field, and a name is the one other place it could leak.
     const NAME_SKIPPED_TAGS = new Set(["input", "textarea", "select"]);
 
+    // Their text is code or markup the browser never shows. The default
+    // stylesheet hides all four, but a page can restyle them to display, and
+    // `textContent` reads their contents either way.
+    const NEVER_RENDERED_TAGS = new Set(["script", "style", "noscript", "template"]);
+
+    // Block-level children are separate runs of text, so `<div>A</div><div>B</div>`
+    // reads "A B" and not "AB". Inline ones stay joined.
+    function startsNewRun(element) {
+        const display = window.getComputedStyle(element).display;
+        return display !== "inline" && display !== "contents";
+    }
+
     // The children a user sees under an element: its open shadow root in place
     // of its light children, and a slot's assigned nodes (text included) in
     // place of the slot's own.
@@ -591,14 +596,12 @@
             }
             if (node.nodeType !== Node.ELEMENT_NODE) return;
             if (!isVisible(node)) return;
-            if (NAME_SKIPPED_TAGS.has(node.tagName.toLowerCase())) return;
+            const tag = node.tagName.toLowerCase();
+            if (NAME_SKIPPED_TAGS.has(tag) || NEVER_RENDERED_TAGS.has(tag)) return;
             // A nested element that names itself (an icon with aria-label, an
             // image with alt) is read by that name rather than by its insides.
-            const label = node.getAttribute("aria-label") || node.alt;
-            // Block-level children are separate runs of text, so `<div>A</div>
-            // <div>B</div>` reads "A B" and not "AB". Inline ones stay joined.
-            const display = window.getComputedStyle(node).display;
-            const separate = display !== "inline" && display !== "contents";
+            const label = nameText(node.getAttribute("aria-label") || node.alt);
+            const separate = startsNewRun(node);
             if (separate) add(" ");
             if (label) add(label);
             else for (const child of renderedChildNodes(node)) walk(child, depth + 1);
@@ -608,6 +611,58 @@
         return truncateText(parts.join("").replace(/\s+/g, " ").trim());
     }
 
+    // ─── Rendered Text ───────────────────────────────────────────────
 
-    Object.assign(mcp, { allRoots, deepQueryAll, deepQueryFirst, getAccessibleName, getPageText, getRole, isVisible, readPage, takeSnapshot, truncateText, walkRootFor });
+    // Past this the walk below gives up on a subtree rather than risk the call
+    // stack on a pathologically deep page. Well beyond MAX_TREE_DEPTH, because
+    // text targeting worked on deep pages before the snapshot's own limit
+    // existed for it.
+    const MAX_RENDERED_DEPTH = 500;
+
+    // Every element the snapshot would show, with the text a user sees in it,
+    // for which `test(element, text)` holds, in document order. `text` has its
+    // whitespace collapsed and is lower case, so that source indentation and
+    // capitals do not decide a match. Each result also names its `parent`
+    // entry, which lets a caller tell which matches enclose which, across
+    // shadow and slot boundaries that `parentElement` stops at.
+    //
+    // `textContent` is the wrong thing to match on. It includes the text of
+    // hidden children, script and style, so `<button>Cancel<span hidden>Delete
+    // account</span></button>` was found by "Delete account" and clicked. This
+    // follows the same rules as the tree: whatever `isVisible` drops is pruned
+    // with everything under it, the children are the flattened ones, and a
+    // form control contributes no text of its own.
+    function renderedElements(test) {
+        const root = document.body || document.documentElement;
+        const matched = [];
+        let order = 0;
+        const walk = (element, depth, parent) => {
+            if (depth > MAX_RENDERED_DEPTH || !isVisible(element)) return "";
+            const tag = element.tagName.toLowerCase();
+            if (NEVER_RENDERED_TAGS.has(tag)) return "";
+
+            const entry = { element, parent, order: order++ };
+            let text = "";
+            if (!NAME_SKIPPED_TAGS.has(tag)) {
+                for (const child of renderedChildNodes(element)) {
+                    if (child.nodeType === Node.TEXT_NODE) {
+                        text += child.textContent;
+                    } else if (child.nodeType === Node.ELEMENT_NODE) {
+                        const run = walk(child, depth + 1, entry);
+                        text += run && startsNewRun(child) ? ` ${run} ` : run;
+                    }
+                }
+            }
+            entry.text = text.replace(/\s+/g, " ").trim().toLowerCase();
+            // The body itself is never offered: it holds everything, and so
+            // matches whatever any element does.
+            if (parent && test(element, entry.text)) matched.push(entry);
+            return text;
+        };
+        if (root) walk(root, 0, null);
+        return matched.sort((a, b) => a.order - b.order);
+    }
+
+
+    Object.assign(mcp, { deepQueryAll, deepQueryFirst, getAccessibleName, getPageText, getRole, readPage, renderedElements, takeSnapshot, truncateText });
 })();
