@@ -442,30 +442,65 @@
         return name ? truncateText(name) : name;
     }
 
+    // Page text as a name: whitespace collapsed, so that source markup wrapping
+    // a label across lines reads as one, and empty when nothing but whitespace
+    // is there. A name that is only whitespace must fall through to the next
+    // source rather than win with a blank, and callers test for emptiness. Only
+    // the start is read: a name is cut to a few hundred characters anyway, and
+    // normalizing a megabyte once for every node that refers to it adds up.
+    function nameText(raw) {
+        return raw ? clipText(String(raw), MAX_TEXT_CHARS * 4).replace(/\s+/g, " ").trim() : "";
+    }
+
+    // Joins the text of several elements in order, and stops reading once there
+    // is more than a name can hold: a page can list thousands of ids, or point
+    // at an element holding a megabyte.
+    function joinedText(elements) {
+        const parts = [];
+        let length = 0;
+        for (const labelEl of elements) {
+            const text = nameText(labelEl.textContent);
+            if (!text) continue;
+            parts.push(text);
+            length += text.length;
+            if (length > MAX_TEXT_CHARS) break;
+        }
+        return parts.join(" ");
+    }
+
+    // `aria-labelledby` ids resolve within the element's own tree, so a control
+    // inside a shadow root finds its label there. The document is tried too, so
+    // a reference that used to resolve from a shadow root still does.
+    function elementsById(element, ids) {
+        const scope = element.getRootNode ? element.getRootNode() : document;
+        const found = [];
+        for (const id of ids) {
+            const target = (typeof scope.getElementById === "function" && scope.getElementById(id))
+                || document.getElementById(id);
+            if (target) found.push(target);
+        }
+        return found;
+    }
+
     function accessibleNameFrom(element) {
         // aria-label
-        const ariaLabel = element.getAttribute("aria-label");
+        const ariaLabel = nameText(element.getAttribute("aria-label"));
         if (ariaLabel) return ariaLabel;
 
         // aria-labelledby takes a space-separated list of ids, joined in order.
         const labelledBy = element.getAttribute("aria-labelledby");
         if (labelledBy) {
-            const labelText = labelledBy
-                .split(/\s+/)
-                .filter(Boolean)
-                .map((id) => document.getElementById(id))
-                .filter(Boolean)
-                .map((labelEl) => labelEl.textContent.trim())
-                .filter(Boolean)
-                .join(" ");
+            const ids = labelledBy.split(/\s+/).filter(Boolean);
+            const labelText = joinedText(elementsById(element, ids));
             if (labelText) return labelText;
         }
 
-        // Label element for inputs. `labels` covers labelable controls directly;
-        // the selector fallback must escape the id, because a raw id containing
-        // a quote builds a malformed selector that throws and fails the snapshot.
+        // Label elements for inputs, all of them joined in order, as a control
+        // may have several. `labels` covers labelable controls directly; the
+        // selector fallback must escape the id, because a raw id containing a
+        // quote builds a malformed selector that throws and fails the snapshot.
         if (element.labels && element.labels.length > 0) {
-            const labelText = element.labels[0].textContent.trim();
+            const labelText = joinedText(element.labels);
             if (labelText) return labelText;
         }
         if (element.id) {
@@ -473,21 +508,25 @@
             // a shadow root is labelled from that root and not from the document.
             const scope = element.getRootNode ? element.getRootNode() : document;
             const label = scope.querySelector(`label[for="${escapeCssString(element.id)}"]`);
-            if (label) return label.textContent.trim();
+            const labelText = label ? nameText(label.textContent) : "";
+            if (labelText) return labelText;
         }
 
         // Alt text for images
-        if (element.alt) return element.alt;
+        const alt = nameText(element.alt);
+        if (alt) return alt;
 
         // Title attribute. A role named by its content only falls back to it
         // below: title is a tooltip, so `<a title="Read the full story">Read
         // more</a>` is "Read more" and the title is what is left when the
         // content says nothing.
         const fromContent = NAME_FROM_CONTENT_ROLES.has(getRole(element));
-        if (element.title && !fromContent) return element.title;
+        const title = nameText(element.title);
+        if (title && !fromContent) return title;
 
         // Placeholder for inputs
-        if (element.placeholder) return element.placeholder;
+        const placeholder = nameText(element.placeholder);
+        if (placeholder) return placeholder;
 
         // Name from content (WAI-ARIA). Without it a link such as
         // `Human <b>Brain</b> Organoids` has no name, and the tree shows only
@@ -497,7 +536,7 @@
         if (fromContent) {
             const text = contentName(element);
             if (text) return text;
-            if (element.title) return element.title;
+            if (title) return title;
         }
 
         return null;
