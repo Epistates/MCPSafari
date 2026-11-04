@@ -118,6 +118,32 @@ test("read_page text under the cap comes back whole", async () => {
     assert.equal(data, "short page");
 });
 
+test("get_page_text is bounded like read_page text", async () => {
+    const body = el("body");
+    body.innerText = "x".repeat(250000);
+    const { call } = loadContent(body);
+
+    const byDefault = (await call("get_page_text", {})).data;
+    const asked = (await call("get_page_text", { maxChars: 100 })).data;
+    const raised = (await call("get_page_text", { maxChars: 5000000 })).data;
+
+    assert.equal(byDefault.slice(0, 100000), "x".repeat(100000));
+    assert.match(byDefault, /truncated: 250000 characters total, 100000 returned/);
+    assert.match(asked, /truncated: 250000 characters total, 100 returned/);
+    assert.equal(raised, "x".repeat(250000), "a raised limit that the page fits inside returns it whole");
+    body.innerText = "x".repeat(1500000);
+    const huge = (await call("get_page_text", { maxChars: 5000000 })).data;
+    assert.match(huge, /1500000 characters total, 1000000 returned/);
+});
+
+test("get_page_text under the cap comes back whole", async () => {
+    const body = el("body");
+    body.innerText = "short page";
+    const { call } = loadContent(body);
+
+    assert.equal((await call("get_page_text", {})).data, "short page");
+});
+
 // ─── Strings a node carries ──────────────────────────────────────────
 
 const MEGABYTE = "x".repeat(1024 * 1024);
