@@ -574,7 +574,9 @@ actor SafariMCPServer {
         _ args: [String: Value],
         perform: (BridgeResponse) async throws -> String
     ) async throws -> CallTool.Result {
-        try Self.ensureNativeInputPermission()
+        // Before the trace starts and before the extension is asked to focus
+        // anything: neither is worth doing for input that will be refused.
+        try Self.ensureNativeInputReady()
         let traceSession = try await startTraceIfNeeded(args)
         let args = traceSession?.pinning(args) ?? args
         do {

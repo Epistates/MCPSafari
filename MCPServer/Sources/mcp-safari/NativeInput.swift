@@ -101,8 +101,25 @@ extension SafariMCPServer {
     /// driven by a fake in tests without keystrokes reaching the real keyboard.
     struct NativeKeyboard: Sendable {
         let safariIsFrontmost: @Sendable () -> Bool
+        /// Whether keyboard focus is inside the web page, or nil when
+        /// Accessibility cannot say. Safari being frontmost does not mean that:
+        /// Command-L, or a key the page does not take, leaves the address bar or
+        /// the find bar holding the keyboard.
+        let focusIsInPage: @Sendable () -> Bool?
         let postText: @Sendable (String) throws -> Void
         let postKey: @Sendable (CGKeyCode, CGEventFlags) throws -> Void
+
+        init(
+            safariIsFrontmost: @escaping @Sendable () -> Bool,
+            focusIsInPage: @escaping @Sendable () -> Bool? = { nil },
+            postText: @escaping @Sendable (String) throws -> Void,
+            postKey: @escaping @Sendable (CGKeyCode, CGEventFlags) throws -> Void
+        ) {
+            self.safariIsFrontmost = safariIsFrontmost
+            self.focusIsInPage = focusIsInPage
+            self.postText = postText
+            self.postKey = postKey
+        }
 
         static func live() throws -> NativeKeyboard {
             guard let source = CGEventSource(stateID: .hidSystemState) else {
@@ -111,10 +128,26 @@ extension SafariMCPServer {
             let box = EventSourceBox(source)
             return NativeKeyboard(
                 safariIsFrontmost: { SafariMCPServer.safariIsActive() },
+                focusIsInPage: { SafariMCPServer.focusedElementIsInWebArea() },
                 postText: { try SafariMCPServer.postText($0, source: box.source) },
                 postKey: { try SafariMCPServer.postKey(code: $0, flags: $1, source: box.source) }
             )
         }
+
+        /// Why native input may not go on, or nil if it may. Safari not being in
+        /// front is checked first and is the clearer cause; a focus that is
+        /// somewhere Accessibility can place outside the page is the second. A
+        /// focus Accessibility cannot place at all is allowed, which is how this
+        /// behaved before the check existed.
+        func focusProblem() -> NativeFocusProblem? {
+            guard safariIsFrontmost() else { return .safariNotFrontmost }
+            return focusIsInPage() == false ? .focusOutsidePage : nil
+        }
+    }
+
+    enum NativeFocusProblem {
+        case safariNotFrontmost
+        case focusOutsidePage
     }
 
     /// The source is only ever used by one task at a time, one event after
@@ -149,8 +182,21 @@ extension SafariMCPServer {
         var delivered = 0
 
         try checkNativeDeadline(deadline)
-        guard keyboard.safariIsFrontmost() else {
-            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
+        if let problem = keyboard.focusProblem() {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false, problem: problem))
+        }
+
+        /// A key that moved focus mid-text, such as Command-L, sends what follows
+        /// into the address bar, so the page is asked again wherever the loop
+        /// would otherwise carry on blind.
+        func ensureFocus() throws {
+            if let problem = keyboard.focusProblem() {
+                throw NativeInputError(failure: nativeFocusFailure(
+                    eventsAlreadySent: true,
+                    delivered: (delivered, characters.count),
+                    problem: problem
+                ))
+            }
         }
 
         do {
@@ -165,18 +211,17 @@ extension SafariMCPServer {
             for (index, character) in characters.enumerated() {
                 try Task.checkCancellation()
                 try checkNativeDeadline(deadline)
-                if index > 0, index % nativeFocusCheckInterval == 0, !keyboard.safariIsFrontmost() {
-                    throw NativeInputError(failure: nativeFocusFailure(
-                        eventsAlreadySent: true,
-                        delivered: (delivered, characters.count)
-                    ))
-                }
+                if index > 0, index % nativeFocusCheckInterval == 0 { try ensureFocus() }
                 try keyboard.postText(String(character))
                 delivered += 1
                 try await nativeKeystrokePause()
             }
             if let submitKeyCode = input.submitKeyCode {
                 try checkNativeDeadline(deadline)
+                // The Enter that submits is the keystroke that does the most harm
+                // in the wrong place, so it is not sent on the strength of a check
+                // made up to fifteen characters ago.
+                try ensureFocus()
                 try keyboard.postKey(submitKeyCode, [])
                 try await nativeKeystrokePause()
             }
@@ -189,12 +234,7 @@ extension SafariMCPServer {
             ))
         }
 
-        guard keyboard.safariIsFrontmost() else {
-            throw NativeInputError(failure: nativeFocusFailure(
-                eventsAlreadySent: true,
-                delivered: (delivered, characters.count)
-            ))
-        }
+        try ensureFocus()
 
         let suffix = input.submitKey.map { " then pressed \($0)" } ?? ""
         return "Typed \(input.text.count) character(s) with native input\(suffix)"
@@ -229,17 +269,81 @@ extension SafariMCPServer {
     /// so the caller knows what the page and the other application each received.
     nonisolated static func nativeFocusFailure(
         eventsAlreadySent: Bool,
-        delivered: (sent: Int, total: Int)? = nil
+        delivered: (sent: Int, total: Int)? = nil,
+        problem: NativeFocusProblem = .safariNotFrontmost
     ) -> ToolFailure {
         let progress = delivered.map { " Delivered \($0.sent) of \($0.total) characters before that." } ?? ""
+        let message: String
+        switch (problem, eventsAlreadySent) {
+        case (.safariNotFrontmost, true):
+            message = "Safari lost focus during native input, so some events may have gone to another application.\(progress) Tell the user before retrying: a retry sends the whole input again."
+        case (.safariNotFrontmost, false):
+            message = "Safari is not the frontmost application, so nothing was sent. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it, or omit native to use synthetic input, which does not need focus."
+        case (.focusOutsidePage, true):
+            message = "Keyboard focus left the page during native input, into Safari's address bar, find bar or another control outside it, so some events may have gone there instead.\(progress) Tell the user before retrying: a retry sends the whole input again."
+        case (.focusOutsidePage, false):
+            message = "Keyboard focus is not in the page, but in Safari's address bar, find bar or another control outside it, so nothing was sent. Native keys go wherever the keyboard focus is. Ask the user to click into the page, or omit native to use synthetic input, which does not depend on keyboard focus."
+        }
         return ToolFailure(
             code: "native_input_focus_lost",
-            message: eventsAlreadySent
-                ? "Safari lost focus during native input, so some events may have gone to another application.\(progress) Tell the user before retrying: a retry sends the whole input again."
-                : "Safari is not the frontmost application, so nothing was sent. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it, or omit native to use synthetic input, which does not need focus.",
+            message: message,
             retryable: !eventsAlreadySent,
             recoveryAction: "ask_user"
         )
+    }
+
+    /// Whether the element holding keyboard focus is part of the web page, by
+    /// Accessibility: it has an `AXWebArea` among its ancestors. Nil when
+    /// Accessibility cannot say, because it is refused, the answer times out, or
+    /// nothing reports focus; callers then go on as they did before this check.
+    nonisolated static func focusedElementIsInWebArea() -> Bool? {
+        guard AXIsProcessTrusted() else { return nil }
+        let system = AXUIElementCreateSystemWide()
+        // A busy Safari must not hold up a keystroke for the default six seconds.
+        AXUIElementSetMessagingTimeout(system, 1)
+
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID()
+        else { return nil }
+        var element = unsafeDowncast(focused, to: AXUIElement.self)
+
+        // The page sits a few levels down from the window; a bound keeps a cyclic
+        // or runaway tree from looping.
+        for _ in 0..<64 {
+            var role: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success else {
+                return nil
+            }
+            if (role as? String) == "AXWebArea" { return true }
+
+            var parent: CFTypeRef?
+            switch AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parent) {
+            case .success:
+                guard let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
+                element = unsafeDowncast(parent, to: AXUIElement.self)
+            case .noValue, .attributeUnsupported:
+                return false // the top of the tree, and no web area on the way
+            default:
+                return nil
+            }
+        }
+        return nil
+    }
+
+    /// Refuses before a bridge request is made when native input cannot work: no
+    /// Accessibility, or Safari not in front. The extension's prepare step focuses
+    /// an element and may scroll to it, which is not worth doing for keys that
+    /// will not be sent. Safari can still lose the front between this and the
+    /// events, which each posting path checks again.
+    nonisolated static func ensureNativeInputReady(
+        permission: () throws -> Void = ensureNativeInputPermission,
+        safariIsFrontmost: () -> Bool = safariIsActive
+    ) throws {
+        try permission()
+        guard safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false))
+        }
     }
 
     private nonisolated static func ensureSafariIsFrontmost(eventsAlreadySent: Bool = false) throws {
