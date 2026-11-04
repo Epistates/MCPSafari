@@ -217,6 +217,110 @@ test("type_text submitKey follows the same keypress rule", async () => {
     assert.deepEqual(events.slice(-3), ["keydown", "keypress", "keyup"]);
 });
 
+// ─── type_text Enter: implicit submission ────────────────────────────
+
+// A form with `siblings` as the rest of its controls. `submissions` collects
+// what reached the page: a requestSubmit, or a click on a submit button.
+function formHarness({ tag = "input", type = "text", siblings = () => [], cancel = null } = {}) {
+    const submissions = [];
+    const field = el(tag, {
+        id: "f",
+        extra: {
+            type,
+            value: "",
+            dispatchEvent(event) {
+                return !(cancel && event.type === cancel);
+            },
+        },
+    });
+    field.form = {
+        elements: [field, ...siblings(submissions)],
+        requestSubmit() { submissions.push("requestSubmit"); },
+    };
+    const call = loadContent(el("body", {}, [field]), { querySelector: () => field });
+    return { call, submissions, enter: () => call("type_text", { selector: "#f", text: "x", submitKey: "Enter" }) };
+}
+
+const textField = () => ({ tagName: "INPUT", type: "text" });
+const submitButton = (submissions, extra = {}) => ({
+    tagName: "BUTTON",
+    type: "submit",
+    disabled: false,
+    click() { submissions.push("click"); },
+    ...extra,
+});
+
+test("Enter in a lone text field submits the form", async () => {
+    const { enter, submissions } = formHarness();
+
+    assert.equal((await enter()).error, null);
+    assert.deepEqual(submissions, ["requestSubmit"]);
+});
+
+test("Enter clicks the form's default button rather than submitting around it", async () => {
+    const { enter, submissions } = formHarness({
+        siblings: (log) => [textField(), submitButton(log), submitButton(log)],
+    });
+
+    await enter();
+
+    assert.deepEqual(submissions, ["click"], "the first submit button, once");
+});
+
+test("a disabled default button means Enter submits nothing", async () => {
+    const { enter, submissions } = formHarness({ siblings: (log) => [submitButton(log, { disabled: true })] });
+
+    await enter();
+
+    assert.deepEqual(submissions, []);
+});
+
+test("Enter in a form with several text fields and no submit button submits nothing", async () => {
+    const { enter, submissions } = formHarness({ siblings: () => [textField()] });
+
+    await enter();
+
+    assert.deepEqual(submissions, []);
+});
+
+test("Enter in a textarea does not submit", async () => {
+    const { enter, submissions } = formHarness({ tag: "textarea", type: "textarea" });
+
+    await enter();
+
+    assert.deepEqual(submissions, []);
+});
+
+test("Enter in a field that does not block implicit submission does not submit", async () => {
+    const { enter, submissions } = formHarness({ type: "checkbox" });
+
+    await enter();
+
+    assert.deepEqual(submissions, []);
+});
+
+test("a page that cancels the keydown or keypress is left to handle Enter itself", async () => {
+    for (const cancel of ["keydown", "keypress"]) {
+        const { enter, submissions } = formHarness({ cancel });
+
+        assert.equal((await enter()).error, null);
+        assert.deepEqual(submissions, [], `a cancelled ${cancel} must not submit`);
+    }
+});
+
+test("a cancelled keydown suppresses the keypress", async () => {
+    const events = [];
+    const field = el("input", {
+        id: "f",
+        extra: { type: "text", value: "", dispatchEvent(event) { events.push(event.type); return event.type !== "keydown"; } },
+    });
+    const call = loadContent(el("body", {}, [field]), { querySelector: () => field });
+
+    await call("type_text", { selector: "#f", text: "x", submitKey: "Enter" });
+
+    assert.deepEqual(events.slice(-2), ["keydown", "keyup"]);
+});
+
 // ─── hover pointer events and parity ─────────────────────────────────
 
 test("hover dispatches pointer and mouse families in real pointer order", async () => {
@@ -235,6 +339,26 @@ test("hover dispatches pointer and mouse families in real pointer order", async 
     ]);
     assert.equal(events[0].pointerType, "mouse");
     assert.match(response.data, /CSS :hover is not applied/);
+});
+
+test("hover's enter events do not bubble, where its over and move events do", async () => {
+    const events = [];
+    const target = el("a", {
+        id: "t",
+        extra: { dispatchEvent(event) { events.push(event); return true; } },
+    });
+    const call = loadContent(el("body", {}, [target]), { querySelector: () => target });
+
+    await call("hover", { selector: "#t" });
+
+    const byType = Object.fromEntries(events.map((event) => [event.type, event]));
+    for (const type of ["pointerenter", "mouseenter"]) {
+        assert.equal(byType[type].bubbles, false, `${type} does not bubble`);
+        assert.equal(byType[type].cancelable, false, `${type} cannot be cancelled`);
+    }
+    for (const type of ["pointerover", "mouseover", "pointermove", "mousemove"]) {
+        assert.equal(byType[type].bubbles, true, `${type} bubbles`);
+    }
 });
 
 test("hover accepts x and y like click", async () => {
@@ -282,6 +406,42 @@ test("click with x/y dispatches at the requested point, not the element center",
         "two requested points produce two distinct dispatch points"
     );
     assert.equal(scrolled, false, "the hit-tested point is already visible; scrolling would move it");
+});
+
+test("x/y reaches into open shadow roots instead of stopping at the host", async () => {
+    // document.elementFromPoint answers with the host; the button the user sees
+    // is only found by asking the host's own root, and again for a nested one.
+    const recording = (tag) => {
+        const events = [];
+        const node = el(tag, { extra: { dispatchEvent(event) { events.push(event.type); return true; } } });
+        return { events, node };
+    };
+    const button = recording("button");
+    const nested = recording("my-nested");
+    nested.node.shadowRoot = { elementFromPoint: () => button.node };
+    const host = recording("my-widget");
+    host.node.shadowRoot = { elementFromPoint: () => nested.node };
+    const call = loadContent(el("body", {}, [host.node]), { elementFromPoint: () => host.node });
+
+    const click = await call("click", { x: 10, y: 20 });
+    const hover = await call("hover", { x: 10, y: 20 });
+
+    assert.equal(click.error, null);
+    assert.equal(hover.error, null);
+    assert.match(click.data, /<button>/);
+    assert.ok(button.events.includes("click") && button.events.includes("pointermove"));
+    assert.equal(host.events.length, 0);
+    assert.equal(nested.events.length, 0);
+});
+
+test("a shadow root with nothing under the point leaves the host as the target", async () => {
+    const events = [];
+    const host = el("my-widget", { extra: { dispatchEvent(event) { events.push(event.type); return true; } } });
+    host.shadowRoot = { elementFromPoint: () => host };
+    const call = loadContent(el("body", {}, [host]), { elementFromPoint: () => host });
+
+    assert.equal((await call("click", { x: 10, y: 20 })).error, null);
+    assert.ok(events.includes("click"));
 });
 
 test("click without x/y still dispatches at the element center", async () => {

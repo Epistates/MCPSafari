@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("gesture")) return;
     mcp.loaded.add("gesture");
-    const { aimPoint, assertPageFocused, assertReachable, firesKeypress, keyCode, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { aimPoint, assertPageFocused, assertReachable, elementAtPoint, firesKeypress, keyCode, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Scroll ──────────────────────────────────────────────────────
 
@@ -37,11 +37,10 @@
             );
         }
 
-        if (target === window) {
-            window.scrollBy({ ...scroll, behavior: "smooth" });
-        } else {
-            target.scrollBy({ ...scroll, behavior: "smooth" });
-        }
+        // Instant, because the tool answers as soon as this returns: a smooth
+        // scroll is still moving then, so the next read, or a `click` aimed by
+        // a position measured mid-scroll, would see a page that has not arrived.
+        target.scrollBy({ ...scroll, behavior: "instant" });
 
         return `Scrolled ${params.direction} by ${amount}px`;
     }
@@ -90,7 +89,7 @@
         let el = null;
         let x, y;
         if (params.x !== undefined && params.y !== undefined) {
-            el = document.elementFromPoint(params.x, params.y);
+            el = elementAtPoint(params.x, params.y);
             if (!el) {
                 throw toolError(
                     "target_not_found",
@@ -129,11 +128,16 @@
         };
         const pointerOpts = { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true };
 
+        // Enter events do not bubble and cannot be cancelled: a page that
+        // listens for them on an ancestor expects the ancestor's own entry, and
+        // a bubbling one would fire it for every child the pointer crossed.
+        const enterOpts = { bubbles: false, cancelable: false };
+
         // Real pointer order: pointer family first, over before enter.
         el.dispatchEvent(pointerEvent("pointerover", pointerOpts));
-        el.dispatchEvent(pointerEvent("pointerenter", pointerOpts));
+        el.dispatchEvent(pointerEvent("pointerenter", { ...pointerOpts, ...enterOpts }));
         el.dispatchEvent(new MouseEvent("mouseover", eventOpts));
-        el.dispatchEvent(new MouseEvent("mouseenter", eventOpts));
+        el.dispatchEvent(new MouseEvent("mouseenter", { ...eventOpts, ...enterOpts }));
         el.dispatchEvent(pointerEvent("pointermove", pointerOpts));
         el.dispatchEvent(new MouseEvent("mousemove", eventOpts));
 
@@ -267,12 +271,16 @@
             }
             return toScreen(css.x, css.y);
         };
-        const centerOf = (element) => {
-            const rect = element.getBoundingClientRect();
-            return checked({
-                x: rect.left + rect.width / 2,
-                y: rect.top + rect.height / 2,
-            });
+        // A real pointer lands on whatever is at the point, so an element under
+        // a modal or a banner is refused here, before the server is told where
+        // to click, with the error the synthetic path gives. `force` waives the
+        // cover, as it does there; an element with no area has no point to aim
+        // at, so that is refused either way.
+        const aimedAt = (element) => {
+            const point = aimPoint(element);
+            const screen = checked(point);
+            if (!params.force || !point.visible) assertReachable(element, point);
+            return screen;
         };
 
         // x/y wins over uid/selector/text here exactly as it does for the
@@ -303,7 +311,7 @@
 
         let from;
         if (fromEl) {
-            from = centerOf(fromEl);
+            from = aimedAt(fromEl);
         } else if (pointRequested) {
             from = checked({ x: Number(params.x), y: Number(params.y) });
         } else {
@@ -315,20 +323,32 @@
             );
         }
 
-        const to = toEl ? centerOf(toEl) : undefined;
+        const to = toEl ? aimedAt(toEl) : undefined;
         return to ? { from, to } : { from };
     }
 
     // A native key reaches whatever Safari has focused; when the chrome (e.g.
     // the address bar) holds focus the page never sees it. Pull focus into
     // the document unless the page already has it, and say so if that did
-    // not work rather than reporting a page ready that is not.
+    // not work rather than reporting a page ready that is not. The body is only
+    // made focusable for the moment it takes, and put back as the page had it:
+    // a body that stays focusable changes how the page tabs and clicks.
     function prepareNativeKey() {
-        if (!document.hasFocus() && document.body) {
-            document.body.setAttribute("tabindex", "-1");
-            document.body.focus({ preventScroll: true });
+        const body = document.body;
+        const pulling = !document.hasFocus() && body;
+        const previous = pulling ? body.getAttribute("tabindex") : null;
+        if (pulling) {
+            body.setAttribute("tabindex", "-1");
+            body.focus({ preventScroll: true });
         }
-        assertPageFocused("native key events");
+        try {
+            assertPageFocused("native key events");
+        } finally {
+            if (pulling) {
+                if (previous === null) body.removeAttribute("tabindex");
+                else body.setAttribute("tabindex", previous);
+            }
+        }
         return "Page ready for native key";
     }
 

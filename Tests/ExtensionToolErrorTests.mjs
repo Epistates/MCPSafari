@@ -215,8 +215,42 @@ test("native typing refuses when the page does not hold focus", async () => {
     assert.equal(accepted.error, null);
 });
 
+// The body is made focusable only to pull focus in. Leaving it so changes how
+// the page tabs and clicks for the rest of its life.
+test("pulling focus for a native key puts the body's tabindex back as it was", async () => {
+    for (const original of [null, "0"]) {
+        const attributes = original === null ? {} : { tabindex: original };
+        const body = {
+            getAttribute: (name) => (name in attributes ? attributes[name] : null),
+            setAttribute: (name, value) => { attributes[name] = value; },
+            removeAttribute: (name) => { delete attributes[name]; },
+            focus() { body.tabindexWhileFocusing = attributes.tabindex; document.hasFocus = () => true; },
+        };
+        const document = { activeElement: null, body, hasFocus: () => false };
+        const call = contentHarness(document);
+
+        const pulled = await call("prepare_native_key", {});
+
+        assert.equal(pulled.error, null);
+        assert.equal(body.tabindexWhileFocusing, "-1", "focusable while focus is pulled");
+        assert.equal(attributes.tabindex, original ?? undefined, `restored to ${original ?? "no tabindex"}`);
+    }
+
+    // And when the focus does not come, the refusal leaves it as it was too.
+    const attributes = {};
+    const stubborn = {
+        getAttribute: (name) => (name in attributes ? attributes[name] : null),
+        setAttribute: (name, value) => { attributes[name] = value; },
+        removeAttribute: (name) => { delete attributes[name]; },
+        focus() {},
+    };
+    const refused = await contentHarness({ activeElement: null, body: stubborn, hasFocus: () => false })("prepare_native_key", {});
+    assert.equal(refused.errorCode, "native_input_focus_failed");
+    assert.equal("tabindex" in attributes, false);
+});
+
 test("a native key refuses when focus cannot be pulled into the page", async () => {
-    const body = { setAttribute() {}, focus() {} };
+    const body = { getAttribute: () => null, setAttribute() {}, removeAttribute() {}, focus() {} };
     const document = { activeElement: null, body, hasFocus: () => false };
     const call = contentHarness(document);
 

@@ -82,13 +82,24 @@
     // A name or label is only a hint, so short words must match whole (`pin`
     // is a secret, `shipping` is not) and long ones may sit inside a longer
     // run (`newpassword`, `confirmPassword`).
-    const SECRET_HINT_WORDS = new Set(["pass", "pwd", "pin", "otp", "cvv", "cvc", "cvn", "ssn", "secret", "token", "2fa"]);
-    const SECRET_HINT_FRAGMENTS = ["password", "passwd", "passcode", "passphrase", "pincode", "secret", "token", "onetime"];
+    const SECRET_HINT_WORDS = new Set([
+        "pass", "pwd", "pin", "otp", "cvv", "cvc", "cvn", "cvv2", "cvc2", "ssn", "secret", "token", "2fa",
+        "iban", "cardno", "ccnum",
+    ]);
+    // Matched inside the words run together, so `api_key`, `apiKey` and
+    // `x-api-key` all read as `apikey`.
+    const SECRET_HINT_FRAGMENTS = [
+        "password", "passwd", "passcode", "passphrase", "pincode", "secret", "token", "onetime",
+        "cardnum", "creditcard", "debitcard", "apikey", "privatekey", "accesskey", "socialsecurity", "routingnumber",
+    ];
+    // A hint is read from its start only. A label or placeholder can be as long
+    // as the page likes, and what names a field is not found deep inside one.
+    const MAX_HINT_CHARS = 256;
     // Types that carry a label or a fixed value rather than something typed.
     const NON_SECRET_TYPES = new Set(["button", "submit", "reset", "image", "checkbox", "radio", "file", "range", "color"]);
 
     function hintLooksSecret(hint) {
-        const words = String(hint)
+        const words = String(hint).slice(0, MAX_HINT_CHARS)
             .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
             .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
             .toLowerCase()
@@ -120,7 +131,11 @@
             tag: node.tagName ? node.tagName.toLowerCase() : "",
             type: attr("type"),
             autocomplete: attr("autocomplete"),
-            hints: [attr("name"), node.id, attr("aria-label"), attr("inputmode"), attr("autocomplete")],
+            hints: [
+                attr("name"), node.id, attr("aria-label"), attr("inputmode"), attr("autocomplete"),
+                attr("placeholder"), attr("title"),
+                ...Array.from(node.labels || [], (label) => label.textContent),
+            ],
         });
     }
 
@@ -129,10 +144,23 @@
     const MAX_ATTRIBUTE_VALUE = 512;
     const ALWAYS_OMITTED_ATTRIBUTES = new Set(["value", "checked"]);
 
+    // A cut that ends between the halves of a surrogate pair leaves text that
+    // is not valid Unicode. This file runs in the page's world and cannot read
+    // content-core.js, which carries the same text; Tests/safe-truncation.test.mjs
+    // fails if the copies drift, so change them together.
+    //
+    // BEGIN safe-truncate
+    function clipText(text, max) {
+        if (text.length <= max) return text;
+        const end = (text.charCodeAt(max - 1) & 0xFC00) === 0xD800 ? max - 1 : max;
+        return text.slice(0, end);
+    }
+    // END safe-truncate
+
     function boundedValue(value, detail) {
         if (typeof value !== "string" || value.length <= MAX_ATTRIBUTE_VALUE) return value;
         detail.truncated = true;
-        return value.slice(0, MAX_ATTRIBUTE_VALUE);
+        return clipText(value, MAX_ATTRIBUTE_VALUE);
     }
 
     function attributeValues(mutation) {

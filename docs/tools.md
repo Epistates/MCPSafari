@@ -43,7 +43,7 @@ This reference describes `main`, which may include tools and options not yet in 
 | `type_text` | Type into an element with optional `clearFirst` and `submitKey`; `native: true` sends macOS key events |
 | `form_input` | Batch fill form fields (CSS selector → value map) |
 | `select_option` | Select a dropdown option by value or label |
-| `scroll` | Scroll page or element in any direction |
+| `scroll` | Scroll page or element in any direction; the scroll has finished when the call returns |
 | `press_key` | Press key combinations (e.g., `Enter`, `Meta+a`, `Control+c`); `native: true` sends a real macOS key event |
 | `hover` | Hover to trigger tooltips, menus, or hover handlers (pointer + mouse events); `native: true` moves the real OS pointer for true `:hover` |
 | `drag` | Drag and drop between elements along an interpolated pointer path; `native: true` performs a real macOS mouse drag |
@@ -121,11 +121,13 @@ Each node has a `uid`, `tag`, and `role`, and may carry `name`, `text`, `value`,
 
 `text` is the element's own text: the whole text of a leaf, and for an element with element children only its direct text nodes, since the children report their own. `<p>Hello <b>world</b></p>` is `text: "Hello"` with a child `b` holding `"world"`. Text is not rebuilt from the children because that would repeat every word at each level of the tree.
 
-`name` is what the page calls the element. It comes from `aria-label`, `aria-labelledby`, a `<label>`, `alt`, `title` or `placeholder`. Roles named by their content (link, button, heading, tab, menu item, option, tree item, switch, checkbox, radio, tooltip) take the element's whole text in reading order, whitespace collapsed, ahead of `title`, which is a tooltip and only names such an element when its content is empty. So `<a>Human <b>Brain</b> Organoids</a>` has `name: "Human Brain Organoids"` while its `text` is `"Human  Organoids"` and its `b` child keeps its own uid to click.
+`name` is what the page calls the element. It comes from `aria-label`, `aria-labelledby`, a `<label>`, `alt`, `title` or `placeholder`. A source that is only whitespace is skipped for the next, whitespace in a name is collapsed to single spaces, a control with several labels takes all of them in order, and `aria-labelledby` looks its ids up in the control's own shadow root before the document. Roles named by their content (link, button, heading, tab, menu item, option, tree item, switch, checkbox, radio, tooltip) take the element's whole text in reading order, whitespace collapsed, ahead of `title`, which is a tooltip and only names such an element when its content is empty. So `<a>Human <b>Brain</b> Organoids</a>` has `name: "Human Brain Organoids"` while its `text` is `"Human  Organoids"` and its `b` child keeps its own uid to click.
 
 A node leaves `name` out when it would only repeat `text` (compared with whitespace collapsed), so a plain `<a>Home</a>` reports `text: "Home"` and nothing more. `name` appears when it adds something: inline markup, an `aria-label`, an image `alt`, a label from elsewhere, or content that sits in children. When a link, button or heading has a `name`, that is its label; otherwise its `text` is. `find` always reports the name, and `text` targeting does not depend on whether the tree shows it.
 
-A name is built from what the snapshot shows. Content that is hidden (`aria-hidden`, `display: none`) is left out, a nested `aria-label` or image `alt` stands in for what it wraps, block-level children are separated by a space, and form controls contribute nothing, so a field's value, redacted or not, never appears in a name. Names and text are cut to 500 characters, ending in `...`.
+A name is built from what the snapshot shows. Content that is hidden (`aria-hidden`, `display: none`) is left out, a nested `aria-label` or image `alt` stands in for what it wraps, block-level children are separated by a space, and form controls contribute nothing, so a field's value, redacted or not, never appears in a name. Names, text and field values are cut to 500 characters, ending in `...`, and a link's `href` and an iframe's `frameSrc` to 2,048. `find` cuts the strings it describes the same way.
+
+Beyond the per-string caps a snapshot has a budget of 2,000,000 characters in all, counted across every string it carries. A page at the default node limit does not come near it; it is there for a request for many nodes on a page whose nodes each carry long strings. A snapshot that reaches it stops there and marks the root `truncated: true`, and the node whose later children were dropped carries `childrenTruncated: true`, the same as when it stops at `maxNodes`.
 
 ### Tab handles
 
@@ -150,9 +152,13 @@ Targeting options vary by tool. `click` accepts all four:
 | **Text** | `text: "Sign In"` | Interactive elements are ranked higher |
 | **Coordinates** | `x: 100, y: 200` | Last resort — click at exact position |
 
+Text is matched against what a user sees, not against the page source. Hidden content (`hidden`, `display: none`, `visibility: hidden`, `opacity: 0`, `aria-hidden`) is skipped along with everything inside it, as are `<script>`, `<style>` and `<template>`, form controls contribute no text, and block-level neighbours are separate words. This is the same rule the snapshot uses to decide what to show, and `find` by text or role follows it too, so `<button>Cancel<span hidden>Delete account</span></button>` is not found by "Delete account". `find` by `selector` is a plain CSS query and still returns hidden elements.
+
 Text resolves to one element or fails. An exact match beats a longer label that contains the text, and a control beats plain text. When several elements still tie, the call fails with `ambiguous_target` and lists their UIDs.
 
-A synthetic `click`, `hover`, or `drag` hit-tests the middle of the target's visible part first. It fails with `target_covered` when something else is there, such as a modal, a cookie banner, or the page behind a `pointer-events: none` control, and names that element. It fails with `target_not_visible` when no part of the target is inside the viewport after scrolling. `force: true` dispatches anyway. Coordinates target whatever is at the point, so they never fail this way. The check runs inside the target's own frame, so an overlay drawn by a parent page over an iframe is not detected.
+A synthetic `click`, `hover`, or `drag` hit-tests the middle of the target's visible part first. It fails with `target_covered` when something else is there, such as a modal, a cookie banner, or the page behind a `pointer-events: none` control, and names that element. It fails with `target_not_visible` when no part of the target is inside the viewport after scrolling. `force: true` dispatches anyway. Coordinates target whatever is at the point, descending into open shadow roots to the element a pointer would reach, so they never fail this way. The check runs inside the target's own frame, so an overlay drawn by a parent page over an iframe is not detected.
+
+A native `click`, `hover`, or `drag` (`native: true`) makes the same check for each element it aims at, before the server is told where to click, and fails with the same `target_covered` or `target_not_visible`. A real pointer lands on whatever is at the point, so a covered target is refused rather than clicked through to the overlay. `force: true` waives the cover; an element with no area is refused either way, since it has no point to aim at. The point is the middle of the target's visible part, as for a synthetic one. Coordinates are checked only for being inside the viewport.
 
 `drag` scrolls to both ends before measuring either, and checks both before dispatching anything, so a refused drag never leaves the page holding a pointer down with nothing to drop. The destination is scrolled with `nearest` so that a target already on screen does not push the source back off it. Two elements that cannot be on screen at once fail with `target_not_visible` rather than being dragged between off-screen coordinates.
 
@@ -260,6 +266,12 @@ Use `form_input` to fill multiple fields at once:
 
 This uses React-compatible value setting (`nativeInputValueSetter`) so it works with controlled inputs in React, Next.js, and similar frameworks.
 
+A `<select>` takes the option it names, by value or else by label, the same way `select_option` does. A field that cannot take its value, such as an option that does not exist or an element that is not a form control, is reported in that field's line of the result and does not stop the fields after it or undo the ones before it. The call fails only when no field could be filled.
+
+`select_option` selects the option itself, so with repeated values the label picks the right one. It fires `input` and then `change`, as a user's choice does, and refuses a disabled option (or one in a disabled group) with `invalid_input`, since a user could not choose it.
+
+`type_text` with `submitKey: "Enter"` submits the way the browser does. It sends keydown, keypress and keyup, and if the page cancelled the key it does nothing more, since the page has handled it. Otherwise a text-like input (text, search, url, tel, email, password, number, and the date and time types) submits its form by the HTML implicit submission rules: the form's first submit button is clicked, and nothing is submitted if that button is disabled. A form with no submit button is submitted only when it has a single such field. A `<textarea>` takes Enter as a newline and never submits.
+
 ### File upload and drop
 
 `upload_file` attaches local files to a file input, and `drop_file` delivers them to a drop zone:
@@ -272,7 +284,7 @@ This uses React-compatible value setting (`nativeInputValueSetter`) so it works 
 { "selector": "#dropzone", "filePaths": ["/tmp/a.pdf", "/tmp/b.pdf"] }
 ```
 
-The server reads only the paths you name, infers each MIME type from the file extension (override with `mimeType`), and sends the bytes to the page. `upload_file` accepts the input itself, its `<label>`, or a wrapper containing it, then fires `input` and `change`; `drop_file` dispatches `dragenter`, `dragover`, and `drop` with a `DataTransfer` holding the files. Up to 10 files and 10 MB total per call. Files inside MCPSafari's own token directories are refused, however the path is spelled or linked, because the token is what authenticates the bridge; `navigate` and `tabs_create` refuse `file:` URLs into them for the same reason.
+The server reads only the paths you name, infers each MIME type from the file extension (override with `mimeType`), and sends the bytes to the page. `upload_file` accepts the input itself, its `<label>`, or a wrapper containing it, then fires `input` and `change`; `drop_file` dispatches `dragenter`, `dragover`, and `drop` with a `DataTransfer` holding the files, and finds a drop zone inside an open shadow root like any other. Up to 10 files and 10 MB total per call. Files inside MCPSafari's own token directories are refused, however the path is spelled or linked, because the token is what authenticates the bridge; `navigate` and `tabs_create` refuse `file:` URLs into them for the same reason.
 
 ### Smart text matching
 

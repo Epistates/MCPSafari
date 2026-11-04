@@ -448,3 +448,54 @@ test("click and hover by a name the tree omits still act on the element", async 
     assert.equal((await call("hover", { text: "Home" })).error, null);
     assert.ok(link.events.includes("click"));
 });
+
+// ─── Name sources ────────────────────────────────────────────────────
+
+test("a blank aria-label does not hide the name beneath it", async () => {
+    const button = el("button", { attributes: { "aria-label": "   \n " } }, [text("Save")]);
+    const image = el("img", { attributes: { "aria-label": " " }, props: { alt: "Logo" } });
+    const tree = await snapshotOf(el("body", {}, [button, image]));
+
+    assert.equal(tree.children[0].text, "Save");
+    assert.equal(tree.children[0].name, undefined, "the content names it, and says no more than text does");
+    assert.equal(tree.children[1].name, "Logo");
+});
+
+test("a blank label, alt or placeholder falls through rather than naming the element", async () => {
+    const blankLabel = el("label", {}, [text("  ")]);
+    const input = el("input", {
+        attributes: { type: "text" },
+        props: { type: "text", labels: [blankLabel], alt: " ", placeholder: "Search" },
+    });
+    const tree = await snapshotOf(el("body", {}, [input]));
+
+    assert.equal(tree.children[0].name, "Search");
+});
+
+test("a name has its whitespace collapsed", async () => {
+    const input = el("input", {
+        attributes: { type: "text", "aria-label": "  Email\n   address \t" },
+        props: { type: "text" },
+    });
+    const tree = await snapshotOf(el("body", {}, [input]));
+
+    assert.equal(tree.children[0].name, "Email address");
+});
+
+test("every label on a control contributes to its name, in order", async () => {
+    const labels = [el("label", {}, [text("First  name")]), el("label", {}, [text("(required)")])];
+    const input = el("input", { attributes: { type: "text" }, props: { type: "text", labels } });
+    const tree = await snapshotOf(el("body", {}, [input]));
+
+    assert.equal(tree.children[0].name, "First name (required)");
+});
+
+test("aria-labelledby resolves inside the shadow root the control is in", async () => {
+    const heading = el("span", { id: "h" }, [text("Card holder")]);
+    const input = el("input", { attributes: { type: "text", "aria-labelledby": "h" }, props: { type: "text" } });
+    const root = { getElementById: (id) => (id === "h" ? heading : null) };
+    input.getRootNode = () => root;
+    const tree = await snapshotOf(el("body", {}, [input]));
+
+    assert.equal(tree.children[0].name, "Card holder");
+});

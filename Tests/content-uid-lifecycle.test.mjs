@@ -126,6 +126,36 @@ test("a uid whose element was collected stops resolving", async () => {
     assert.equal(response.errorCode, "stale_uid");
 });
 
+test("a uid whose element the page removed is stale even while something still holds it", async () => {
+    // A framework's cache keeps a removed node alive, so it is not collected;
+    // it is simply no longer in the document.
+    const button = el("button");
+    const field = el("input");
+    const body = el("body");
+    body.childNodes = [button, field];
+    const { call, registrations } = loadContent(body);
+
+    await call("snapshot", {});
+    const buttonUid = uidFor(registrations, button);
+    const fieldUid = uidFor(registrations, field);
+    button.isConnected = false;
+    field.isConnected = false;
+
+    for (const [action, params] of [
+        ["click", { uid: buttonUid }],
+        ["hover", { uid: buttonUid }],
+        ["type_text", { uid: fieldUid, text: "x" }],
+        ["scroll", { uid: buttonUid, direction: "down" }],
+    ]) {
+        const response = await call(action, params);
+        assert.equal(response.errorCode, "stale_uid", action);
+        assert.equal(response.recoveryAction, "take_snapshot", action);
+    }
+
+    button.isConnected = true;
+    assert.notEqual((await call("click", { uid: buttonUid })).errorCode, "stale_uid", "a connected element resolves");
+});
+
 test("a collected element is swept on read even before the finalizer runs", async () => {
     // Finalization is not prompt, so the read path cannot assume it has happened.
     const button = el("button");

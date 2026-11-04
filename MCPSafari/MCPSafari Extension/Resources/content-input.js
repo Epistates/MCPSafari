@@ -7,14 +7,14 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("input")) return;
     mcp.loaded.add("input");
-    const { assertPageFocused, assertReachable, deepQueryFirst, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { assertPageFocused, assertReachable, clipText, deepQueryFirst, elementAtPoint, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Click ───────────────────────────────────────────────────────
 
     function clickElement(params) {
         // Click by coordinates
         if (params.x !== undefined && params.y !== undefined) {
-            const el = document.elementFromPoint(params.x, params.y);
+            const el = elementAtPoint(params.x, params.y);
             if (!el)
                 throw toolError(
                     "target_not_found",
@@ -41,7 +41,7 @@
         if (!params.force) assertReachable(el, point);
         simulateClick(el, params.doubleClick, point);
         const desc = el.tagName.toLowerCase();
-        return `Clicked <${desc}>${el.textContent ? ': "' + el.textContent.trim().substring(0, 50) + '"' : ""}`;
+        return `Clicked <${desc}>${el.textContent ? ': "' + clipText(el.textContent.trim(), 50) + '"' : ""}`;
     }
 
     function simulateClick(element, doubleClick, point) {
@@ -245,19 +245,56 @@
                 bubbles: true,
                 cancelable: true,
             };
-            el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
-            if (firesKeypress(params.submitKey, keyOpts)) {
-                el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
+            // A page that handles the key cancels it, and the browser then does
+            // nothing more with it. That includes the submission below.
+            let handled = !el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
+            if (!handled && firesKeypress(params.submitKey, keyOpts)) {
+                handled = !el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
             }
             el.dispatchEvent(new KeyboardEvent("keyup", keyOpts));
 
-            // For Enter, also submit the form if present
-            if (params.submitKey === "Enter" && el.form) {
-                el.form.requestSubmit();
-            }
+            if (params.submitKey === "Enter" && !handled) submitImplicitly(el);
         }
 
         return `Typed "${text}" into <${el.tagName.toLowerCase()}>${params.submitKey ? ` then pressed ${params.submitKey}` : ""}`;
+    }
+
+    // Enter in a text field submits its form, by the HTML implicit submission
+    // rules. A bare `requestSubmit()` is not that: it submitted from a textarea,
+    // which takes Enter as a newline, and it skipped the form's default button,
+    // so the click handlers and the submitter the page expected never ran.
+    //
+    // These are the types the spec calls fields that block implicit submission.
+    const IMPLICIT_SUBMIT_TYPES = new Set([
+        "text", "search", "url", "tel", "email", "password",
+        "date", "month", "week", "time", "datetime-local", "number",
+    ]);
+
+    function submitImplicitly(field) {
+        const form = field.form;
+        if (!form || field.tagName.toLowerCase() !== "input" || !IMPLICIT_SUBMIT_TYPES.has(field.type)) return;
+
+        const controls = Array.from(form.elements);
+        const isSubmitButton = (control) => {
+            const tag = control.tagName.toLowerCase();
+            return (tag === "button" && control.type === "submit")
+                || (tag === "input" && (control.type === "submit" || control.type === "image"));
+        };
+
+        // With a submit button, Enter clicks the first one, and a disabled one
+        // means the form does not submit at all.
+        const defaultButton = controls.find(isSubmitButton);
+        if (defaultButton) {
+            if (!defaultButton.disabled) defaultButton.click();
+            return;
+        }
+
+        // Without one, Enter submits only when it cannot be ambiguous which
+        // field it was meant for.
+        const typed = controls.filter(
+            (control) => control.tagName.toLowerCase() === "input" && IMPLICIT_SUBMIT_TYPES.has(control.type)
+        );
+        if (typed.length <= 1) form.requestSubmit();
     }
 
     // ─── Form Input ──────────────────────────────────────────────────
@@ -275,6 +312,7 @@
 
         const results = [];
         const missing = [];
+        const failed = [];
 
         for (const [selector, value] of entries) {
             const el = deepQueryFirst(selector);
@@ -283,14 +321,30 @@
                 results.push(`${selector}: not found`);
                 continue;
             }
-            el.focus();
-            setInputValue(el, value, false);
-            results.push(`${selector}: filled`);
+            // One field that cannot take its value is reported with the others,
+            // not thrown: the fields before it are already filled, and an error
+            // would hide that.
+            try {
+                el.focus();
+                fillField(el, value);
+                results.push(`${selector}: filled`);
+            } catch (error) {
+                failed.push(selector);
+                results.push(`${selector}: ${error.message}`);
+            }
         }
 
         // A partial fill still reports per-field results, but filling nothing is a
         // failure rather than a success whose body happens to say "not found".
-        if (missing.length === entries.length) {
+        if (missing.length + failed.length === entries.length) {
+            if (failed.length > 0) {
+                throw toolError(
+                    "invalid_input",
+                    `No form field could be filled: ${results.join("; ")}`,
+                    false,
+                    "fix_input"
+                );
+            }
             throw toolError(
                 "target_not_found",
                 `No form fields matched: ${missing.join(", ")}`,
@@ -300,6 +354,21 @@
         }
 
         return results.join("\n");
+    }
+
+    // A text control takes the value as typed; a select takes the option it
+    // names, by value or else by label. Anything else has nowhere to put it,
+    // and the native setters would throw an "Illegal invocation" for it.
+    function fillField(el, value) {
+        const tag = el.tagName.toLowerCase();
+        if (tag === "select") {
+            const byValue = Array.from(el.options).some((option) => option.value === String(value));
+            chooseOption(el, byValue ? { value } : { label: String(value) });
+        } else if (tag === "input" || tag === "textarea" || el.isContentEditable) {
+            setInputValue(el, value, false);
+        } else {
+            throw toolError("invalid_input", `<${tag}> is not a fillable field`, false, "fix_input");
+        }
     }
 
     // ─── Select Option ───────────────────────────────────────────────
@@ -331,38 +400,51 @@
             );
         }
 
-        if (params.value !== undefined) {
-            // Assigning an unmatched value clears the selection instead of
-            // throwing, so verify it took rather than reporting a silent no-op.
-            const previous = el.value;
-            el.value = params.value;
-            if (el.value !== String(params.value)) {
-                el.value = previous;
-                throw toolError(
-                    "target_not_found",
-                    `No option with value "${params.value}" in <select>`,
-                    false,
-                    "take_snapshot"
-                );
-            }
-        } else {
-            const option = Array.from(el.options).find(
-                (o) => o.textContent.trim() === params.label
-            );
-            if (!option) {
-                throw toolError(
-                    "target_not_found",
-                    `Option with label "${params.label}" not found`,
-                    false,
-                    "take_snapshot"
-                );
-            }
-            el.value = option.value;
-        }
-
-        el.dispatchEvent(new Event("change", { bubbles: true }));
+        chooseOption(el, params.value !== undefined ? { value: params.value } : { label: params.label });
         const target = params.uid || params.selector || params.label || "select";
         return `Selected option in ${target}`;
+    }
+
+    const optionDisabled = (option) => option.disabled
+        || (option.parentElement?.tagName === "OPTGROUP" && option.parentElement.disabled === true);
+
+    // Selects the option itself rather than assigning the select's `value`,
+    // which picks the first option carrying that value (the wrong one, where a
+    // label is what told them apart) and cannot tell a disabled option from any
+    // other. A user cannot choose a disabled option, so neither can this. The
+    // events are the ones a real choice fires, in order.
+    function chooseOption(select, { value, label }) {
+        const byValue = value !== undefined;
+        const matches = Array.from(select.options).filter(
+            (option) => (byValue ? option.value === String(value) : option.textContent.trim() === label)
+        );
+        if (matches.length === 0) {
+            throw toolError(
+                "target_not_found",
+                byValue ? `No option with value "${value}" in <select>` : `Option with label "${label}" not found`,
+                false,
+                "take_snapshot"
+            );
+        }
+        const option = matches.find((candidate) => !optionDisabled(candidate));
+        if (!option) {
+            throw toolError(
+                "invalid_input",
+                `The option ${byValue ? `with value "${value}"` : `labelled "${label}"`} in <select> is disabled`,
+                false,
+                "fix_input"
+            );
+        }
+
+        // A multiple select ends up with just this option, as assigning its
+        // value always left it; a single one drops its old choice by itself.
+        if (select.multiple) {
+            for (const other of select.options) other.selected = other === option;
+        } else {
+            option.selected = true;
+        }
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
     }
 
 

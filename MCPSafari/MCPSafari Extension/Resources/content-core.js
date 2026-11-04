@@ -67,6 +67,22 @@
         return new Ctor(type, opts);
     }
 
+    // Every cut of page-controlled text goes through here. A plain slice ends
+    // between the halves of a surrogate pair whenever an emoji or other
+    // astral character straddles the limit, and the lone half is not valid
+    // Unicode: JSON encoders write it as an escape that strict parsers refuse,
+    // or replace it, so one unlucky character could spoil a whole reply. The
+    // MAIN-world scripts cannot read this file and carry the same text, kept in
+    // step by Tests/safe-truncation.test.mjs, so change all copies together.
+    //
+    // BEGIN safe-truncate
+    function clipText(text, max) {
+        if (text.length <= max) return text;
+        const end = (text.charCodeAt(max - 1) & 0xFC00) === 0xD800 ? max - 1 : max;
+        return text.slice(0, end);
+    }
+    // END safe-truncate
+
     // Escapes a value for use inside a quoted CSS attribute selector.
     function escapeCssString(value) {
         if (window.CSS && typeof window.CSS.escape === "function") {
@@ -137,7 +153,7 @@
         if (typeof value === "string") {
             let text = value;
             if (text.length > limits.string) {
-                text = text.slice(0, limits.string);
+                text = clipText(text, limits.string);
                 if (owner) owner.truncated = true;
             }
             if (budget.chars + text.length > MAX_REPLY_CHARS) {
@@ -225,7 +241,7 @@
                 clearTimeout(timer);
                 window.removeEventListener("message", onMessage);
                 if (message.error) {
-                    reject(new Error(String(message.error).slice(0, MAX_REPLY_ERROR_CHARS)));
+                    reject(new Error(clipText(String(message.error), MAX_REPLY_ERROR_CHARS)));
                     return;
                 }
                 try {
@@ -261,6 +277,6 @@
 
     window.__mcpSafari = Object.assign(
         { loaded: new Set(["core"]) },
-        { assertPageFocused, escapeCssString, firesKeypress, getElementByUid, getUid, keyCode, nextRequestId, pointerEvent, requestMainWorld, setFrameId, toolError }
+        { assertPageFocused, clipText, escapeCssString, firesKeypress, getElementByUid, getUid, keyCode, nextRequestId, pointerEvent, requestMainWorld, setFrameId, toolError }
     );
 })();

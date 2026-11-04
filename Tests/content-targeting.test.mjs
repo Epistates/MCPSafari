@@ -30,7 +30,8 @@ function el(tag, options = {}, children = []) {
         nodeType: ELEMENT_NODE,
         tagName: tag.toUpperCase(),
         attributes: options.attributes || {},
-        hidden: false,
+        hidden: options.hidden === true,
+        opacity: options.opacity ?? "1",
         id: options.id || "",
         childNodes: children,
         parentElement: null,
@@ -142,7 +143,7 @@ function loadContent(body, { hit = () => lastScrolled, maxArity = Infinity } = {
             postMessage() {},
             innerWidth: 1200,
             innerHeight: 800,
-            getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+            getComputedStyle: (node) => ({ display: "block", visibility: "visible", opacity: node.opacity }),
         },
     });
     return (action, params) => new Promise((resolve) => listener({ action, params }, {}, resolve));
@@ -305,6 +306,70 @@ test("a styled checkbox under its own label is not covered", async () => {
 
     assert.equal((await call("click", { selector: "#terms" })).error, null);
     assert.ok(clicked(input));
+});
+
+// ─── Text is what a user sees ────────────────────────────────────────
+
+test("text in a hidden child does not make its control match", async () => {
+    const cancel = el("button", { id: "cancel" }, [text("Cancel"), el("span", { hidden: true }, [text("Delete account")])]);
+    const call = loadContent(el("body", {}, [cancel]));
+
+    const response = await call("click", { text: "Delete account" });
+
+    assert.equal(response.errorCode, "target_not_found");
+    assert.ok(!clicked(cancel));
+    assert.equal((await call("click", { text: "Cancel" })).error, null);
+    assert.ok(clicked(cancel));
+});
+
+test("script and style text is not text on the page", async () => {
+    const go = el("button", {}, [
+        text("Go"),
+        el("script", {}, [text("var label = 'Delete account'")]),
+        el("style", {}, [text(".Delete account { color: red }")]),
+    ]);
+    const call = loadContent(el("body", {}, [go]));
+
+    assert.equal((await call("click", { text: "Delete account" })).errorCode, "target_not_found");
+    assert.equal((await call("find", { text: "delete account" })).data.length, 0);
+    assert.equal((await call("click", { text: "Go" })).error, null);
+});
+
+test("a copy inside an aria-hidden or transparent container is not a candidate", async () => {
+    const hidden = el("button", {}, [text("Menu")]);
+    const faded = el("button", {}, [text("Menu")]);
+    const shown = el("button", {}, [text("Menu")]);
+    const call = loadContent(el("body", {}, [
+        el("div", { attributes: { "aria-hidden": "true" } }, [hidden]),
+        el("div", { opacity: "0" }, [faded]),
+        shown,
+    ]));
+
+    assert.equal((await call("click", { text: "Menu" })).error, null);
+    assert.ok(clicked(shown) && !clicked(hidden) && !clicked(faded));
+});
+
+test("find skips hidden subtrees by text and by role", async () => {
+    const hidden = el("button", { id: "hidden" }, [text("Menu")]);
+    const shown = el("button", { id: "shown" }, [text("Menu")]);
+    const call = loadContent(el("body", {}, [
+        el("div", { attributes: { "aria-hidden": "true" } }, [hidden]),
+        shown,
+    ]));
+
+    const byText = await call("find", { text: "menu" });
+    const byRole = await call("find", { role: "button" });
+
+    assert.deepEqual(Array.from(byText.data, (match) => match.id), ["shown"]);
+    assert.deepEqual(Array.from(byRole.data, (match) => match.id), ["shown"]);
+});
+
+test("text split across blocks is not joined into a phrase", async () => {
+    const call = loadContent(el("body", {}, [
+        el("div", {}, [el("div", {}, [text("Delete")]), el("div", {}, [text("account")])]),
+    ]));
+
+    assert.equal((await call("click", { text: "Deleteaccount" })).errorCode, "target_not_found");
 });
 
 test("hover refuses a covered target", async () => {
