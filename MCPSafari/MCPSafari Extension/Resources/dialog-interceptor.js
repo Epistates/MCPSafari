@@ -11,7 +11,20 @@
     let timer;
     let originals = {};
     const wrappers = {};
-    const bounded = (value) => String(value ?? "").slice(0, MAX_TEXT);
+
+    // A cut that ends between the halves of a surrogate pair leaves text that
+    // is not valid Unicode. This file runs in the page's world and cannot read
+    // content-core.js, which carries the same text; Tests/safe-truncation.test.mjs
+    // fails if the copies drift, so change them together.
+    //
+    // BEGIN safe-truncate
+    function clipText(text, max) {
+        if (text.length <= max) return text;
+        const end = (text.charCodeAt(max - 1) & 0xFC00) === 0xD800 ? max - 1 : max;
+        return text.slice(0, end);
+    }
+    // END safe-truncate
+    const bounded = (value) => clipText(String(value ?? ""), MAX_TEXT);
 
     function restore() {
         clearTimeout(timer);

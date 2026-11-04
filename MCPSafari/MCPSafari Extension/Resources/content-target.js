@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("target")) return;
     mcp.loaded.add("target");
-    const { allRoots, deepQueryAll, deepQueryFirst, getAccessibleName, getElementByUid, getRole, getUid, isVisible, toolError, walkRootFor } = mcp;
+    const { allRoots, clipText, deepQueryAll, deepQueryFirst, getAccessibleName, getElementByUid, getRole, getUid, isVisible, toolError, walkRootFor } = mcp;
 
     // ─── Element Finding ─────────────────────────────────────────────
 
@@ -85,7 +85,7 @@
         const role = getRole(element);
         const name = getAccessibleName(element);
         const text = element.textContent
-            ? element.textContent.trim().substring(0, 100)
+            ? clipText(element.textContent.trim(), 100)
             : "";
 
         const desc = { uid, tag };
@@ -94,7 +94,7 @@
         if (text && text !== name) desc.text = text;
         if (element.id) desc.id = element.id;
         if (element.className && typeof element.className === "string") {
-            desc.className = element.className.substring(0, 100);
+            desc.className = clipText(element.className, 100);
         }
 
         const rect = element.getBoundingClientRect();
@@ -213,7 +213,7 @@
 
         const listed = top.slice(0, MAX_LISTED_CANDIDATES).map((node) => {
             const desc = describeElement(node);
-            return `${desc.uid} <${desc.tag}> "${(desc.name || desc.text || "").substring(0, 40)}"`;
+            return `${desc.uid} <${desc.tag}> "${clipText(desc.name || desc.text || "", 40)}"`;
         });
         const more = top.length > listed.length ? `, and ${top.length - listed.length} more` : "";
         throw toolError(

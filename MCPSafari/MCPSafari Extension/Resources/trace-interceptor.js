@@ -129,10 +129,23 @@
     const MAX_ATTRIBUTE_VALUE = 512;
     const ALWAYS_OMITTED_ATTRIBUTES = new Set(["value", "checked"]);
 
+    // A cut that ends between the halves of a surrogate pair leaves text that
+    // is not valid Unicode. This file runs in the page's world and cannot read
+    // content-core.js, which carries the same text; Tests/safe-truncation.test.mjs
+    // fails if the copies drift, so change them together.
+    //
+    // BEGIN safe-truncate
+    function clipText(text, max) {
+        if (text.length <= max) return text;
+        const end = (text.charCodeAt(max - 1) & 0xFC00) === 0xD800 ? max - 1 : max;
+        return text.slice(0, end);
+    }
+    // END safe-truncate
+
     function boundedValue(value, detail) {
         if (typeof value !== "string" || value.length <= MAX_ATTRIBUTE_VALUE) return value;
         detail.truncated = true;
-        return value.slice(0, MAX_ATTRIBUTE_VALUE);
+        return clipText(value, MAX_ATTRIBUTE_VALUE);
     }
 
     function attributeValues(mutation) {

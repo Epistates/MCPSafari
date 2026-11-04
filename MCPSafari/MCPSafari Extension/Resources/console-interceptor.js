@@ -13,6 +13,19 @@
     const MAX_TEXT = 8192;
     const MAX_ERROR_STACK = 2048;
 
+    // A cut that ends between the halves of a surrogate pair leaves text that
+    // is not valid Unicode. This file runs in the page's world and cannot read
+    // content-core.js, which carries the same text; Tests/safe-truncation.test.mjs
+    // fails if the copies drift, so change them together.
+    //
+    // BEGIN safe-truncate
+    function clipText(text, max) {
+        if (text.length <= max) return text;
+        const end = (text.charCodeAt(max - 1) & 0xFC00) === 0xD800 ? max - 1 : max;
+        return text.slice(0, end);
+    }
+    // END safe-truncate
+
     // `JSON.stringify` has nothing to say about an Error (its fields are not
     // enumerable, so it writes `{}`), which turned `console.error(err)` and
     // every unhandled rejection into an empty message. The tag test rather than
@@ -28,11 +41,11 @@
     function describeError(error, markCut) {
         const name = String(error.name || "Error");
         const message = String(error.message ?? "");
-        const header = (message ? `${name}: ${message}` : name).slice(0, 1024);
+        const header = clipText(message ? `${name}: ${message}` : name, 1024);
         const stack = typeof error.stack === "string" ? error.stack : "";
         const frames = (stack.startsWith(header) ? stack.slice(header.length) : stack).replace(/^\n/, "");
         if (frames.length > MAX_ERROR_STACK) markCut();
-        return frames ? `${header}\n${frames.slice(0, MAX_ERROR_STACK)}` : header;
+        return frames ? `${header}\n${clipText(frames, MAX_ERROR_STACK)}` : header;
     }
 
     // What JSON would drop or throw on, written so a reader sees that something
@@ -53,7 +66,7 @@
             try {
                 if (typeof value === "string") {
                     if (value.length > MAX_TEXT) truncated = true;
-                    return value.slice(0, MAX_TEXT);
+                    return clipText(value, MAX_TEXT);
                 }
                 // JSON.stringify(undefined) is undefined, which join() would
                 // render as nothing at all.
@@ -64,14 +77,14 @@
                     if (++visits > 128) throw new Error("capture budget");
                     if (typeof item === "string" && item.length > 512) {
                         truncated = true;
-                        return item.slice(0, 512);
+                        return clipText(item, 512);
                     }
                     return describeNonJson(item, markCut);
                 }) ?? "[unserializable or oversized value]";
             } catch { truncated = true; return "[unserializable or oversized value]"; }
         });
         const text = parts.join(" ");
-        return { text: text.slice(0, MAX_TEXT), truncated: truncated || text.length > MAX_TEXT };
+        return { text: clipText(text, MAX_TEXT), truncated: truncated || text.length > MAX_TEXT };
     }
 
     const levels = ["log", "warn", "error", "info", "debug"];

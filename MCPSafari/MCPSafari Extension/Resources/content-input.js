@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("input")) return;
     mcp.loaded.add("input");
-    const { assertPageFocused, assertReachable, deepQueryFirst, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
+    const { assertPageFocused, assertReachable, clipText, deepQueryFirst, firesKeypress, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
     // ─── Click ───────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@
         if (!params.force) assertReachable(el, point);
         simulateClick(el, params.doubleClick, point);
         const desc = el.tagName.toLowerCase();
-        return `Clicked <${desc}>${el.textContent ? ': "' + el.textContent.trim().substring(0, 50) + '"' : ""}`;
+        return `Clicked <${desc}>${el.textContent ? ': "' + clipText(el.textContent.trim(), 50) + '"' : ""}`;
     }
 
     function simulateClick(element, doubleClick, point) {

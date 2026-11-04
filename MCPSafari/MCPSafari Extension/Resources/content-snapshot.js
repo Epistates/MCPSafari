@@ -7,7 +7,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("snapshot")) return;
     mcp.loaded.add("snapshot");
-    const { escapeCssString, getUid } = mcp;
+    const { clipText, escapeCssString, getUid } = mcp;
 
     // ─── Page Reading ────────────────────────────────────────────────
 
@@ -20,8 +20,9 @@
     function clampText(value, limit) {
         const max = limit > 0 ? limit : MAX_PAGE_CHARS;
         if (value.length <= max) return value;
-        return `${value.slice(0, max)}\n\n[truncated: ${value.length} characters total, `
-            + `${max} returned. Raise maxChars, or use find or snapshot to target a region.]`;
+        const kept = clipText(value, max);
+        return `${kept}\n\n[truncated: ${value.length} characters total, `
+            + `${kept.length} returned. Raise maxChars, or use find or snapshot to target a region.]`;
     }
 
     function readPage(params) {
@@ -123,7 +124,7 @@
     const MAX_TEXT_CHARS = 500;
 
     function truncateText(text) {
-        return text.length <= MAX_TEXT_CHARS ? text : `${text.substring(0, MAX_TEXT_CHARS - 3)}...`;
+        return text.length <= MAX_TEXT_CHARS ? text : `${clipText(text, MAX_TEXT_CHARS - 3)}...`;
     }
 
     function takeSnapshot(params = {}) {
