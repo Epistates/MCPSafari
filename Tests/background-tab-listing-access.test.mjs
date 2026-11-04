@@ -247,6 +247,39 @@ test("a stored set larger than the cap is trimmed on load, keeping the most rece
     assert.equal(harness.evaluate('grantedOrigins.has("https://site199.example")'), false);
 });
 
+const ticks = async (count = 6) => {
+    for (let i = 0; i < count; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+
+test("a refusal seen while storage was still being read is not undone when it lands", async () => {
+    // The stored set still names a site that has since been refused. The read
+    // is merged under what was learned meanwhile, and used to bring it back.
+    const stored = { grantedOrigins: ["https://granted.example", "https://refused.example"] };
+    const harness = loadBackground({ stored, slowStorage: true });
+    await ticks();
+
+    harness.evaluate('rememberOriginAccess("https://refused.example", false)');
+    harness.releaseStorage();
+    await ticks();
+
+    assert.equal(harness.evaluate('grantedOrigins.has("https://granted.example")'), true);
+    assert.equal(harness.evaluate('grantedOrigins.has("https://refused.example")'), false, "the refusal was undone");
+    assert.deepEqual([...harness.stored.grantedOrigins], ["https://granted.example"], "and it came back after a restart");
+});
+
+test("a site refused and then granted again while storage was being read stays granted", async () => {
+    const stored = { grantedOrigins: ["https://flapping.example"] };
+    const harness = loadBackground({ stored, slowStorage: true });
+    await ticks();
+
+    harness.evaluate('rememberOriginAccess("https://flapping.example", false)');
+    harness.evaluate('rememberOriginAccess("https://flapping.example", true)');
+    harness.releaseStorage();
+    await ticks();
+
+    assert.equal(harness.evaluate('grantedOrigins.has("https://flapping.example")'), true);
+});
+
 test("slow storage does not hold startup: tabs read as not granted until it lands, then nothing is lost", async () => {
     const first = loadBackground();
     await first.evaluate("ensureTabAccess(1)");

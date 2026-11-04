@@ -371,18 +371,24 @@ function persistGrantedOrigins() {
 // as not granted, and the read is merged in whenever it does arrive. The stored
 // ones go first in the merge: they are older than anything learned meanwhile.
 async function loadGrantedOrigins() {
+    const refused = new Set();
+    refusalsDuringLoads.add(refused);
     const read = (async () => {
         try {
             if (!browser.storage || !browser.storage.local) return;
             const data = await browser.storage.local.get("grantedOrigins");
             if (!Array.isArray(data.grantedOrigins)) return;
-            const merged = new Set([
-                ...data.grantedOrigins.filter((origin) => typeof origin === "string"),
-                ...grantedOrigins,
-            ]);
+            // What was refused while this was out stays refused, and the stored
+            // copy is rewritten without it so a restart does not bring it back.
+            const stored = data.grantedOrigins.filter((origin) => typeof origin === "string");
+            const live = stored.filter((origin) => !refused.has(origin));
+            const merged = new Set([...live, ...grantedOrigins]);
             grantedOrigins.clear();
             for (const origin of [...merged].slice(-MAX_GRANTED_ORIGINS)) grantedOrigins.add(origin);
-        } catch (_) { /* ignore */ }
+            if (live.length < stored.length) persistGrantedOrigins();
+        } catch (_) { /* ignore */ } finally {
+            refusalsDuringLoads.delete(refused);
+        }
     })();
     try {
         await withDeadline(read, PERMISSION_PROBE_TIMEOUT_MS);

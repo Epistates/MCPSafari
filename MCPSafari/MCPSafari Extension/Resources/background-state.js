@@ -243,12 +243,25 @@ async function probeAccess(tabId) {
 const grantedOrigins = new Set();
 const MAX_GRANTED_ORIGINS = 500;
 
+/**
+ * One set per read of the stored origins that is still out, each holding the
+ * origins refused since that read began. The read is merged underneath what was
+ * learned in the meantime, and a refusal leaves nothing in memory to win that
+ * merge, so without these the stored copy of a site that had just been refused
+ * brought it back.
+ *
+ * @type {Set<Set<string>>}
+ */
+const refusalsDuringLoads = new Set();
+
 function rememberOriginAccess(origin, granted) {
     if (!origin) return;
     if (!granted) {
+        for (const refused of refusalsDuringLoads) refused.add(origin);
         if (grantedOrigins.delete(origin)) persistGrantedOrigins();
         return;
     }
+    for (const refused of refusalsDuringLoads) refused.delete(origin);
     // Re-adding moves it to the recent end. Only a change in what is stored is
     // written: a probe lands on most calls, and its order alone is not worth a
     // storage write.
