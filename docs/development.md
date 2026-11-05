@@ -89,7 +89,7 @@ In those files, an `internal` member is one the handlers call; everything else i
 
 A Manifest V3 Safari Web Extension with:
 
-- The background, split across nine files that the manifest loads in order. These are classic scripts sharing one global, so a function in any of them may call a function in any other without imports. Order matters only at load time: a statement that runs while the page is loading can see only what the files before it declared, which is why `background.js` is last. The background is deliberately **not** declared `"type": "module"`, because that would give each file its own scope and break every cross-file reference:
+- The background, split across ten files that the manifest loads in order. These are classic scripts sharing one global, so a function in any of them may call a function in any other without imports. Order matters only at load time: a statement that runs while the page is loading can see only what the files before it declared, which is why `background.js` is last. The background is deliberately **not** declared `"type": "module"`, because that would give each file its own scope and break every cross-file reference:
   - `background-config.js` — the cap on discovered ports, timeouts, and the deadline helper the others measure against
   - `background-state.js` — connection, profile and tab state, and the website-access checks that read it
   - `background-bridge.js` — the WebSocket client: connecting, its half of the handshake, reconnecting, reporting each port
@@ -98,6 +98,7 @@ A Manifest V3 Safari Web Extension with:
   - `background-navigation.js` — `navigate`, and waiting for the load it starts
   - `background-page.js` — screenshots, page JavaScript execution, window resizing
   - `background-frames.js` — talking to content scripts, and routing across a page's frames
+  - `background-cookies.js` — `clear_cookies`, removing one domain's cookies from the profile's store
   - `background.js` — event listeners, the keepalive, token loading, and startup
 - The content script, split across seven files that the manifest injects in order. Each is its own IIFE and they share one namespace on the isolated world, `window.__mcpSafari`, because the background script re-injects them by name and top-level declarations would collide on the second pass. A file reads only what the ones before it published, so the load order below is also the dependency order:
   - `content-core.js` — the namespace, element uid bookkeeping, tool errors, event primitives, the bridge to the MAIN-world interceptors

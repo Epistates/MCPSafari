@@ -429,6 +429,28 @@ extension SafariMCPServer {
                 annotations: .init(readOnlyHint: false, destructiveHint: false)
             ),
 
+            // ── Cookies ──────────────────────────────────────────────
+
+            Tool(
+                name: "clear_cookies",
+                description: "Remove every cookie whose domain is domain or a subdomain of it, HttpOnly and Secure ones included, in one Safari profile. Use it to switch accounts on a site or identity provider that remembers the last one. The cookies of a site the extension has no access to cannot be seen, so removed 0 on a site not yet reached also reports access not_granted.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "domain": .object([
+                            "type": .string("string"),
+                            "description": .string("Bare hostname such as idp.example.com, with no scheme, port or path"),
+                        ]),
+                        "tabId": .object([
+                            "type": .string("string"),
+                            "description": .string("Tab handle whose Safari profile is cleared (default: the selected profile)"),
+                        ]),
+                    ]),
+                    "required": .array([.string("domain")]),
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: true)
+            ),
+
             // ── Utility ──────────────────────────────────────────────
 
             Tool(

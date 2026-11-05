@@ -201,6 +201,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
             case "javascript_tool": return jsText;
             case "screenshot": return { image: png, viewport: { width: 1, height: 1 }, devicePixelRatio: 1, visible: true, hasFocus: true };
             case "wait": return { matched: true };
+            case "clear_cookies": return { removed: 3 };
             default: return `Completed ${action}`;
         }
     };
@@ -257,11 +258,11 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     // Whether the fixture's page says it isn't showing, as content.js reports.
     let hiddenPage = false;
     const requests = [];
-    const untargeted = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab"]);
+    const untargeted = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab", "clear_cookies"]);
     await connect("default", async ({ action, params }) => {
         sentActions.add(action);
         received.push(action);
-        requests.push({ action, tabId: params.tabId, selector: params.selector });
+        requests.push({ action, tabId: params.tabId, selector: params.selector, domain: params.domain });
         inFlight.set(action, (inFlight.get(action) ?? 0) + 1);
         peakInFlight.set(action, Math.max(peakInFlight.get(action) ?? 0, inFlight.get(action)));
         if (answerDelayMs) await new Promise((resolve) => setTimeout(resolve, answerDelayMs));
@@ -357,6 +358,11 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         if (options.waitForSelector) assert.deepEqual(result.structuredContent.wait, { matched: true }, name);
     }
     await tool("resize_window", { width: 800, height: 600 });
+    // Clears a profile, not a tab: a handle only picks the profile and no tab id is sent.
+    for (const args of [{ domain: "IdP.Example.com" }, { domain: "idp.example.com", tabId: "p0t7" }]) {
+        assert.deepEqual((await tool("clear_cookies", args)).structuredContent.cookies, { removed: 3 });
+        assert.deepEqual(requests.at(-1), { action: "clear_cookies", tabId: undefined, selector: undefined, domain: "idp.example.com" });
+    }
     assert.deepEqual((await tool("wait", { seconds: 0 })).structuredContent.wait, { seconds: 0 });
     assert.deepEqual((await tool("wait", { selector: "body" })).structuredContent.wait, { matched: true });
 
@@ -395,6 +401,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     const serialised = [
         ["tabs_create", {}], ["click", { selector: "body" }], ["javascript_tool", { code: "1" }],
         ["resize_window", { width: 800, height: 600 }], ["read_console", {}], ["read_network", {}],
+        ["clear_cookies", { domain: "example.com" }],
     ];
     for (const [name, args] of serialised) {
         await Promise.all([0, 1, 2, 3].map(() => tool(name, args)));
@@ -507,6 +514,8 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("read_network", { status: "500" }, /status must be an integer/);
     await refuse("read_console", { pattern: 5, clear: true }, /pattern must be a string/);
     await refuse("resize_window", { width: 800 }, /height is required/);
+    await refuse("clear_cookies", { domain: "https://idp.example.com/" }, /Invalid domain/);
+    await refuse("clear_cookies", { domain: "com" }, /Invalid domain/);
     await refuse("navigate", { url: "javascript:alert(1)" }, /disallowed scheme/);
     // The wait and trace options are read before the action is sent. Checking
     // them afterwards meant a caller who corrected the argument and retried

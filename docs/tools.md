@@ -4,7 +4,7 @@
 
 This reference describes `main`, which may include tools and options not yet in a published release. See [Releases](https://github.com/Epistates/MCPSafari/releases) for the documentation at your installed version.
 
-## Tools (27)
+## Tools (28)
 
 ### Diagnostics
 
@@ -100,6 +100,16 @@ Console and network capture run in the page's JavaScript context. Pages can obse
 | Tool | Description |
 |-|-|
 | `resize_window` | Resize the browser window; `width` and `height` are both required, positive integers of at most 10,000 |
+
+### Cookies
+
+| Tool | Description |
+|-|-|
+| `clear_cookies` | Remove every cookie whose domain is `domain` or a subdomain of it, HttpOnly and Secure ones included, in one Safari profile; returns `{removed: n}` |
+
+`clear_cookies` is for switching accounts on a site or identity provider that remembers the last one in a cookie page JavaScript cannot delete. `domain` is required and must be a bare hostname such as `idp.example.com`: no scheme, port, path, wildcard or leading dot, and a single label other than `localhost` is refused, so there is no way to clear every site. A cookie set for a parent domain (`.example.com` when asked for `idp.example.com`) is left alone. It uses the WebExtension `cookies` API, so it clears the cookie store of the Safari profile it runs in and no other; a `tabId` picks that profile, as it does for `tabs_create`, and otherwise the selected profile is cleared. No tab is touched, so it works with no tab open on the site. Only the count comes back; cookie names and values never leave the extension.
+
+The `cookies` API reaches only sites the extension has host access to, and asking about one without it is not an error: it finds nothing. So `removed: 0` on a domain MCPSafari has not reached a page of in this profile also carries `"access": "not_granted"` and an `accessHint`, as `tabs_context` does, because the site may have cookies the extension cannot see. Should Safari stall the call on its permission dialog instead, it fails after 10 seconds with `permission_required`.
 
 ### Utility
 
@@ -244,6 +254,7 @@ Every successful tool result includes an object in `structuredContent`, alongsid
 | `read_console`, `read_network` | `messages`, `requests` respectively |
 | `javascript_tool`, interaction and navigation tools | `result`; interactions can additionally return `wait`, `trace`, and `snapshot` when requested and supported |
 | `wait`, `resize_window` | `wait`, `window` respectively |
+| `clear_cookies` | `cookies` with `removed`, plus `access` and `accessHint` when nothing was found on a site not known to be granted |
 | `screenshot` | `screenshot` metadata, including MIME type, byte count, scale, available capture context, and `filePath` when saved; PNG bytes remain in the image block or file |
 | `run_steps` | `results`, `completedSteps`, `failedStep`, plus requested `trace` and `snapshot`; each completed step includes its own structured result |
 

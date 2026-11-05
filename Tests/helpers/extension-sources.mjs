@@ -51,6 +51,7 @@ export const BACKGROUND_SCRIPT_FILES = [
     "background-navigation.js",
     "background-page.js",
     "background-frames.js",
+    "background-cookies.js",
     "background.js",
 ];
 

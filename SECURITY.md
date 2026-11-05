@@ -155,6 +155,7 @@ The extension requests these permissions in `manifest.json`:
 | `nativeMessaging` | Read the per-port token files through the extension's own native handler (`TokenStore.swift`); the host app never handles a token |
 | `alarms` | Keepalive that rereads token files and redials servers |
 | `storage` | `storage.session`: the tab each server pinned with `select_tab`. `storage.local`: the sites known to be granted and manually added ports |
+| `cookies` | `clear_cookies`: remove the cookies of one named domain in the profile the extension runs in. Only a count is returned, never a cookie's name or value, and host access still bounds which sites' cookies it can see |
 
 | Host access / injection | Purpose and scope |
 |-|-|

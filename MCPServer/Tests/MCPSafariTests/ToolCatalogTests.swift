@@ -43,6 +43,15 @@ struct ToolCatalogTests {
         }
     }
 
+    // It removes what cannot be put back, so it runs under the focus lock and
+    // says it is destructive.
+    @Test func clearCookiesIsDestructiveAndNeedsADomain() {
+        let tool = SafariMCPServer.toolDefinitions.first { $0.name == "clear_cookies" }
+        #expect(tool?.annotations.readOnlyHint == false)
+        #expect(tool?.annotations.destructiveHint == true)
+        #expect(tool?.inputSchema.objectValue?["required"] == .array([.string("domain")]))
+    }
+
     @Test func everyToolIsDefinedOnce() {
         let names = SafariMCPServer.toolDefinitions.map(\.name)
         #expect(names.count == Set(names).count)
