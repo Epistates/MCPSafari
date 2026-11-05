@@ -6,23 +6,34 @@ import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
 
 const source = backgroundScriptSource();
 
-// The cookie store as the fake browser holds it. `getAll({domain})` answers the
-// way the WebExtension API documents it, the domain or a subdomain of it, and
-// `remove` takes a cookie by the URL it would be sent to and its name.
-function loadBackground({ cookies = [], granted = [], getAll } = {}) {
-    const store = cookies.map((cookie) => ({ path: "/", secure: false, httpOnly: false, storeId: "0", ...cookie }));
+// The cookie stores as Safari reported them in a second profile: the default
+// one, which `getAll` reads without a `storeId`, holds no tab and no cookie, and
+// the profile's own holds its tabs. `getAll({domain})` answers the way the
+// WebExtension API documents it, the domain or a subdomain of it, and `remove`
+// takes a cookie by the URL it would be sent to and its name.
+const PROFILE_STORE = "persistent-3";
+const DEFAULT_STORE = { id: "persistent-1", incognito: false, tabIds: [] };
+
+function loadBackground({ cookies = [], granted = [], getAll, stores, tabs = [{ id: 5 }] } = {}) {
+    const store = cookies.map((cookie) => ({ path: "/", secure: false, httpOnly: false, storeId: PROFILE_STORE, ...cookie }));
     const removals = [];
+    const queries = [];
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         cookies: {
-            getAll: getAll || (async ({ domain }) => store.filter((cookie) => {
-                const host = cookie.domain.replace(/^\./, "");
-                return host === domain || host.endsWith(`.${domain}`);
-            })),
+            getAllCookieStores: async () => stores || [DEFAULT_STORE, { id: PROFILE_STORE, incognito: false, tabIds: [5] }],
+            getAll: getAll || (async ({ domain, storeId = DEFAULT_STORE.id }) => {
+                queries.push({ domain, storeId });
+                return store.filter((cookie) => {
+                    const host = cookie.domain.replace(/^\./, "");
+                    return cookie.storeId === storeId && (host === domain || host.endsWith(`.${domain}`));
+                });
+            }),
             remove: async (details) => {
                 removals.push(details);
                 const url = new URL(details.url);
                 const index = store.findIndex((cookie) => cookie.name === details.name
+                    && cookie.storeId === details.storeId
                     && cookie.domain.replace(/^\./, "") === url.hostname
                     && cookie.path === url.pathname
                     && (url.protocol === "https:" || !cookie.secure));
@@ -43,7 +54,7 @@ function loadBackground({ cookies = [], granted = [], getAll } = {}) {
         },
         tabs: {
             get: async () => { throw new Error("clear_cookies must not look up a tab"); },
-            query: async () => { throw new Error("clear_cookies must not look up a tab"); },
+            query: async () => tabs,
             onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },
@@ -68,6 +79,7 @@ function loadBackground({ cookies = [], granted = [], getAll } = {}) {
     return {
         store,
         removals,
+        queries,
         request: (params) => vm.runInContext(
             `handleRequest(${JSON.stringify({ id: "r1", action: "clear_cookies", params })})`,
             context
@@ -99,6 +111,40 @@ test("clear_cookies removes the domain's cookies and its subdomains', HttpOnly a
     assert.equal(response.resolvedTabId, null);
 });
 
+// Measured on Safari 26: without a `storeId`, `getAll` read an empty store and
+// the profile's cookies were never found.
+test("cookies are read from and removed in the store holding the profile's tabs", async () => {
+    const harness = loadBackground({
+        granted: ["https://idp.example.com"],
+        cookies: [
+            { name: "ours", domain: "idp.example.com" },
+            { name: "elsewhere", domain: "idp.example.com", storeId: "persistent-9" },
+        ],
+        stores: [
+            DEFAULT_STORE,
+            { id: "private", incognito: true, tabIds: [5] },
+            { id: "persistent-9", incognito: false, tabIds: [77] },
+            { id: PROFILE_STORE, incognito: false, tabIds: [4, 5] },
+        ],
+    });
+
+    const response = await harness.request({ domain: "idp.example.com" });
+
+    assert.deepEqual(data(response), { removed: 1 });
+    assert.deepEqual(JSON.parse(JSON.stringify(harness.queries)), [{ domain: "idp.example.com", storeId: PROFILE_STORE }]);
+    assert.deepEqual(harness.store.map((cookie) => cookie.name), ["elsewhere"]);
+});
+
+test("a profile whose tabs no store holds is refused rather than cleared in another store", async () => {
+    const harness = loadBackground({ tabs: [{ id: 5 }], stores: [DEFAULT_STORE] });
+
+    const response = await harness.request({ domain: "idp.example.com" });
+
+    assert.equal(response.success, false);
+    assert.equal(response.errorCode, "no_cookie_store");
+    assert.deepEqual(harness.queries, []);
+});
+
 // Safari's `getAll` filter is not verified to match the documented one, so the
 // match is held here too: a parent's cookie is never removed.
 test("cookies outside the domain are left alone even when the store returns them", async () => {
@@ -118,7 +164,7 @@ test("each removal names the cookie by a URL it is sent to, keeping its store an
     const harness = loadBackground({
         granted: ["https://idp.example.com"],
         cookies: [
-            { name: "s", domain: ".idp.example.com", path: "/auth", secure: true, storeId: "7" },
+            { name: "s", domain: ".idp.example.com", path: "/auth", secure: true },
             { name: "p", domain: "idp.example.com", partitionKey },
         ],
     });
@@ -126,8 +172,8 @@ test("each removal names the cookie by a URL it is sent to, keeping its store an
     await harness.request({ domain: "idp.example.com" });
 
     assert.deepEqual(JSON.parse(JSON.stringify(harness.removals)), [
-        { url: "https://idp.example.com/auth", name: "s", storeId: "7" },
-        { url: "http://idp.example.com/", name: "p", storeId: "0", partitionKey },
+        { url: "https://idp.example.com/auth", name: "s", storeId: PROFILE_STORE },
+        { url: "http://idp.example.com/", name: "p", storeId: PROFILE_STORE, partitionKey },
     ]);
 });
 

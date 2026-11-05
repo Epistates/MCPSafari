@@ -62,6 +62,27 @@ function domainIsGranted(domain) {
     return false;
 }
 
+// Safari's default cookie store is not the profile's. Measured on Safari 26 in a
+// second profile, `getAll` without a `storeId` read an empty store that held no
+// tab, while the profile's cookies sat in another. The profile's store is the one
+// holding its tabs, which are the only tabs this instance can see.
+async function profileCookieStoreId() {
+    const [stores, tabs] = await Promise.all([browser.cookies.getAllCookieStores(), browser.tabs.query({})]);
+    const ours = new Set(tabs.map((tab) => tab.id));
+    const store = stores.find((candidate) => !candidate.incognito
+        && (candidate.tabIds || []).some((tabId) => ours.has(tabId)));
+    if (!store) {
+        const error = new Error(
+            "No cookie store holds a tab of this Safari profile, so there is nothing to clear it in. "
+            + "Open a tab in the profile with tabs_create, then retry."
+        );
+        error.code = "no_cookie_store";
+        error.recoveryAction = "inspect_error";
+        throw error;
+    }
+    return store.id;
+}
+
 async function handleClearCookies(params) {
     const domain = typeof params.domain === "string" ? params.domain.toLowerCase() : "";
     if (!COOKIE_DOMAIN.test(domain)) {
@@ -73,7 +94,10 @@ async function handleClearCookies(params) {
 
     let cookies;
     try {
-        cookies = await withDeadline(browser.cookies.getAll({ domain }), PERMISSION_DEADLINE_MS);
+        cookies = await withDeadline(
+            profileCookieStoreId().then((storeId) => browser.cookies.getAll({ domain, storeId })),
+            PERMISSION_DEADLINE_MS
+        );
     } catch (err) {
         if (!(err instanceof DeadlineExceeded)) throw err;
         throw permissionRequiredError(`https://${domain}`, true);

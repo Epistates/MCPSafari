@@ -37,7 +37,11 @@ function loadBackground() {
     const tab = { id: 1, active: true, windowId: 1, url: "https://blocked.example/page", title: "T" };
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
-        cookies: { getAll: async () => [], remove: async () => null },
+        cookies: {
+            getAllCookieStores: async () => [{ id: "persistent-1", incognito: false, tabIds: [1] }],
+            getAll: async () => [],
+            remove: async () => null,
+        },
         runtime: {
             getManifest: () => ({ version: "9.9.9" }),
             onMessage: { addListener() {} },
