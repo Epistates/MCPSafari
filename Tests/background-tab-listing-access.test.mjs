@@ -308,8 +308,38 @@ test("slow storage does not hold startup: tabs read as not granted until it land
     );
 });
 
+test("tabs_create with a URL answers once the page has loaded, not while the tab has no address", async () => {
+    // Safari creates the tab before it gives the tab its URL, and refuses access
+    // to a tab with none. A call made straight after tabs_create was told
+    // MCPSafari is not allowed, on a site the user had granted. Measured against
+    // real Safari: refused about 100 ms after the tab opened, allowed by 500.
+    const harness = loadBackground();
+    await harness.evaluate("ensureTabAccess(1)");
+    const loaded = { id: 9, url: "https://granted.example/new", status: "complete", title: "Loaded page" };
+    harness.evaluate(`
+        browser.tabs.create = async () => ({ id: 9, url: "", status: "loading", title: "" });
+        browser.tabs.onUpdated.addListener = (listener) => { globalThis.tabUpdated = listener; };
+        browser.tabs.get = async (id) => (id === 9 ? ${JSON.stringify(loaded)} : undefined);
+    `);
+
+    let answered = false;
+    const pending = harness.evaluate('handleTabsCreate({ url: "https://granted.example/new" })')
+        .then((created) => { answered = true; return created; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(answered, false, "tabs_create answered while the tab had no address");
+
+    const tabUpdated = harness.evaluate("tabUpdated");
+    tabUpdated(9, { status: "loading" }, { ...loaded, status: "loading", title: "" });
+    tabUpdated(9, { status: "complete" }, loaded);
+    const created = await pending;
+
+    assert.equal(created.title, "Loaded page");
+    assert.equal(created.access, "granted");
+});
+
 test("tabs_create reports the URL it was given but withholds the title of an unreached site", async () => {
     const harness = loadBackground();
+    harness.evaluate("waitForTabLoad = async (tabId, created) => created");
 
     const unreached = await harness.evaluate('handleTabsCreate({ url: "https://untouched.example/new" })');
     assert.equal(unreached.url, "https://untouched.example/new");

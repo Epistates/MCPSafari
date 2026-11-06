@@ -102,6 +102,11 @@ test("tab handlers return the redacted URL", async () => {
     assert.equal(queried.url, REDACTED);
     assert.equal(queried.title, "Signing in");
 
+    // `tabs_create` with a URL and `reload` both resolve through waitForTabLoad,
+    // whose timeouts the harness's inert setTimeout never fires, so it answers
+    // straight away with the tab as it stands.
+    evaluate("waitForTabLoad = async (tabId, tab) => tab || browser.tabs.get(tabId)");
+
     const created = await evaluate(`handleTabsCreate({ url: ${JSON.stringify(CALLBACK)} })`);
     assert.equal(created.url, REDACTED);
 
@@ -109,9 +114,6 @@ test("tab handlers return the redacted URL", async () => {
     assert.equal(selected.url, REDACTED);
     assert.equal(selected.selected, true);
 
-    // `reload` resolves through waitForTabLoad's no-navigation timeout, which the
-    // harness's inert setTimeout never fires, so drive the summary line directly.
-    evaluate("waitForTabLoad = async (tabId) => browser.tabs.get(tabId)");
     const navigated = await evaluate("handleNavigate({ tabId: 7, action: 'reload' })");
     assert.equal(navigated, `Reloaded ${REDACTED} (Signing in)`);
 });

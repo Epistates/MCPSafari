@@ -85,7 +85,7 @@ extension SafariMCPServer {
             ),
             Tool(
                 name: "tabs_create",
-                description: "Open a new tab.",
+                description: "Open a new tab. With a url, answers once the page has loaded.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([

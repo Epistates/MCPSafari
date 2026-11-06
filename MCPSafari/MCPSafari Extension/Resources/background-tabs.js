@@ -189,7 +189,15 @@ async function handleTabsQuery() {
 async function handleTabsCreate(params) {
     const opts = {};
     if (params.url) opts.url = params.url;
-    const tab = await browser.tabs.create(opts);
+    const created = await browser.tabs.create(opts);
+    // A URL is waited for the way `navigate`'s goto waits for one. Safari creates
+    // the tab before it gives the tab its URL and refuses access to a tab with
+    // none, so a call made straight after this answered was told MCPSafari is not
+    // allowed, on a site the user had granted. A tab closed while it loads is
+    // described as created, and the next call on it reports `tab_closed`.
+    const tab = params.url
+        ? await waitForTabLoad(created.id, created).catch(() => created)
+        : created;
     const url = tab.url || params.url;
     const access = tabAccessFields(url);
     // An address the caller asked for is theirs to be told back. One the browser
