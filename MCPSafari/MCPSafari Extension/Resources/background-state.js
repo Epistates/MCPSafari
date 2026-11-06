@@ -104,6 +104,24 @@ function tabClosedError(tabId, pinned = true) {
     return error;
 }
 
+// The tab is there but has no page in it: Safari restored it at launch and has
+// not shown it since, or unloaded it to save memory. Safari loads a tab only when
+// it is shown, so `select_tab`, which brings it to the front, is the way back.
+// `navigate` with `reload` is not: it reports success and leaves the tab empty.
+// Retryable for the same reason as a permission refusal: once the tab is shown,
+// the same call works.
+function tabNotLoadedError() {
+    const error = new Error(
+        "Safari has not loaded this tab. It has not been shown since Safari reopened it, or "
+        + "Safari unloaded it to save memory, and Safari loads a tab only when it is shown. "
+        + "Call select_tab on it, which brings it to the front and loads it, then retry."
+    );
+    error.code = "tab_not_loaded";
+    error.retryable = true;
+    error.recoveryAction = "call_select_tab";
+    return error;
+}
+
 // The content script took the message and the document went away before it
 // answered, which is what a click that navigates looks like. Whether the action
 // ran is not known, so this is not retryable: sending it again is how a
@@ -176,6 +194,10 @@ function probeTabAccess() {
 const SAFARI_ACCESS_REFUSAL =
     /does not have access|do(?:es)? not have permission|missing host permission|cannot access|can't access|not allowed/i;
 
+// What Safari says when a tab has no page to run in. It checks access first and
+// this second, so it is never a refusal. Measured against real Safari.
+const SAFARI_TAB_NOT_LOADED = /could not execute script on this tab/i;
+
 /** tabId to the probe running for it, so concurrent callers share one. @type {Map<number, Promise<void>>} */
 const tabAccessProbesInFlight = new Map();
 
@@ -220,7 +242,9 @@ async function probeAccess(tabId) {
             tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
             throw refusal;
         }
-        if (!SAFARI_ACCESS_REFUSAL.test(String(err && err.message))) {
+        const message = String(err && err.message);
+        if (SAFARI_TAB_NOT_LOADED.test(message)) throw tabNotLoadedError();
+        if (!SAFARI_ACCESS_REFUSAL.test(message)) {
             if (await tabIsGone(tabId)) throw tabClosedError(tabId, false);
             throw err;
         }

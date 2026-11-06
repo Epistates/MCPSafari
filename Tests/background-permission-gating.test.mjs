@@ -444,6 +444,30 @@ test("a probe that fails for a reason that is not access is passed on, uncached,
     assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), true);
 });
 
+test("a tab Safari has not loaded is named, uncached, with the grant kept", async () => {
+    // Safari restores a window's tabs at launch without loading them, and loads
+    // each one only when it is shown. Asked to run a script in one, it says this,
+    // and only after its access check has passed, so it says nothing about access.
+    let probes = 0;
+    const harness = loadBackground({
+        probe: async () => {
+            probes += 1;
+            throw new Error("Invalid call to scripting.executeScript(). Could not execute script on this tab.");
+        },
+    });
+    harness.call(`rememberOriginAccess("${BLOCKED_ORIGIN}", true)`);
+
+    const first = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    assert.equal(first.code, "tab_not_loaded");
+    assert.equal(first.retryable, true);
+    assert.equal(first.recoveryAction, "call_select_tab");
+    assert.match(first.message, /select_tab/);
+    assert.equal(probes, 2, "an unloaded tab was cached as if it said something about access");
+    assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), true);
+});
+
 test("a granted page too slow to probe keeps its stored grant", async () => {
     // Two seconds is a long time for a probe and not much for a busy page. The
     // deadline is the dialog case: nothing has been decided, so a stored grant

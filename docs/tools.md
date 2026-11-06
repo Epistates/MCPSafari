@@ -203,6 +203,8 @@ Safari reports a URL and title for every tab, granted or not, which would otherw
 
 A call on a tab that has closed fails with `tab_closed`, not with `permission_required`, and a granted site is not forgotten because one call on it was slow.
 
+A call on a tab Safari has not loaded fails with `tab_not_loaded`. Safari reopens a window's tabs at launch without loading them, can unload a background tab to save memory, and loads a tab only when it is shown. `select_tab` brings the tab to the front, which loads it, and the same call then works. `navigate` with `reload` reports success on such a tab but leaves it unloaded.
+
 A site counts as reached once a call has run on a page there. MCPSafari does not check ahead, because asking Safari about a site it has not been granted is what raises the permission dialog, and a listing would raise one per site. So right after the user grants a site, its tabs still read as `not_granted` until a call reads one of them, such as `snapshot` on that tab, and the next `tabs_context` shows them.
 
 Granted status is remembered across Safari restarts once a tool call has succeeded on that site, for up to 500 sites. A site revoked in Safari Settings keeps showing its URL and title in `tabs_context` until the next call to it is refused, which also forgets it.
@@ -241,6 +243,8 @@ Every tool failure carries a stable `code`, a human-readable `message`, a `retry
 | `retry` | Transient. The same call may work. |
 | `ask_user` | Needs a person: grant website access, or allow Safari to come to the front. |
 | `call_status` | Check `status` for the bridge, the connected profiles, and token health. |
+| `call_tabs_context` | The tab is gone. List the open tabs and choose another. |
+| `call_select_tab` | Safari has not loaded the tab. `select_tab` on it brings it to the front and loads it; then call again. |
 | `list_tools` | The tool name is not one this server has. |
 | `inspect_error` | Nothing automatic to do; read the message. |
 | `inspect_batch_result` | A `run_steps` batch stopped partway; read the per-step results. |
