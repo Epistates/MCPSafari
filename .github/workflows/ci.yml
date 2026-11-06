@@ -85,8 +85,10 @@ jobs:
           cd MCPServer
           swift test --force-resolved-versions
 
+      # A test left waiting on a promise that never settles would otherwise hold
+      # the job until its own timeout, which names no test.
       - name: Test extension scripts
-        run: node --test Tests/*.mjs
+        run: node --test --test-timeout=60000 Tests/*.mjs
 
       # The extension scripts are untyped and share globals across files, so a
       # misspelled cross-file name is a ReferenceError at runtime that no test
