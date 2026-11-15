@@ -58,6 +58,10 @@ const CONTENT_ACTIONS = new Set([
     "drag",
     "upload_file",
     "drop_file",
+    // A file on its way to `upload_file` or `drop_file`, a chunk per message.
+    "stage_files",
+    "file_chunk",
+    "discard_files",
     "wait",
     "start_trace",
     "stop_trace",

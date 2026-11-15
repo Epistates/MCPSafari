@@ -37,6 +37,10 @@
         frameId = id;
     }
 
+    function currentFrameId() {
+        return frameId;
+    }
+
     function toolError(code, message, retryable, recoveryAction) {
         const error = new Error(message);
         error.code = code;
@@ -316,6 +320,6 @@
 
     window.__mcpSafari = Object.assign(
         { loaded: new Set(["core"]) },
-        { assertPageFocused, clipText, dragEvent, escapeCssString, eventInit, firesKeypress, getElementByUid, getUid, keyboardEvent, keyCode, mouseEvent, nextRequestId, pointerEvent, requestMainWorld, setFrameId, toolError }
+        { assertPageFocused, clipText, currentFrameId, dragEvent, escapeCssString, eventInit, firesKeypress, getElementByUid, getUid, keyboardEvent, keyCode, mouseEvent, nextRequestId, pointerEvent, requestMainWorld, setFrameId, toolError }
     );
 })();

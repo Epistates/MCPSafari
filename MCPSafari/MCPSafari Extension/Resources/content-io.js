@@ -7,22 +7,120 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("io")) return;
     mcp.loaded.add("io");
-    const { deepQueryFirst, dragEvent, eventInit, nextRequestId, requestMainWorld, resolveElement, toolError } = mcp;
+    const { currentFrameId, deepQueryFirst, dragEvent, eventInit, nextRequestId, requestMainWorld, resolveElement, toolError } = mcp;
 
     // ─── File Attachment ─────────────────────────────────────────────
 
-    function buildFiles(params) {
-        const specs = params.files || [];
-        if (specs.length === 0) throw new Error("No files provided");
+    // Files arrive a chunk per message and wait here for the action that hands
+    // them to the page. A whole file in one message capped a call at 10 MB, and
+    // Safari refuses an extension message over 64 MB. They wait in this isolated
+    // world, where the page cannot read or change them. Each chunk becomes a Blob
+    // as it arrives, and WebKit keeps Blob bytes outside the page's process, so a
+    // large file does not build up in the page's memory, and the finished File
+    // only refers to the pieces.
+    const stagedTransfers = new Map();
+    // A transfer that nothing has added to for this long is let go. The server
+    // discards one it gives up on, but a server that has gone cannot.
+    const STAGED_IDLE_MS = 60_000;
 
-        return specs.map((spec) => {
-            const binary = atob(spec.data);
+    // Native from Safari 18.2. The fallback is for Safari 17.
+    const decodeBase64 = typeof Uint8Array.fromBase64 === "function"
+        ? (text) => Uint8Array.fromBase64(text)
+        : (text) => {
+            const binary = atob(text);
             const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i += 1) {
-                bytes[i] = binary.charCodeAt(i);
-            }
-            return new File([bytes], spec.name, { type: spec.type });
+            for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+            return bytes;
+        };
+
+    // The target is checked here, before any of the file is sent, so a call aimed
+    // at the wrong element fails at once instead of after a long upload. The
+    // action checks it again, since the page can change in the meantime.
+    function stageFiles(params) {
+        const specs = Array.isArray(params.files) ? params.files : [];
+        if (specs.length === 0) throw new Error("No files provided");
+        const target = resolveElement({ uid: params.uid, selector: params.selector });
+        if (params.intent === "upload_file") checkFileInput(resolveFileInput(target), specs.length);
+
+        const files = specs.map((spec) => {
+            const size = Number(spec.size);
+            if (!Number.isSafeInteger(size) || size < 0) throw new Error(`Invalid size for ${spec.name}`);
+            return { name: String(spec.name), type: String(spec.type || ""), size, parts: [], received: 0 };
         });
+        const transferId = nextRequestId("mcp-transfer");
+        stagedTransfers.set(transferId, { files, timer: null });
+        keepStaged(transferId);
+        return { transferId, frameId: currentFrameId() };
+    }
+
+    function keepStaged(transferId) {
+        const staged = stagedTransfers.get(transferId);
+        clearTimeout(staged.timer);
+        staged.timer = setTimeout(() => stagedTransfers.delete(transferId), STAGED_IDLE_MS);
+    }
+
+    function stagedTransfer(transfer) {
+        const staged = transfer && stagedTransfers.get(transfer.id);
+        if (staged) return staged;
+        throw toolError(
+            "file_transfer_lost",
+            "The files being sent to this page are gone: the page reloaded or navigated while they were "
+            + "being sent, or nothing arrived for a minute. Retry the call.",
+            true,
+            "retry"
+        );
+    }
+
+    function addFileChunk(params) {
+        const staged = stagedTransfer(params.transfer);
+        const file = staged.files[params.file];
+        if (!file) throw new Error(`No file ${params.file} in this transfer`);
+        const bytes = decodeBase64(String(params.data));
+        // A chunk asked for again after its reply was lost is already here.
+        if (params.offset + bytes.length <= file.received) {
+            keepStaged(params.transfer.id);
+            return { received: file.received };
+        }
+        if (params.offset !== file.received) {
+            throw new Error(`A chunk of ${file.name} arrived at byte ${params.offset}, after ${file.received} bytes`);
+        }
+        if (file.received + bytes.length > file.size) {
+            throw new Error(`${file.name} is larger than the ${file.size} bytes it was announced as`);
+        }
+        file.parts.push(new Blob([bytes]));
+        file.received += bytes.length;
+        keepStaged(params.transfer.id);
+        return { received: file.received };
+    }
+
+    function discardFiles(params) {
+        const transferId = params.transfer && params.transfer.id;
+        const staged = stagedTransfers.get(transferId);
+        if (staged) {
+            clearTimeout(staged.timer);
+            stagedTransfers.delete(transferId);
+        }
+        return { discarded: Boolean(staged) };
+    }
+
+    // The action takes the files whether it succeeds or not, so a failed one
+    // leaves nothing behind.
+    function takeStagedFiles(params) {
+        const staged = stagedTransfer(params.transfer);
+        discardFiles(params);
+        for (const file of staged.files) {
+            if (file.received !== file.size) {
+                throw new Error(`${file.name} arrived incomplete: ${file.received} of ${file.size} bytes`);
+            }
+        }
+        return staged.files.map((file) => new File(file.parts, file.name, { type: file.type }));
+    }
+
+    function checkFileInput(input, count) {
+        if (count > 1 && !input.multiple) {
+            throw new Error(`Input accepts one file but ${count} were provided`);
+        }
+        if (input.disabled) throw new Error("File input is disabled");
     }
 
     function transferFor(files) {
@@ -52,14 +150,10 @@
     }
 
     function uploadFile(params) {
+        const files = takeStagedFiles(params);
         const target = resolveElement({ uid: params.uid, selector: params.selector });
         const input = resolveFileInput(target);
-        const files = buildFiles(params);
-
-        if (files.length > 1 && !input.multiple) {
-            throw new Error(`Input accepts one file but ${files.length} were provided`);
-        }
-        if (input.disabled) throw new Error("File input is disabled");
+        checkFileInput(input, files.length);
 
         input.files = transferFor(files).files;
         input.dispatchEvent(new Event("input", eventInit("input")));
@@ -70,16 +164,23 @@
 
     let dropQueue = Promise.resolve();
 
-    // Drops share one target marker, so they run one at a time.
+    // Drops share one target marker, so they run one at a time. The files are
+    // taken at once rather than when the drop's turn comes, so one waiting
+    // behind another drop is not let go as idle.
     function dropFile(params) {
-        const run = dropQueue.then(() => dropFileNow(params));
+        let files;
+        try {
+            files = takeStagedFiles(params);
+        } catch (err) {
+            return Promise.reject(err);
+        }
+        const run = dropQueue.then(() => dropFileNow(params, files));
         dropQueue = run.catch(() => {});
         return run;
     }
 
-    async function dropFileNow(params) {
+    async function dropFileNow(params, files) {
         const target = resolveElement({ uid: params.uid, selector: params.selector });
-        const files = buildFiles(params);
         const dropped = `Dropped ${describeFiles(files)} on <${target.tagName.toLowerCase()}>`;
 
         // Page listeners only see item overrides made in their own world, so
@@ -234,5 +335,5 @@
         return await requestMainWorld("get_network_requests", params);
     }
 
-    Object.assign(mcp, { dropFile, elementRect, getConsoleMessages, getNetworkRequests, handleDialog, startTrace, stopTrace, uploadFile, waitFor });
+    Object.assign(mcp, { addFileChunk, discardFiles, dropFile, elementRect, getConsoleMessages, getNetworkRequests, handleDialog, stageFiles, startTrace, stopTrace, uploadFile, waitFor });
 })();

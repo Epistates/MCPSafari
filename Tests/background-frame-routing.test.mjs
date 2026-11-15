@@ -14,6 +14,7 @@ const EMBED = { frameId: 3, parentFrameId: 0, url: "https://embed.example/form" 
 function loadBackground({ frames = [TOP, EMBED], respond, refuseAccess = false }) {
     const sent = [];
     const listings = [];
+    const pings = [];
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         runtime: {
@@ -45,7 +46,10 @@ function loadBackground({ frames = [TOP, EMBED], respond, refuseAccess = false }
                 const frameId = options ? options.frameId : 0;
                 // Asked before an action that must not run twice, and answered
                 // by any page that has the content script.
-                if (message.action === "ping") return ok({ ready: true });
+                if (message.action === "ping") {
+                    pings.push(frameId);
+                    return ok({ ready: true });
+                }
                 sent.push({ tabId, frameId, action: message.action, params: message.params });
                 return respond(frameId, message);
             },
@@ -83,6 +87,7 @@ function loadBackground({ frames = [TOP, EMBED], respond, refuseAccess = false }
     return {
         sent,
         listings,
+        pings,
         call: (expression) => vm.runInContext(expression, context),
     };
 }
@@ -287,6 +292,46 @@ test("a selector target searches frames until one resolves it", async () => {
 
     assert.equal(result, "Clicked <input>");
     assert.deepEqual(sent.map((s) => s.frameId), [0, 3]);
+});
+
+test("files being sent stay with the frame that staged them", async () => {
+    // Frame 3 has the input. Frame 0 does not, and is listed first, so a fresh
+    // frame search for each chunk would ask it before frame 3 every time.
+    const { call, sent } = loadBackground({
+        respond: (frameId, message) => {
+            if (message.action === "stage_files" && frameId === 0) {
+                return { data: null, error: "no element", errorCode: "target_not_found" };
+            }
+            if (message.action === "stage_files") return ok({ transferId: "mcp-transfer-1", frameId });
+            return ok({ received: 4 });
+        },
+    });
+
+    const staged = await call('routeAction("stage_files", { tabId: 1, selector: "#file", intent: "upload_file", files: [] })');
+    assert.equal(staged.frameId, 3);
+    const transfer = '{ id: "mcp-transfer-1", frameId: 3 }';
+    await call(`routeAction("file_chunk", { tabId: 1, transfer: ${transfer}, file: 0, offset: 0, data: "AAAA" })`);
+    await call(`routeAction("upload_file", { tabId: 1, selector: "#file", transfer: ${transfer} })`);
+    await call(`routeAction("discard_files", { tabId: 1, transfer: ${transfer} })`);
+
+    assert.deepEqual(
+        sent.map((s) => `${s.action}@${s.frameId}`),
+        ["stage_files@0", "stage_files@3", "file_chunk@3", "upload_file@3", "discard_files@3"]
+    );
+});
+
+test("a chunk goes without the ping that an action which must not repeat waits for", async () => {
+    // A chunk says where it goes, so a second delivery adds nothing, and a
+    // 500 MB file is 125 of them.
+    const { call, pings } = loadBackground({ respond: () => ok({ received: 4 }) });
+    const transfer = '{ id: "mcp-transfer-1", frameId: 0 }';
+
+    await call(`routeAction("file_chunk", { tabId: 1, transfer: ${transfer}, file: 0, offset: 0, data: "AAAA" })`);
+    await call(`routeAction("discard_files", { tabId: 1, transfer: ${transfer} })`);
+    assert.deepEqual(pings, []);
+
+    await call(`routeAction("upload_file", { tabId: 1, selector: "#file", transfer: ${transfer} })`);
+    assert.deepEqual(pings, [0]);
 });
 
 test("a subframe that refuses the content script does not fail the whole read, and is named", async () => {

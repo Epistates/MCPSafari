@@ -463,31 +463,107 @@ actor SafariMCPServer {
         return findResult(response)
     }
 
-    /// Reads the caller's local files, then runs the interaction with them attached.
+    /// Sends the caller's local files to the page a chunk at a time, then runs the
+    /// interaction with them attached.
+    ///
+    /// The content script of the frame holding the target keeps the files until
+    /// the action: `stage_files` finds the target and opens a transfer there,
+    /// each `file_chunk` adds to it, and `upload_file` or `drop_file` builds the
+    /// files from what arrived. The chunks stay in the content script's isolated
+    /// world, so the page sees nothing until it is handed the finished files.
     private func handleFileAction(_ action: String, _ args: [String: Value]) async throws -> CallTool.Result {
         let inputs = try Self.fileAttachmentInputs(args)
-
-        let attachments: [FileAttachment]
+        let files: [OpenedFile]
         do {
-            attachments = try FileAttachmentLoader.load(paths: inputs.paths, mimeTypeOverride: inputs.mimeType)
+            files = try FileAttachmentLoader.open(paths: inputs.paths, mimeTypeOverride: inputs.mimeType)
         } catch let error as FileAttachmentError {
             throw ToolInputError(error.description)
         }
+        defer { FileAttachmentLoader.close(files) }
 
-        let files = attachments.map { attachment in
+        var stageParams = interactionParams(args, skipKeys: Self.fileInputKeys)
+        stageParams["intent"] = AnyCodable(action)
+        stageParams["files"] = AnyCodable(files.map { file in
             AnyCodable([
-                "name": AnyCodable(attachment.name),
-                "type": AnyCodable(attachment.mimeType),
-                "data": AnyCodable(attachment.base64),
+                "name": AnyCodable(file.name),
+                "type": AnyCodable(file.mimeType),
+                "size": AnyCodable(file.size),
             ] as [String: AnyCodable])
+        })
+        let staged = try await send("stage_files", args, params: stageParams)
+        guard staged.success else { return Self.failureResult(staged.toolFailure) }
+        guard let transfer = Self.stagedTransfer(staged) else {
+            return Self.failureResult(ToolFailure(
+                code: "extension_error",
+                message: "The Safari extension did not say where it is keeping the files.",
+                retryable: false,
+                recoveryAction: "inspect_error"
+            ))
         }
+        // Every chunk, and the action, go to the tab the target was found in.
+        let args = Self.pinned(args, to: staged)
 
-        return try await handleInteraction(
-            action,
-            args,
-            extraParams: ["files": AnyCodable(files)],
-            skipKeys: Self.fileInputKeys
-        )
+        do {
+            for (index, file) in files.enumerated() {
+                var offset = 0
+                while offset < file.size {
+                    let bytes: Data
+                    do {
+                        bytes = try FileAttachmentLoader.chunk(of: file, at: offset)
+                    } catch let error as FileAttachmentError {
+                        throw ToolInputError(error.description)
+                    }
+                    let sent = try await send("file_chunk", args, params: [
+                        "transfer": transfer,
+                        "file": AnyCodable(index),
+                        "offset": AnyCodable(offset),
+                        "data": AnyCodable(bytes.base64EncodedString()),
+                    ])
+                    guard sent.success else {
+                        await discardStagedFiles(transfer, args)
+                        return Self.failureResult(sent.toolFailure)
+                    }
+                    offset += bytes.count
+                }
+                // Before the page is handed anything, so a file that changed
+                // while it was read is let go rather than delivered.
+                do {
+                    try FileAttachmentLoader.confirmUnchanged(file)
+                } catch let error as FileAttachmentError {
+                    throw ToolInputError(error.description)
+                }
+            }
+            let result = try await handleInteraction(
+                action,
+                args,
+                extraParams: ["transfer": transfer],
+                skipKeys: Self.fileInputKeys
+            )
+            // The action takes the files whether it succeeds or not; this lets go
+            // of them if it never reached the content script.
+            if result.isError == true { await discardStagedFiles(transfer, args) }
+            return result
+        } catch {
+            await discardStagedFiles(transfer, args)
+            throw error
+        }
+    }
+
+    /// The transfer `stage_files` opened: its id and the frame that holds it.
+    static func stagedTransfer(_ response: BridgeResponse) -> AnyCodable? {
+        guard let raw = response.data?.stringValue,
+              let data = raw.data(using: .utf8),
+              let reply = try? JSONDecoder().decode([String: AnyCodable].self, from: data),
+              let id = reply["transferId"]?.stringValue,
+              let frameId = reply["frameId"]?.intValue
+        else { return nil }
+        return AnyCodable(["id": AnyCodable(id), "frameId": AnyCodable(frameId)] as [String: AnyCodable])
+    }
+
+    /// Best effort: the content script also lets go of a transfer nothing has
+    /// added to for a minute, and a page that navigated has dropped it already.
+    private func discardStagedFiles(_ transfer: AnyCodable, _ args: [String: Value]) async {
+        _ = try? await send("discard_files", args, params: ["transfer": transfer])
     }
 
     /// Unified handler for interaction tools: click, type_text, hover, scroll, press_key, select_option, drag.

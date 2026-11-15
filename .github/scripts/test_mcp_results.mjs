@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -154,8 +154,40 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     let queryTabs = [tab];
     const snapshot = { uid: "f0e1", tag: "body", children: [] };
     const trace = { events: [{ type: "click", timestamp: 1 }] };
+    // The content script's half of sending a file: staged against the target,
+    // added to a chunk at a time, and handed over by the action. Kept so a test
+    // can compare what arrived with what was sent.
+    const transfers = new Map();
+    let nextTransfer = 1;
+    let largestChunk = 0;
+    const delivered = [];
+    const discarded = [];
+    const stage = (params) => {
+        const transferId = `transfer-${nextTransfer++}`;
+        transfers.set(transferId, params.files.map((file) => ({ ...file, parts: [], received: 0 })));
+        return { transferId, frameId: 0 };
+    };
+    const addChunk = ({ transfer, file, offset, data }) => {
+        const entry = transfers.get(transfer.id)[file];
+        assert.equal(offset, entry.received, "a chunk arrived out of order");
+        const bytes = Buffer.from(data, "base64");
+        largestChunk = Math.max(largestChunk, bytes.length);
+        entry.parts.push(bytes);
+        entry.received += bytes.length;
+        return { received: entry.received };
+    };
+    const handOver = (action, transfer) => {
+        const files = transfers.get(transfer.id);
+        transfers.delete(transfer.id);
+        delivered.push(files.map(({ name, type, size, parts }) => ({ name, type, size, bytes: Buffer.concat(parts) })));
+        return `Completed ${action}`;
+    };
     const responseData = (action, params) => {
         switch (action) {
+            case "stage_files": return stage(params);
+            case "file_chunk": return addChunk(params);
+            case "discard_files": discarded.push(params.transfer.id); return { discarded: true };
+            case "upload_file": case "drop_file": return handOver(action, params.transfer);
             case "tabs_query": return queryTabs;
             case "tabs_create": return { id: tab.id, access: "granted", url: tab.url, title: tab.title };
             case "select_tab": return { id: tab.id, selected: true, access: "granted", url: tab.url, title: tab.title };
@@ -516,6 +548,38 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
             { tool: "navigate", arguments: { action: "sideways" } },
         ],
     }, /steps\[1\] \(navigate\): Invalid navigation action/);
+
+    // A file well over the old 10 MB limit, the size of an App Store preview,
+    // goes through a chunk per bridge message and arrives intact.
+    const preview = join(directory, "preview.mp4");
+    const previewBytes = randomBytes(30 * 1024 * 1024 + 123);
+    await writeFile(preview, previewBytes);
+    start = requests.length;
+    const uploaded = await tool("upload_file", { selector: "input", filePath: preview });
+    assert.equal(uploaded.structuredContent.result, "Completed upload_file");
+    const [arrived] = delivered.at(-1);
+    assert.deepEqual([arrived.name, arrived.type, arrived.size], ["preview.mp4", "video/mp4", previewBytes.length]);
+    assert.ok(arrived.bytes.equals(previewBytes), "the file arrived changed");
+    assert.equal(largestChunk, 4 * 1024 * 1024);
+    assert.deepEqual(sentSince(start), ["stage_files:-", ...Array(8).fill("file_chunk:7"), "upload_file:7"]);
+    // Several files in one drop each arrive whole, in order.
+    const second = join(directory, "second.txt");
+    await writeFile(second, "second file");
+    await tool("drop_file", { selector: "body", filePaths: [input, second] });
+    assert.deepEqual(delivered.at(-1).map(({ bytes }) => bytes.toString()), ["attached file", "second file"]);
+    // Over the limit is refused by its size before the page is asked for anything.
+    const huge = join(directory, "huge.mov");
+    await writeFile(huge, "");
+    await truncate(huge, 512 * 1024 * 1024 + 1);
+    await refuse("drop_file", { selector: "body", filePath: huge }, /512 MB total limit/);
+    // A chunk the extension refuses ends the call, and the staged part is let go.
+    const deliveredBefore = delivered.length;
+    failAction = "file_chunk";
+    const interrupted = await tool("upload_file", { selector: "input", filePath: preview }, false);
+    failAction = undefined;
+    assert.equal(interrupted.structuredContent.code, "permission_required");
+    assert.equal(discarded.at(-1), [...transfers.keys()].at(-1));
+    assert.equal(delivered.length, deliveredBefore, "an interrupted upload reached the page");
 
     // A step after a successful action can fail on its own. The failure keeps what
     // the action returned, so the caller who is told the wait timed out can still

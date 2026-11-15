@@ -35,7 +35,7 @@ struct ProtectedPathsTests {
 
     private func refusal(_ path: String, roots: [String]) -> String? {
         do {
-            _ = try FileAttachmentLoader.load(paths: [path], protectedRoots: roots)
+            FileAttachmentLoader.close(try FileAttachmentLoader.open(paths: [path], protectedRoots: roots))
             return nil
         } catch let error as FileAttachmentError {
             return error.description
@@ -54,7 +54,10 @@ struct ProtectedPathsTests {
         #expect(refusal(fixture.token.path, roots: roots)?.hasPrefix("Refusing to read") == true)
         // Same prefix as the root, different directory.
         #expect(refusal(fixture.neighbour.path, roots: roots) == nil)
-        #expect(try FileAttachmentLoader.load(paths: [fixture.neighbour.path], protectedRoots: roots).count == 1)
+        let opened = try FileAttachmentLoader.open(paths: [fixture.neighbour.path], protectedRoots: roots)
+        defer { FileAttachmentLoader.close(opened) }
+        #expect(opened.count == 1)
+        #expect(try FileAttachmentLoader.chunk(of: opened[0], at: 0) == Data("not a token".utf8))
     }
 
     @Test func aSymlinkIntoTheTokenDirectoryIsRefusedAsTheFileItPointsAt() throws {

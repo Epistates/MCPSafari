@@ -9,7 +9,7 @@
     const mcp = window.__mcpSafari;
     if (!mcp || mcp.loaded.has("dispatch")) return;
     mcp.loaded.add("dispatch");
-    const { clickElement, dragElement, dropFile, elementRect, findElements, formInput, getConsoleMessages, getNetworkRequests, getPageText, handleDialog, hoverElement, nativePointerPoints, prepareNativeInput, prepareNativeKey, pressKey, readPage, scrollPage, selectOption, setFrameId, startTrace, stopTrace, takeSnapshot, typeText, uploadFile, waitFor } = mcp;
+    const { addFileChunk, clickElement, discardFiles, dragElement, dropFile, elementRect, findElements, formInput, getConsoleMessages, getNetworkRequests, getPageText, handleDialog, hoverElement, nativePointerPoints, prepareNativeInput, prepareNativeKey, pressKey, readPage, scrollPage, selectOption, setFrameId, stageFiles, startTrace, stopTrace, takeSnapshot, typeText, uploadFile, waitFor } = mcp;
 
     // ─── Message Handler ─────────────────────────────────────────────
 
@@ -72,6 +72,12 @@
                 return uploadFile(params);
             case "drop_file":
                 return dropFile(params);
+            case "stage_files":
+                return stageFiles(params);
+            case "file_chunk":
+                return addFileChunk(params);
+            case "discard_files":
+                return discardFiles(params);
             case "element_rect":
                 return elementRect(params);
             case "wait":

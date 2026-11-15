@@ -204,6 +204,9 @@ function spliceFrames(tree, frameId, childFrames, trees) {
 // else stays on the top frame where it always ran.
 async function dispatchToContent(action, params, message) {
     const payload = message || { action, params };
+    // Files being sent are held by the content script of the frame `stage_files`
+    // found the target in, so everything after it about them goes to that frame.
+    if (params.transfer) return sendToContentScript(params.tabId, payload, params.transfer.frameId);
     const targetFrame = frameOfUid(params.uid) ?? frameOfUid(params.fromUid);
     if (targetFrame !== null) {
         return sendToContentScript(params.tabId, payload, targetFrame);
@@ -241,6 +244,7 @@ const FRAME_SEARCHING_ACTIONS = new Set([
     "drag",
     "upload_file",
     "drop_file",
+    "stage_files",
     "scroll",
     "wait",
 ]);
@@ -296,10 +300,14 @@ async function sendToContentScript(tabId, message, frameId = 0) {
 //   - wait: polls or sleeps. `waitAcrossNavigations` already asks it again.
 //   - get_console_messages, get_network_requests: reads, but see below.
 //   - ping: answers and nothing else.
+//   - file_chunk: says where in the file it goes, and a chunk that is already
+//     there is not added again. Asked once per chunk of a file, so sparing each
+//     one the ping is most of the cost of the check.
+//   - discard_files: letting go of what is already gone does nothing.
 // Not here: click, type_text, form_input, select_option, press_key, hover, drag
 // and the file actions dispatch events, scroll is relative, start_trace,
 // stop_trace and handle_dialog hold state that a second call would reset or
-// consume.
+// consume, and a second stage_files would stage the files a second time.
 const REPEAT_SAFE_ACTIONS = new Set([
     "read_page",
     "get_page_text",
@@ -313,6 +321,8 @@ const REPEAT_SAFE_ACTIONS = new Set([
     "get_console_messages",
     "get_network_requests",
     "ping",
+    "file_chunk",
+    "discard_files",
 ]);
 
 function isRepeatSafe(message) {
