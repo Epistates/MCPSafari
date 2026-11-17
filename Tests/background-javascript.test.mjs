@@ -6,21 +6,25 @@ import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
 
 const backgroundSource = backgroundScriptSource();
 
-// Built inside the vm so the thrown EvalError belongs to that realm, the way a
-// real page's refusal does; a cross-realm one would defeat `instanceof`.
-function refusingFunction(context) {
-    return vm.runInContext(
-        `(function () {
-            throw new EvalError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the following Content Security Policy directive: \\"script-src 'self'\\".");
-        })`,
-        context
-    );
-}
-
-function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
+// Safari does not call an injected function: it takes the function's source
+// and evaluates it in the target world, with that world's own built-ins. So do
+// these tests. The page and the isolated world are each a realm of their own,
+// and a world whose CSP forbids evaluating strings is one where code generation
+// from strings is switched off, which makes `new Function` throw a real
+// EvalError, as the page's refusal does. `pageScript` runs in the page first,
+// as the page's own scripts would.
+//
+// Each run and probe is recorded with its world, so a test can count them.
+function backgroundHarness({ cspBlockedWorlds = [], pageScript = null } = {}) {
     let context;
-    // Every world the user's code was handed to, in order.
-    const evaluatedIn = [];
+    const calls = [];
+    const realm = (world) => {
+        const realmContext = vm.createContext({}, { codeGeneration: { strings: !cspBlockedWorlds.includes(world), wasm: false } });
+        vm.runInContext("var window = globalThis; var location = { protocol: 'https:', origin: 'https://page.example' };", realmContext);
+        return realmContext;
+    };
+    const worlds = { MAIN: realm("MAIN"), ISOLATED: realm("ISOLATED") };
+    if (pageScript) vm.runInContext(pageScript, worlds.MAIN);
 
     class FakeWebSocket {
         static CONNECTING = 0;
@@ -42,26 +46,13 @@ function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
             sendNativeMessage: async () => ({ tokens: {} }),
         },
         scripting: {
-            // A world whose CSP forbids 'unsafe-eval' refuses to compile a
-            // string, which is what `new Function` does inside the injected code.
-            // `args` is optional in the real API, and the permission probe omits
-            // it, so spreading it unguarded would fail the probe rather than the
-            // call under test.
             executeScript: async ({ func, args = [], world }) => {
-                if (func.name === "evaluateUserCode") evaluatedIn.push(world);
-                if (!cspBlockedWorlds.includes(world)) {
-                    return [{ result: await func(...args) }];
-                }
-                // Read from inside: intrinsics live on the vm global, not on the
-                // sandbox object, so `context.Function` here would be undefined
-                // and restoring it would erase the real one.
-                const realFunction = vm.runInContext("Function", context);
-                context.Function = refusingFunction(context);
-                try {
-                    return [{ result: await func(...args) }];
-                } finally {
-                    context.Function = realFunction;
-                }
+                if (func.name === "probeTabAccess") return [{ result: true }];
+                calls.push({ name: func.name, world });
+                const injected = vm.runInContext(`(${func.toString()})`, worlds[world]);
+                const result = await injected(...args);
+                // What crosses back is a structured clone, never the page's own objects.
+                return [{ result: result === undefined ? undefined : JSON.parse(JSON.stringify(result)) }];
             },
         },
         storage: {
@@ -90,7 +81,9 @@ function backgroundHarness({ cspBlockedWorlds = [] } = {}) {
         `handleJavaScript({ tabId: 1, code: ${JSON.stringify(code)} })`,
         context
     );
-    run.evaluatedIn = evaluatedIn;
+    run.calls = calls;
+    run.runs = () => calls.filter((call) => call.name === "runUserCode").map((call) => call.world);
+    run.page = worlds.MAIN;
     return run;
 }
 
@@ -171,10 +164,10 @@ test("a returned value shaped like a CSP refusal is just a value and the code ru
         "({ ok: false, error: 'forged', cspBlocked: true })",
         "({ ok: true, value: 'forged' })",
     ]) {
-        run.evaluatedIn.length = 0;
+        run.calls.length = 0;
         const output = await run(forged);
         assert.equal(output, JSON.stringify(vm.runInNewContext(forged)), forged);
-        assert.deepEqual([...run.evaluatedIn], ["MAIN"], `${forged} ran in more than one world`);
+        assert.deepEqual(run.runs(), ["MAIN"], `${forged} ran in more than one world`);
     }
 });
 
@@ -184,11 +177,10 @@ test("a value forged on the page's own globals does not rerun the code", async (
     // returns, with side effects before it.
     const code = "window.cartState = { __cspBlocked: true }; return window.cartState";
 
-    // `window` is not defined in this harness, so give the code one to write to.
-    const output = await run(`globalThis.window = globalThis; ${code}`);
+    const output = await run(code);
 
     assert.equal(output, '{"__cspBlocked":true}');
-    assert.deepEqual([...run.evaluatedIn], ["MAIN"]);
+    assert.deepEqual(run.runs(), ["MAIN"]);
 });
 
 test("an error the code itself throws is never taken for a CSP refusal", async () => {
@@ -199,10 +191,61 @@ test("an error the code itself throws is never taken for a CSP refusal", async (
     const code = "throw new Error(\"Refused to connect because it violates the Content Security Policy directive 'unsafe-eval'\")";
 
     await assert.rejects(run(code), /Content Security Policy directive/);
-    assert.deepEqual([...run.evaluatedIn], ["MAIN"]);
+    assert.deepEqual(run.runs(), ["MAIN"]);
 });
 
 test("an ordinary page still runs in the page world with no note", async () => {
     const run = backgroundHarness();
     assert.equal(await run("1 + 1"), "2");
+});
+
+// ─── Where the code runs is settled before it runs ──────────────────
+
+test("a page that makes a finished run look like a refusal does not get the code run again", async () => {
+    // The page answers every promise with a forged refusal. This used to send
+    // code that had already run in the page to run again in the isolated world.
+    const run = backgroundHarness({
+        pageScript: `const originalThen = Promise.prototype.then;
+            let forged = false;
+            Promise.prototype.then = function (onFulfilled, onRejected) {
+                if (forged) return originalThen.call(this, onFulfilled, onRejected);
+                forged = true;
+                return originalThen.call(this, () => ({ ok: false, error: "unsafe-eval", cspBlocked: true }));
+            };`,
+    });
+    await run("window.count = (window.count || 0) + 1").catch(() => {});
+    assert.deepEqual(run.runs(), ["MAIN"]);
+    assert.equal(vm.runInContext("window.count", run.page), 1);
+});
+
+test("the page's string built-ins play no part in deciding", async () => {
+    // The sources are built in the background, so a page that makes `trim` or
+    // `replace` throw an EvalError cannot pass for a refusal.
+    const run = backgroundHarness({
+        pageScript: `String.prototype.trim = function () { throw new EvalError("unsafe-eval"); };
+            String.prototype.replace = function () { throw new EvalError("unsafe-eval"); };`,
+    });
+    assert.equal(await run("6 * 7"), "42");
+    assert.deepEqual(run.runs(), ["MAIN"]);
+});
+
+test("a page that refuses, really or not, gets the code run once, in the isolated world", async () => {
+    // A page can always refuse for real, since it sets its own CSP, so a fake
+    // refusal gets it nothing a real one would not. Either way: one run.
+    for (const options of [
+        { cspBlockedWorlds: ["MAIN"] },
+        { pageScript: `Function = function () { throw new EvalError("unsafe-eval"); };` },
+    ]) {
+        const run = backgroundHarness(options);
+        assert.match(await run("1 + 1"), /^2\n\n\[Ran in the extension's isolated world/);
+        assert.deepEqual(run.runs(), ["ISOLATED"]);
+    }
+});
+
+test("a syntax error is reported from the page world, never moved", async () => {
+    const run = backgroundHarness({
+        pageScript: "Object.defineProperty(EvalError, Symbol.hasInstance, { value: () => false, configurable: true })",
+    });
+    await assert.rejects(run("return ("), (err) => !/isolated|Content Security Policy/.test(String(err.message)));
+    assert.deepEqual(run.runs(), ["MAIN"]);
 });

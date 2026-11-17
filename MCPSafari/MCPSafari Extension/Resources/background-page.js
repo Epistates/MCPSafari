@@ -82,76 +82,99 @@ async function capturePageContext(tabId) {
 
 // ─── JavaScript Execution Handler ────────────────────────────────────
 
-// Injected into the target world, so it must not close over anything here.
+// ─── JavaScript execution ────────────────────────────────────────────
 //
-// Returns an envelope, `{ ok: true, value }` or `{ ok: false, error, cspBlocked }`,
-// and the user's value only ever sits inside `value`. It used to be returned
-// bare, with failures marked by `__error` and `__cspBlocked` keys on it, so a
-// page value like `window.cartState = { __cspBlocked: true }` read as a CSP
-// refusal and the code, already run once, was run again in the isolated world.
-function evaluateUserCode(code) {
-    // A page whose script-src omits 'unsafe-eval' refuses to compile a string in
-    // its own realm, which is what new Function does here. Only compiling is
-    // classified: the refusal comes before anything has run, which is what makes
-    // the fallback safe, so an error thrown by the code itself, whatever its
-    // message says, is never taken for one.
-    const failure = (e, compiling) => {
-        const message = e && e.message ? e.message : String(e);
-        const cspBlocked = compiling
-            && ((typeof EvalError !== "undefined" && e instanceof EvalError)
-                || /unsafe-eval|trusted-types-eval|Content Security Policy/i.test(message));
-        return { ok: false, error: message, cspBlocked };
+// The agent's code is compiled in the page's own world, so it sees the page's
+// globals. A page whose Content Security Policy forbids evaluating strings
+// refuses that compile, and then the code runs in the content scripts' isolated
+// world instead, which shares the DOM.
+//
+// Where the code runs is decided before any of it runs, by a probe that only
+// compiles, and never from how a run turned out. A run in the page's world goes
+// through the page's own `Promise`, `Function` and error objects, so a page can
+// make a finished run look like anything, including a refusal; deciding from
+// that once ran the code a second time in the isolated world, repeating every
+// click, submission or purchase it made. A page sets its own CSP, so it can
+// still choose the isolated world by refusing; what it cannot do is get the
+// code run twice.
+
+/** The two forms the agent's code is tried in: a bare expression, then a function body. */
+function userCodeSources(code) {
+    const text = String(code);
+    return {
+        expression: `return (async () => (${text.trim().replace(/;+$/, "")}))()`,
+        statements: `return (async () => { ${text} })()`,
     };
+}
 
-    let fn;
+// Injected into a page's world, so it must not close over anything here. Compiles
+// both forms and runs neither, and says which compiled: "expression",
+// "statements", "refused" (this world will not compile strings), or "syntax"
+// (neither form is valid code). The sources arrive ready-made and the answer is
+// a string, so there is nothing of the page's in the result.
+function probeUserCode(expressionSource, statementsSource) {
+    "use strict";
+    const refused = (e) => typeof EvalError !== "undefined" && e instanceof EvalError;
     try {
-        const expressionCode = String(code).trim().replace(/;+$/, "");
-        try {
-            fn = new Function(`return (async () => (${expressionCode}))()`);
-        } catch (e) {
-            // A syntax error means it is not a bare expression; a CSP refusal
-            // means neither form will compile, so do not retry it as one.
-            if (typeof EvalError !== "undefined" && e instanceof EvalError) return failure(e, true);
-            fn = new Function(`return (async () => { ${code} })()`);
-        }
+        new Function(expressionSource);
+        return "expression";
     } catch (e) {
-        return failure(e, true);
+        if (refused(e)) return "refused";
     }
-
     try {
-        return fn().then((value) => ({ ok: true, value }), (e) => failure(e, false));
+        new Function(statementsSource);
+        return "statements";
     } catch (e) {
-        return failure(e, false);
+        return refused(e) ? "refused" : "syntax";
     }
 }
+
+// Injected into a page's world, so it must not close over anything here. Runs
+// one form of the agent's code, once, and returns an envelope with the value or
+// the error: `{ ok: true, value }` or `{ ok: false, error }`. The user's value
+// only ever sits inside `value`, so nothing it holds can read as an outcome.
+function runUserCode(source) {
+    "use strict";
+    const failure = (e) => ({ ok: false, error: e && e.message ? String(e.message) : String(e) });
+    let fn;
+    try {
+        fn = new Function(source);
+    } catch (e) {
+        return failure(e);
+    }
+    try {
+        return fn().then((value) => ({ ok: true, value }), failure);
+    } catch (e) {
+        return failure(e);
+    }
+}
+
+const USER_CODE_FORMS = new Set(["expression", "statements", "refused", "syntax"]);
 
 async function handleJavaScript(params) {
     const tabId = params.tabId;
     await ensureTabAccess(tabId);
-    const runIn = async (world) => {
-        const results = await browser.scripting.executeScript({
-            target: { tabId },
-            func: evaluateUserCode,
-            args: [params.code],
-            world,
-        });
-        const outcome = results && results.length > 0 ? results[0].result : undefined;
-        // No envelope at all is what a result that cannot be cloned out of the
-        // page looks like, and has always read as a value of `undefined`.
-        return outcome && typeof outcome.ok === "boolean" ? outcome : { ok: true, value: undefined };
+    const sources = userCodeSources(params.code);
+    const inWorld = async (world, func, args) => {
+        const results = await browser.scripting.executeScript({ target: { tabId }, func, args, world });
+        return results && results.length > 0 ? results[0].result : undefined;
+    };
+    const probe = async (world) => {
+        const form = await inWorld(world, probeUserCode, [sources.expression, sources.statements]);
+        // Anything else is a probe that did not run as written; the plain run
+        // below then reports whatever the code does.
+        return USER_CODE_FORMS.has(form) ? form : "statements";
     };
 
-    let outcome = await runIn("MAIN");
-    let isolated = false;
-
-    if (!outcome.ok && outcome.cspBlocked === true) {
+    let world = "MAIN";
+    let form = await probe("MAIN");
+    if (form === "refused") {
         // The isolated world does not inherit the page's CSP and still shares
         // the DOM, so DOM-based code survives a strict script-src. Page
         // JavaScript globals do not exist there, which the caller is told.
-        // Retrying is safe because a CSP refusal happens at compile time, so
-        // nothing in the submitted code has run yet and side effects cannot double.
-        const fallback = await runIn("ISOLATED");
-        if (!fallback.ok && fallback.cspBlocked === true) {
+        world = "ISOLATED";
+        form = await probe("ISOLATED");
+        if (form === "refused") {
             throw new Error(
                 "The page's Content Security Policy blocks evaluating code as a string, "
                 + "in both the page world and the extension's isolated world. "
@@ -159,13 +182,17 @@ async function handleJavaScript(params) {
                 + "type_text to drive it."
             );
         }
-        outcome = fallback;
-        isolated = true;
     }
 
-    if (!outcome.ok) throw new Error(outcome.error);
-    const value = outcome.value !== undefined ? JSON.stringify(outcome.value) : "undefined";
-    return isolated
+    // Exactly one run, in the world the probe settled on. A form that will not
+    // compile is run as a body, which reports the syntax error as it stands.
+    const outcome = await inWorld(world, runUserCode, [form === "expression" ? sources.expression : sources.statements]);
+    // No envelope at all is what a result that cannot be cloned out of the page
+    // looks like, and has always read as a value of `undefined`.
+    const result = outcome && typeof outcome.ok === "boolean" ? outcome : { ok: true, value: undefined };
+    if (!result.ok) throw new Error(result.error);
+    const value = result.value !== undefined ? JSON.stringify(result.value) : "undefined";
+    return world === "ISOLATED"
         ? `${value}\n\n[Ran in the extension's isolated world: the page's CSP blocked evaluation in the page world. The DOM is shared, but page JavaScript globals such as window properties set by the site are not visible.]`
         : value;
 }
