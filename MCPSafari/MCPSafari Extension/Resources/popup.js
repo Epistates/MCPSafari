@@ -56,15 +56,20 @@ function siteAccessMarkup(access) {
         ? '<span class="site-state allowed">Allowed</span>'
         : access.pending
             ? '<span class="site-state">Asking…</span>'
-            : '<span class="site-state blocked">No access</span>';
+            : access.unresponsive
+                ? '<span class="site-state">Not answering</span>'
+                : '<span class="site-state blocked">No access</span>';
 
     const hint = access.allowed
         ? ""
         : access.pending
             ? '<p class="site-hint">Safari is asking whether to allow this site. Its dialog can '
               + "open behind another window.</p>"
-            : '<p class="site-hint">Allow this site from Safari Settings &gt; Extensions to let '
-              + "MCPSafari read it. Results are shared with your MCP client.</p>";
+            : access.unresponsive
+                ? '<p class="site-hint">This page isn\'t answering MCPSafari right now. It may be '
+                  + "busy, so try again in a moment.</p>"
+                : '<p class="site-hint">Allow this site from Safari Settings &gt; Extensions to let '
+                  + "MCPSafari read it. Results are shared with your MCP client.</p>";
 
     return `<div class="site-row"><span class="site-host">${escapeHtml(host)}</span>${state}</div>${hint}`;
 }

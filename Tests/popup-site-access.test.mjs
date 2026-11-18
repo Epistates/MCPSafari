@@ -13,8 +13,12 @@ const popup = readFileSync(
 
 // ─── background: what the popup is told ──────────────────────────────
 
-function loadBackground({ probe, tabUrl = "https://example.com/a/page?q=1" }) {
+// `blockTabsAfterProbe` is Safari's dialog: from the moment the probe raises it,
+// `tabs.get` waits on it too. A probe that stalls while `tabs.get` still answers
+// is a page that is hidden or busy instead.
+function loadBackground({ probe, tabUrl = "https://example.com/a/page?q=1", blockTabsAfterProbe = false }) {
     const timers = [];
+    let probeStarted = false;
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         runtime: {
@@ -23,10 +27,11 @@ function loadBackground({ probe, tabUrl = "https://example.com/a/page?q=1" }) {
             sendNativeMessage: async () => ({ tokens: {} }),
         },
         scripting: {
-            executeScript: async (options) =>
-                options && options.func && options.func.name === "probeTabAccess"
-                    ? probe(options)
-                    : [{ result: true }],
+            executeScript: async (options) => {
+                if (!(options && options.func && options.func.name === "probeTabAccess")) return [{ result: true }];
+                probeStarted = true;
+                return probe(options);
+            },
         },
         storage: {
             local: { get: async () => ({}), set() {} },
@@ -34,7 +39,9 @@ function loadBackground({ probe, tabUrl = "https://example.com/a/page?q=1" }) {
         },
         tabs: {
             query: async () => [{ id: 1, active: true, windowId: 1 }],
-            get: async (id) => ({ id, active: true, windowId: 1, url: typeof tabUrl === "function" ? tabUrl(id) : tabUrl, title: "T" }),
+            get: async (id) => (blockTabsAfterProbe && probeStarted
+                ? new Promise(() => {})
+                : { id, active: true, windowId: 1, url: typeof tabUrl === "function" ? tabUrl(id) : tabUrl, title: "T" }),
             onUpdated: { addListener() {}, removeListener() {} },
             onRemoved: { addListener() {} },
         },
@@ -83,9 +90,7 @@ test("the popup describes the tab the user is looking at, not one a server pinne
     assert.equal(access.origin, "https://example.com");
 });
 
-test("a site awaiting Safari's dialog is reported as asking, not as refused", async () => {
-    const harness = loadBackground({ probe: () => new Promise(() => {}) });
-
+async function describeWhenParked(harness) {
     const running = harness.call("describeActiveTabAccess()");
     // Deadlines arm in sequence rather than all at once: resolving the active
     // tab has one of its own before the probe gets there. Firing at whichever
@@ -98,13 +103,31 @@ test("a site awaiting Safari's dialog is reported as asking, not as refused", as
         await new Promise((r) => setImmediate(r));
         harness.fire();
     }
-    const access = await tracked;
+    return tracked;
+}
+
+test("a site awaiting Safari's dialog is reported as asking, not as refused", async () => {
+    const harness = loadBackground({ probe: () => new Promise(() => {}), blockTabsAfterProbe: true });
+
+    const access = await describeWhenParked(harness);
 
     // The distinction is the whole point: "asking" resolves by itself once
     // someone finds the dialog, "refused" does not.
     assert.equal(access.allowed, false);
     assert.equal(access.pending, true);
     assert.equal(access.origin, "https://example.com");
+});
+
+test("a page that isn't answering is reported as that, not as asking or refused", async () => {
+    // Safari still answers for the tab, so no dialog is holding it. Either of
+    // the other two states would send the user looking for something not there.
+    const harness = loadBackground({ probe: () => new Promise(() => {}) });
+
+    const access = await describeWhenParked(harness);
+
+    assert.equal(access.allowed, false);
+    assert.equal(access.pending, false);
+    assert.equal(access.unresponsive, true);
 });
 
 test("a refused site is not reported as still asking", async () => {
@@ -157,6 +180,11 @@ test("the popup names the host and its state", () => {
     assert.match(blocked, /Safari Settings/);
     // Granting access can disclose page contents to the connected client.
     assert.match(blocked, /shared with your MCP client/i);
+
+    const quiet = render({ origin: "https://example.com", allowed: false, pending: false, unresponsive: true });
+    assert.match(quiet, /Not answering/);
+    // Neither a dialog to find nor a setting to change.
+    assert.doesNotMatch(quiet, /behind another window|Safari Settings|No access/);
 });
 
 test("a host with no origin renders nothing at all", () => {
