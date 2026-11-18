@@ -259,7 +259,7 @@ actor SafariMCPServer {
     /// Rewrites the `id` of a tab object the extension returned into the handle
     /// that names it, so the only tab identifier a caller ever sees is one they
     /// can hand straight back.
-    private func tabResult(_ response: BridgeResponse, profileIndex: Int) -> CallTool.Result {
+    private func tabResult(_ response: BridgeResponse, profileIndex: Int, newWindowRequested: Bool = false) -> CallTool.Result {
         guard response.success, let raw = response.data?.stringValue else {
             return textResult(response, as: "tab")
         }
@@ -272,10 +272,22 @@ actor SafariMCPServer {
         tab["id"] = AnyCodable(TabHandle(profileIndex: profileIndex, tabID: tabID).description)
         var content = [Self.textContent(Self.jsonText(tab) ?? raw)]
         if let note = Self.accessNote(for: [tab]) { content.append(Self.textContent(note)) }
+        if let note = Self.newWindowNote(requested: newWindowRequested, tab: tab) { content.append(Self.textContent(note)) }
         return CallTool.Result(
             content: content,
             structuredContent: .object(["tab": (try? Value(tab)) ?? .null])
         )
+    }
+
+    /// An extension older than `newWindow` ignores it and opens the tab in the
+    /// window in front, and says nothing. One that opened a window says so in
+    /// the tab it reports, so its absence is how the caller hears about the
+    /// first case rather than believing it has a window of its own.
+    static func newWindowNote(requested: Bool, tab: [String: AnyCodable]) -> String? {
+        guard requested, tab["newWindow"]?.boolValue != true else { return nil }
+        return "The Safari extension is older than this server and opened the tab in the window in front, "
+            + "not in a new window. Update the MCPSafari app to get newWindow; until then, ask the user "
+            + "for a window of your own."
     }
 
     /// Tabs on a site Safari has not granted are listed, selected and created
@@ -409,13 +421,14 @@ actor SafariMCPServer {
 
     private func handleTabsCreate(_ args: [String: Value]) async throws -> CallTool.Result {
         let profileIndex = try await resolveProfileIndex(args)
+        let params = try Self.tabsCreateParams(args)
         let response = try await bridge.send(
             action: "tabs_create",
-            params: try Self.tabsCreateParams(args),
+            params: params,
             timeout: Self.bridgeTimeout(args),
             profileIndex: profileIndex
         )
-        return tabResult(response, profileIndex: profileIndex)
+        return tabResult(response, profileIndex: profileIndex, newWindowRequested: params["newWindow"] != nil)
     }
 
     private func handleCloseTab(_ args: [String: Value]) async throws -> CallTool.Result {

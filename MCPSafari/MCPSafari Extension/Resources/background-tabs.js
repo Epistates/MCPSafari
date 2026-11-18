@@ -186,10 +186,55 @@ async function handleTabsQuery() {
     });
 }
 
+// How far a new window sits from the window in front, down and to the right.
+// The same size at an offset leaves a strip of each window showing, and a
+// window with any part showing keeps drawing its page.
+const NEW_WINDOW_OFFSET = 40;
+// Placement is a nicety: a lookup slower than this opens the window wherever
+// Safari puts it, rather than holding the call.
+const NEW_WINDOW_PLACEMENT_DEADLINE_MS = 2000;
+
+// The position and size for a new window, offset from the window in front, or
+// nothing when that window does not say where it is.
+async function newWindowPlacement() {
+    let front;
+    try {
+        front = await withDeadline(browser.windows.getLastFocused(), NEW_WINDOW_PLACEMENT_DEADLINE_MS);
+    } catch {
+        return {};
+    }
+    const bounds = ["left", "top", "width", "height"];
+    if (!front || !bounds.every((key) => Number.isFinite(front[key]))) return {};
+    return {
+        left: front.left + NEW_WINDOW_OFFSET,
+        top: front.top + NEW_WINDOW_OFFSET,
+        width: front.width,
+        height: front.height,
+    };
+}
+
+// A new window holding one new tab, for an agent that wants a window of its own:
+// a window shows one tab at a time, so agents sharing one hide each other's pages.
+async function createTabInNewWindow(url) {
+    const created = await browser.windows.create({
+        ...(url ? { url } : {}),
+        ...(await newWindowPlacement()),
+    });
+    const tab = created?.tabs?.[0]
+        ?? (await browser.tabs.query({ windowId: created?.id }))[0];
+    if (!tab) throw new Error("Safari opened a window but reported no tab in it.");
+    return tab;
+}
+
 async function handleTabsCreate(params) {
-    const opts = {};
-    if (params.url) opts.url = params.url;
-    const created = await browser.tabs.create(opts);
+    let created;
+    if (params.newWindow === true) {
+        created = await createTabInNewWindow(params.url);
+    } else {
+        const opts = {};
+        if (params.url) opts.url = params.url;
+        created = await browser.tabs.create(opts);
+    }
     // A URL is waited for the way `navigate`'s goto waits for one. Safari creates
     // the tab before it gives the tab its URL and refuses access to a tab with
     // none, so a call made straight after this answered was told MCPSafari is not
@@ -209,6 +254,9 @@ async function handleTabsCreate(params) {
         ...(reported ? { url: reported } : {}),
         ...(access.access === "granted" ? { title: tab.title || "" } : {}),
         ...access,
+        // Said only when it happened, so a server can tell an extension that
+        // opened a window from an older one that ignored the request.
+        ...(params.newWindow === true ? { newWindow: true } : {}),
     };
 }
 

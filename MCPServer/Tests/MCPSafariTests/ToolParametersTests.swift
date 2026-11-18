@@ -97,6 +97,29 @@ struct ToolParametersTests {
         #expect(refusal("navigate", ["url": "https://example.com", "action": "goto"]) == nil)
     }
 
+    @Test func newWindowIsSentOnlyWhenAskedFor() throws {
+        #expect(refusal("tabs_create", ["newWindow": "true"]) == "newWindow must be a boolean")
+        #expect(refusal("tabs_create", ["newWindow": true, "url": "https://example.com"]) == nil)
+
+        let asked = try SafariMCPServer.tabsCreateParams(["url": "https://example.com", "newWindow": true])
+        #expect(asked["newWindow"]?.boolValue == true)
+        // Without it, or with it false, the extension gets what it always got.
+        for args: [String: Value] in [["url": "https://example.com"], ["url": "https://example.com", "newWindow": false]] {
+            let params = try SafariMCPServer.tabsCreateParams(args)
+            #expect(Set(params.keys) == ["url"])
+        }
+    }
+
+    @Test func anExtensionThatIgnoredNewWindowIsCalledOut() {
+        let opened: [String: AnyCodable] = ["id": AnyCodable(9), "newWindow": AnyCodable(true)]
+        let ignored: [String: AnyCodable] = ["id": AnyCodable(9)]
+        #expect(SafariMCPServer.newWindowNote(requested: true, tab: opened) == nil)
+        #expect(SafariMCPServer.newWindowNote(requested: false, tab: ignored) == nil)
+        let note = SafariMCPServer.newWindowNote(requested: true, tab: ignored)
+        #expect(note?.contains("not in a new window") == true)
+        #expect(note?.contains("ask the user") == true)
+    }
+
     @Test func waitRefusesWrongTypesRatherThanFallingBackToTheDefaults() {
         #expect(refusal("wait", ["seconds": "5"]) == "seconds must be a number")
         #expect(refusal("wait", ["timeout": "5", "selector": "#a"]) == "timeout must be a number")

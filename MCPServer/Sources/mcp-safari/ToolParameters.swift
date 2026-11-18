@@ -210,6 +210,11 @@ extension SafariMCPServer {
         if let url = try optionalString("url", in: args) {
             params["url"] = AnyCodable(try validatedNavigationURL(url))
         }
+        // Sent only when asked for, so a call without it reaches the extension
+        // exactly as before.
+        if try optionalBool("newWindow", in: args) == true {
+            params["newWindow"] = AnyCodable(true)
+        }
         return params
     }
 

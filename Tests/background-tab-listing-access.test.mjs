@@ -412,3 +412,81 @@ test("navigate reports a title only for a site that has been reached", async () 
     const reached = await harness.evaluate('handleNavigate({ tabId: 1, action: "reload" })');
     assert.equal(reached, "Reloaded https://granted.example/inbox?token=[redacted] (Inbox (3))");
 });
+
+// ─── tabs_create with newWindow ──────────────────────────────────────
+
+test("tabs_create with newWindow opens a window of its own, offset from the one in front", async () => {
+    // Agents side by side each want a window: a window shows one tab at a time,
+    // and a page whose window is completely covered stops drawing. The same size
+    // at an offset leaves a strip of each window showing.
+    const harness = loadBackground();
+    harness.evaluate(`
+        globalThis.windowCreations = [];
+        browser.windows.getLastFocused = async () => ({ id: 1, left: 100, top: 50, width: 1200, height: 800 });
+        browser.windows.create = async (createData) => {
+            windowCreations.push(createData);
+            return { id: 7, tabs: [{ id: 9, windowId: 7, url: createData.url, status: "complete", title: "Opened page" }] };
+        };
+        browser.tabs.create = async () => { throw new Error("opened a tab in the shared window"); };
+        waitForTabLoad = async (tabId, created) => created;
+    `);
+
+    const created = await harness.evaluate('handleTabsCreate({ url: "https://untouched.example/new", newWindow: true })');
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(harness.evaluate("windowCreations"))),
+        [{ url: "https://untouched.example/new", left: 140, top: 90, width: 1200, height: 800 }]
+    );
+    assert.equal(created.id, 9);
+    assert.equal(created.url, "https://untouched.example/new");
+    assert.equal(created.newWindow, true);
+    assert.equal(created.access, "not_granted");
+});
+
+test("tabs_create without newWindow opens a tab as before and says nothing about windows", async () => {
+    const harness = loadBackground();
+    harness.evaluate(`
+        browser.windows.create = async () => { throw new Error("opened a window"); };
+        browser.windows.getLastFocused = async () => { throw new Error("looked for a window"); };
+        waitForTabLoad = async (tabId, created) => created;
+    `);
+
+    for (const params of ['{ url: "https://untouched.example/new" }', '{ url: "https://untouched.example/new", newWindow: false }']) {
+        const created = await harness.evaluate(`handleTabsCreate(${params})`);
+        assert.equal(created.id, 9, params);
+        assert.equal("newWindow" in created, false, params);
+    }
+});
+
+test("tabs_create with newWindow still opens the window when Safari cannot say where the front one is", async () => {
+    const harness = loadBackground();
+    harness.evaluate(`
+        globalThis.windowCreations = [];
+        browser.windows.create = async (createData) => { windowCreations.push(createData); return { id: 7 }; };
+        browser.tabs.query = async ({ windowId }) => (windowId === 7 ? [{ id: 11, windowId: 7, url: "", title: "" }] : []);
+    `);
+
+    for (const front of [
+        "async () => { throw new Error('no window has focus'); }",
+        "async () => ({ id: 1 })",
+        "async () => ({ id: 1, left: 0, top: 0, width: undefined, height: 800 })",
+    ]) {
+        harness.evaluate(`windowCreations.length = 0; browser.windows.getLastFocused = ${front};`);
+        // No URL, so nothing to wait for; the tab comes from the window's own listing.
+        const created = await harness.evaluate("handleTabsCreate({ newWindow: true })");
+        assert.deepEqual(JSON.parse(JSON.stringify(harness.evaluate("windowCreations"))), [{}], front);
+        assert.equal(created.id, 11, front);
+        assert.equal(created.newWindow, true, front);
+    }
+});
+
+test("tabs_create with newWindow fails plainly if Safari reports no tab in the new window", async () => {
+    const harness = loadBackground();
+    harness.evaluate(`
+        browser.windows.getLastFocused = async () => ({ id: 1 });
+        browser.windows.create = async () => ({ id: 7, tabs: [] });
+        browser.tabs.query = async () => [];
+    `);
+
+    await assert.rejects(harness.evaluate("handleTabsCreate({ newWindow: true })"), /reported no tab/);
+});
