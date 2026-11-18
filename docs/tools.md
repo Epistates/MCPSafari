@@ -82,7 +82,7 @@ A screenshot saved with `filePath` is written to a temporary file beside the des
 |-|-|
 | `javascript_tool` | Execute arbitrary JS in the page context and return expression results; multi-statement code must end in an explicit `return` to produce a value |
 
-If a site's Content Security Policy blocks string evaluation, the tool retries in the extension's isolated world and reports that in the result. It can still access the DOM there, but cannot read the page's JavaScript globals, such as framework instances on `window`. The CSP rejection happens before the submitted code runs.
+If a site's Content Security Policy blocks string evaluation, the tool runs the code in the extension's isolated world instead and reports that in the result. It can still access the DOM there, but cannot read the page's JavaScript globals, such as framework instances on `window`. Which world the code runs in is settled before any of it runs, by compiling it without running it, and the code then runs exactly once; nothing it returns or throws can move it to the other world.
 
 ### Debugging
 

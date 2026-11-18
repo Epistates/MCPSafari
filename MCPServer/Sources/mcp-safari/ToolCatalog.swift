@@ -379,7 +379,7 @@ extension SafariMCPServer {
             ),
             Tool(
                 name: "javascript_tool",
-                description: "Execute JS in page context. A single expression returns its value; a multi-statement body must end in an explicit `return` to produce a value. If the page's Content Security Policy forbids evaluating strings, this reruns in the extension's isolated world, where the DOM is shared but the page's own JavaScript globals are not visible; the result says so when that happens.",
+                description: "Execute JS in page context. A single expression returns its value; a multi-statement body must end in an explicit `return` to produce a value. If the page's Content Security Policy forbids evaluating strings, the code runs in the extension's isolated world instead, where the DOM is shared but the page's own JavaScript globals are not visible; the result says so when that happens. Either way the code runs once.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
