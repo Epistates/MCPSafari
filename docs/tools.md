@@ -145,6 +145,14 @@ Naming a profile that is not connected fails with `profile_not_connected` rather
 
 `tabs_context`, `tabs_create` and `select_tab` mark each tab `access: "granted"` or `"not_granted"`, with an `accessHint` pointing at the toolbar popup when it is not granted. `select_tab` on such a tab still succeeds and pins the tab's profile. The result also says in prose, once for a whole listing, that reading or acting on those tabs will fail with `permission_required` until the user grants the site.
 
+### Several agents at once
+
+Several MCP clients can drive Safari at the same time, each through its own server. Their calls don't wait for each other, except native input: there is one keyboard and one pointer, so native input runs one call at a time across every server. What the agents do share is Safari's windows: which window is in front, and which tab is showing in each one. To keep them out of each other's way:
+
+- Have each agent pass `tabId`, or pin its tab with `select_tab`. A call that names no tab, from an agent with no pin, acts on the tab in front, which another agent may have just changed.
+- Keep each agent's tabs in a window of its own: `tabs_create` with `newWindow: true` opens one, the same size as the window in front and 40 points down and to the right of it, so a strip of each stays visible. A window shows one tab at a time, so in a shared window one agent's `screenshot` or `select_tab` hides the other's tab, and two screenshots at once make one fail with the retryable `tab_not_showing`. Native input typed into a shared window can also end up in the other agent's tab, if that agent switches tabs while the typing is under way.
+- Keep each agent's window at least partly visible: not minimized, not completely covered by other windows, and on the current Space. Safari stops running animation frames for a page whose window is minimized or completely covered, so some web apps show stale or empty content until the window is visible again. A strip of the window on screen is enough. A screenshot of a hidden page says so in its result.
+
 ### Element targeting
 
 Targeting options vary by tool. `click` accepts all four:
