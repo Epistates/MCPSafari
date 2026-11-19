@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-11-18
 ### Added
 - JavaScript CodeQL coverage, immutable workflow action references, locked dependency resolution, and a tag-publishing gate requiring recorded real-Safari qualification.
 - Release assets now carry a signed SLSA build provenance attestation, so `gh attestation verify <file> --repo Epistates/MCPSafari` ties a download back to the workflow run and commit that produced it. `SHA256SUMS` only ever said the bytes matched the ones we listed, which is a different claim and not the one someone handed a binary from elsewhere needs. The attestation covers the three CLI binaries and both extension archives, and is minted only on a tag, so a distribution dry run records provenance for nothing. Notarization is unrelated and stays: Apple attests that it scanned the bundle, not that this repository built it.

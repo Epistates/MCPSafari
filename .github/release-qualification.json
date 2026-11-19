@@ -1,14 +1,26 @@
 {
   "version": "0.4.0",
-  "sourceCommit": null,
-  "macOS": null,
-  "safari": null,
-  "testedBy": null,
-  "testedAt": null,
+  "sourceCommit": "3484155cdc70ea2a3ecc2124d8def0b2007def6b",
+  "macOS": "27.2.1 (26B131)",
+  "safari": "27.2 (22625.2.8.11.9)",
+  "testedBy": "Nick Paterno",
+  "testedAt": "2026-11-18",
   "checks": {
-    "profileRouting": { "status": "pending", "evidence": "" },
-    "profileReconnect": { "status": "pending", "evidence": "" },
-    "permissions": { "status": "pending", "evidence": "" },
-    "privateByDefault": { "status": "pending", "evidence": "" }
+    "profileRouting": {
+      "status": "passed",
+      "evidence": "Two Safari profiles connected. In each, tabs_create opened a marked tab, and tabs_create with newWindow opened a window of its own and returned that window's tab. All four tabs reached the right page by handle, followed select_tab for untargeted calls, and answered read_page and snapshot."
+    },
+    "profileReconnect": {
+      "status": "passed",
+      "evidence": "Disabling the extension in the second profile disconnected it while the default profile stayed connected and drivable; a call naming the absent profile was refused by name. Re-enabling it reconnected the profile under the same handle, and it listed its tabs again."
+    },
+    "permissions": {
+      "status": "passed",
+      "evidence": "The first call on an undecided site (rfc-editor.org) failed at once with permission_required and said how to allow the site from the toolbar button, which showed a \"!\" badge. After the user allowed the site there, the same call worked and tabs_context described the tab. Safari 27.2 shows no permission dialog."
+    },
+    "privateByDefault": {
+      "status": "passed",
+      "evidence": "In a 42-tab profile, every tab on a site MCPSafari has not reached was listed without url or title, with access not_granted and an accessHint."
+    }
   }
 }
