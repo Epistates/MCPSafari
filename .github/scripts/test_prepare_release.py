@@ -33,7 +33,10 @@ class ReleasePreparationTests(unittest.TestCase):
     def test_notes_use_only_the_matching_entry(self):
         notes = release_notes("v0.3.2", self.root)
         self.assertIn("A useful explanation.", notes)
-        self.assertIn("brew trust", notes)
+        # Only the server formula is trusted by name, never the whole tap.
+        self.assertIn("brew trust --formula epistates/tap/mcp-safari-server\n", notes)
+        self.assertNotIn("brew trust epistates/tap\n", notes)
+        self.assertIn("brew upgrade epistates/tap/mcp-safari-server\nbrew upgrade --cask epistates/tap/mcp-safari\n", notes)
         self.assertNotIn("Old notes", notes)
         self.assertNotIn("Not shipped", notes)
 
