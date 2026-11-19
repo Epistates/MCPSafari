@@ -137,6 +137,16 @@ function tabNotLoadedError() {
     return error;
 }
 
+// What brings a hidden tab's page back, by why it's hidden (`tabShowingState`).
+const HIDDEN_TAB_ADVICE = {
+    background: "Call select_tab on it to bring it to the front, then retry. That hides the tab "
+        + "showing in that window now, so if the user or another agent is working there, open a "
+        + "window of your own with tabs_create and newWindow: true instead.",
+    minimized: "Ask the user to restore the window, then retry. It needn't be in front: part of it "
+        + "showing is enough.",
+    front: "Ask the user to bring the window at least partly into view, then retry.",
+};
+
 // The page did not answer and Safari's tab API did, so no dialog is holding the
 // tab (see DIALOG_CHECK_MS). What is left is the page: Safari is not showing it,
 // or it is busy. Calling that a permission dialog sent the user looking for one
@@ -159,26 +169,21 @@ function pageNotAnsweringError(origin, state, reachedBefore) {
             code: "page_hidden",
             recoveryAction: "call_select_tab",
             message: `${site} didn't answer. It isn't the tab showing in its window, and Safari `
-                + `slows or pauses pages it isn't showing. ${dialog} Call select_tab on it to bring `
-                + "it to the front, then retry. That hides the tab showing in that window now, so "
-                + "if the user or another agent is working there, open a window of your own with "
-                + "tabs_create and newWindow: true instead.",
+                + `slows or pauses pages it isn't showing. ${dialog} ${HIDDEN_TAB_ADVICE.background}`,
         },
         minimized: {
             code: "page_hidden",
             recoveryAction: "ask_user",
             message: `${site} didn't answer. Its window is minimized, and Safari pauses pages it `
-                + `isn't showing. ${dialog} Ask the user to restore the window, then retry. It `
-                + "needn't be in front: part of it showing is enough.",
+                + `isn't showing. ${dialog} ${HIDDEN_TAB_ADVICE.minimized}`,
         },
         front: {
             code: "page_not_responding",
             recoveryAction: "ask_user",
             message: `${site} didn't answer, though it's the tab showing in its window. ${dialog} `
                 + "Either the window is completely covered by other windows or on another Space, "
-                + "where Safari pauses the page, or the page is busy. Ask the user to bring the "
-                + "window at least partly into view, then retry. If it's already in view, retry "
-                + "in a moment.",
+                + `where Safari pauses the page, or the page is busy. ${HIDDEN_TAB_ADVICE.front} `
+                + "If it's already in view, retry in a moment.",
         },
     };
     const { code, recoveryAction, message } = states[state];
@@ -266,11 +271,16 @@ async function unansweredTabError(tabId, origin = null) {
 
     const site = origin || originOfUrl(tab.url);
     const reachedBefore = site !== null && grantedOrigins.has(site);
-    if (tab.active === false) return pageNotAnsweringError(site, "background", reachedBefore);
-    if (await windowIsMinimized(tab.windowId)) {
-        return pageNotAnsweringError(site, "minimized", reachedBefore);
-    }
-    return pageNotAnsweringError(site, "front", reachedBefore);
+    return pageNotAnsweringError(site, await tabShowingState(tab), reachedBefore);
+}
+
+// How a tab stands in its window, from what `tabs.get` said about it: not the
+// tab showing there, in a minimized window, or the one showing in a window
+// that isn't minimized, as far as Safari says (see `windowIsMinimized`).
+async function tabShowingState(tab) {
+    if (tab.active === false) return "background";
+    if (await windowIsMinimized(tab.windowId)) return "minimized";
+    return "front";
 }
 
 // Safari reports a window's state through its own delegate, and WebKit answers
