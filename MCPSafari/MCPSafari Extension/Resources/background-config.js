@@ -50,6 +50,11 @@ const PERMISSION_PROBE_TIMEOUT_MS = 2000;
 // For gated calls that are quick when permitted and so can be deadlined
 // directly, without the extra round trip a probe costs.
 const PERMISSION_DEADLINE_MS = 10_000;
+// A probe or capture that runs out of time is not always the dialog: a page
+// Safari is not showing, or a busy one, misses the deadline too. While the
+// dialog is open Safari holds `tabs.get` as well, so the tab is read once more
+// to tell the two apart. It answers in milliseconds when nothing holds it.
+const DIALOG_CHECK_MS = 1000;
 // Listing tabs blocks on the same dialog, and no per-tab probe helps because the
 // block is not attributable to one tab. Measured against real Safari, a listing
 // held up this way still completes, in around nine seconds, so this sits just

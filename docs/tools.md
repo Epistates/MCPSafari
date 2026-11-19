@@ -151,7 +151,7 @@ Several MCP clients can drive Safari at the same time, each through its own serv
 
 - Have each agent pass `tabId`, or pin its tab with `select_tab`. A call that names no tab, from an agent with no pin, acts on the tab in front, which another agent may have just changed.
 - Keep each agent's tabs in a window of its own: `tabs_create` with `newWindow: true` opens one, the same size as the window in front and 40 points down and to the right of it, so a strip of each stays visible. A window shows one tab at a time, so in a shared window one agent's `screenshot` or `select_tab` hides the other's tab, and two screenshots at once make one fail with the retryable `tab_not_showing`. Native input typed into a shared window can also end up in the other agent's tab, if that agent switches tabs while the typing is under way.
-- Keep each agent's window at least partly visible: not minimized, not completely covered by other windows, and on the current Space. Safari stops running animation frames for a page whose window is minimized or completely covered, so some web apps show stale or empty content until the window is visible again. A strip of the window on screen is enough. A screenshot of a hidden page says so in its result.
+- Keep each agent's window at least partly visible: not minimized, not completely covered by other windows, and on the current Space. Safari stops running animation frames for a page whose window is minimized or completely covered, so some web apps show stale or empty content until the window is visible again. A strip of the window on screen is enough. A screenshot of a hidden page says so in its result, and a call that a hidden page doesn't answer fails with `page_hidden` or `page_not_responding` (see [Website access](#website-access)).
 
 The MCPSafari toolbar popup names each connection, so you can tell the agents apart. Once a server has connected it tells the extension who it is: the `--name` it was started with (or `MCP_SAFARI_NAME`), the folder it was started in, and the MCP client that introduced itself to it. Each connected row shows the name, or the last part of the folder when there is no name, with the folder on a second line and your home folder shortened to `~`. The row's tooltip has the connection's state and the client, such as `claude-code 2.1.0`. Two sessions started in the same folder show the same name, so give one of them a `--name`. A server that says neither, such as one started from `/` with no name, is shown by its port and state, as before. The name is what the server says about itself: a label for you, not proof of who is behind it. `status` reports the same under `instance`.
 
@@ -215,6 +215,14 @@ A call on a tab that has closed fails with `tab_closed`, not with `permission_re
 
 A call on a tab Safari has not loaded fails with `tab_not_loaded`. Safari reopens a window's tabs at launch without loading them, can unload a background tab to save memory, and loads a tab only when it is shown. `select_tab` brings the tab to the front, which loads it, and the same call then works. `navigate` with `reload` reports success on such a tab but leaves it unloaded.
 
+A tab that doesn't answer isn't always waiting on a permission dialog. Safari slows or pauses a page it isn't showing (a background tab, or a tab whose window is minimized, completely covered or on another Space), and a busy page can miss the check's two seconds too. While its dialog is open, Safari also stops answering for the tab itself, so MCPSafari asks it once more before naming the reason:
+
+- `page_hidden` with `call_select_tab`: the tab isn't the one showing in its window. `select_tab` brings it to the front, which hides the tab showing there now, so if the user or another agent is working in that window, open a window of your own with `tabs_create` and `newWindow: true` instead.
+- `page_hidden` with `ask_user`: its window is minimized. Ask the user to restore it; part of it showing is enough.
+- `page_not_responding` with `ask_user`: the tab is the one showing, so its window is completely covered or on another Space, or the page is busy. Ask the user to bring the window at least partly into view, or retry in a moment if it already is.
+
+Both are `retryable`. When Safari doesn't answer for the tab either, the call fails with `permission_required` as above. On a site MCPSafari hasn't reached before, the message keeps the dialog in view as well, because Safari doesn't hold its tab API for an unanswered dialog indefinitely.
+
 A site counts as reached once a call has run on a page there. MCPSafari does not check ahead, because asking Safari about a site it has not been granted is what raises the permission dialog, and a listing would raise one per site. So right after the user grants a site, its tabs still read as `not_granted` until a call reads one of them, such as `snapshot` on that tab, and the next `tabs_context` shows them. The same goes for every site after MCPSafari's stored data is reset, as a reinstall can do: the sites stay allowed in Safari, and each reads as `not_granted` until a call runs there.
 
 Granted status is remembered across Safari restarts once a tool call has succeeded on that site, for up to 500 sites. A site revoked in Safari Settings keeps showing its URL and title in `tabs_context` until the next call to it is refused, which also forgets it.
@@ -251,10 +259,10 @@ Every tool failure carries a stable `code`, a human-readable `message`, a `retry
 |-|-|
 | `fix_input` | The arguments were wrong. Correct them and call again. |
 | `retry` | Transient. The same call may work. |
-| `ask_user` | Needs a person: grant website access, or allow Safari to come to the front. |
+| `ask_user` | Needs a person: grant website access, allow Safari to come to the front, or bring a hidden window into view. |
 | `call_status` | Check `status` for the bridge, the connected profiles, and token health. |
 | `call_tabs_context` | The tab is gone. List the open tabs and choose another. |
-| `call_select_tab` | Safari has not loaded the tab. `select_tab` on it brings it to the front and loads it; then call again. |
+| `call_select_tab` | Safari has not loaded the tab, or isn't showing it. `select_tab` on it brings it to the front and loads it; then call again. |
 | `list_tools` | The tool name is not one this server has. |
 | `inspect_error` | Nothing automatic to do; read the message. |
 | `inspect_batch_result` | A `run_steps` batch stopped partway; read the per-step results. |

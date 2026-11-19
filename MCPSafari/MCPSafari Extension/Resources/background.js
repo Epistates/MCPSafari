@@ -117,6 +117,15 @@ if (browser.permissions && browser.permissions.onAdded) {
     });
 }
 
+// A tab coming to the front is what a `page_hidden` refusal asks for, whether
+// `select_tab` or the user brought it there, so the retry probes afresh rather
+// than being refused from the cache.
+if (browser.tabs.onActivated) {
+    browser.tabs.onActivated.addListener(({ tabId }) => {
+        tabAccessProbes.delete(tabId);
+    });
+}
+
 /// Whether MCPSafari can reach whatever the user is looking at.
 ///
 /// Opening the popup is the right moment to find this out, and the right moment
@@ -139,7 +148,14 @@ async function describeActiveTabAccess() {
         await ensureTabAccess(tabId);
         return { origin, allowed: true, pending: false };
     } catch (err) {
-        return { origin, allowed: false, pending: err.permissionPending === true };
+        return {
+            origin,
+            allowed: false,
+            pending: err.permissionPending === true,
+            // Safari answered for the tab and the page did not. "No access"
+            // would send the user to Settings over a page that is only busy.
+            unresponsive: err.code === "page_hidden" || err.code === "page_not_responding",
+        };
     }
 }
 
