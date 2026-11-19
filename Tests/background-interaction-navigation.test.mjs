@@ -372,7 +372,7 @@ test("a landing on a site that was not granted names its origin and nothing else
     assert.equal(
         click.response.data,
         "Clicked <a>\nPage navigated to https://elsewhere.example "
-            + "(URL and title withheld: MCPSafari has not been granted access to this site)"
+            + "(URL and title withheld: MCPSafari hasn't confirmed access to this site)"
     );
 });
 

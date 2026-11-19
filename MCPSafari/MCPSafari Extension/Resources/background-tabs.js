@@ -131,10 +131,15 @@ function redactQueryParameters(tail) {
 // "Known" is deliberately narrow, because the alternative to knowing is probing
 // and a probe on an undecided site raises Safari's dialog: see `grantedOrigins`.
 // A site nothing has touched yet is therefore reported as not granted even if
-// the user granted it, and becomes readable once any call has reached it.
+// the user granted it, and becomes readable once any call has reached it. The
+// hint says so, because after a reinstall every allowed site reads this way
+// until a call runs there, and "not granted" sent agents to ask for access the
+// user had already given.
 const NOT_GRANTED_HINT =
-    "URL and title withheld: MCPSafari has not been granted access to this site. "
-    + "The user can grant it from the MCPSafari button in Safari's toolbar, then list tabs again.";
+    "URL and title withheld: MCPSafari hasn't confirmed access to this site. "
+    + "A call on this tab works if the user has allowed the site, and later listings then show its URL and title. "
+    + "If not, the call fails with permission_required, and the user can allow the site "
+    + "from the MCPSafari button in Safari's toolbar.";
 
 function siteIsGranted(url) {
     // Nothing behind an about: page can be granted, and nothing in one is private.

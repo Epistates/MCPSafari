@@ -76,7 +76,7 @@ async function handleNavigate(params) {
 function describeLanding(tab) {
     if (siteIsGranted(tab.url)) return `${redactUrlSecrets(tab.url)} (${tab.title || ""})`;
     const origin = originOfUrl(tab.url);
-    return `${origin ? `${origin} ` : ""}(URL and title withheld: MCPSafari has not been granted access to this site)`;
+    return `${origin ? `${origin} ` : ""}(URL and title withheld: MCPSafari hasn't confirmed access to this site)`;
 }
 
 // How long a page load is given to finish, for `navigate` and for the load an

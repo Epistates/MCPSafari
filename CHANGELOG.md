@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+### Changed
+- Tabs on sites MCPSafari hasn't confirmed access to are now described that way, rather than as not granted. `not_granted` has always meant that no call has worked on the site yet. After a reinstall resets the extension's data, that's true of every site the user allowed, and the old wording ("has not been granted", "will fail with permission_required until the user grants it") sent agents to ask for access the user had already given. The `accessHint`, the note on `tabs_context`, `tabs_create` and `select_tab` results, and the landing note after a navigation now say that a call on such a tab works if the user has allowed the site, and otherwise fails with `permission_required`. The listing note is now the server's own sentence and no longer repeats the extension's hint, which each tab's JSON still carries. The `access` values are unchanged.
+
+### Fixed
+- A bridge test that could fail on a busy machine, and failed the first v0.4.0 release run, now checks only what it is for: once silent sockets are dropped at their deadline, the next connection is let in. It used to make that connection finish a whole handshake inside the same one-second deadline as well.
+
 ## [0.4.0] - 2026-11-18
 ### Added
 - JavaScript CodeQL coverage, immutable workflow action references, locked dependency resolution, and a tag-publishing gate requiring recorded real-Safari qualification.

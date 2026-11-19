@@ -307,25 +307,28 @@ actor SafariMCPServer {
             + "for a window of your own."
     }
 
-    /// Tabs on a site Safari has not granted are listed, selected and created
-    /// like any other and carry `access: "not_granted"` and an `accessHint`. The
-    /// JSON carries that for a program; this sentence is for the model reading
-    /// the result, which would otherwise find out only when its next read fails
-    /// with `permission_required`. One sentence for a whole listing, with each
-    /// distinct hint said once, rather than one per tab.
+    /// Tabs on a site the extension hasn't confirmed access to are listed,
+    /// selected and created like any other and carry `access: "not_granted"` and
+    /// an `accessHint`. The JSON carries that for a program; this note is for the
+    /// model reading the result, once for a whole listing rather than once per
+    /// tab.
+    ///
+    /// `not_granted` means unconfirmed: the extension learns a site is allowed
+    /// only when a call works there, so after a reinstall every allowed site
+    /// reads this way until then. The note says what the next call will do
+    /// rather than that it will fail, and it is the server's own words, so a
+    /// listing from an older extension, whose hint says "not granted", is not
+    /// repeated back.
     static func accessNote(for tabs: [[String: AnyCodable]]) -> String? {
-        let ungranted = tabs.filter { $0["access"]?.stringValue == "not_granted" }
-        guard !ungranted.isEmpty else { return nil }
-        var hints: [String] = []
-        for hint in ungranted.compactMap({ $0["accessHint"]?.stringValue }) where !hints.contains(hint) {
-            hints.append(hint)
-        }
-        let subject = ungranted.count == 1
-            ? "Access to one tab's site is not granted"
-            : "Access to \(ungranted.count) tabs' sites is not granted"
-        return ([
-            "\(subject), so reading or acting on \(ungranted.count == 1 ? "it" : "them") will fail with permission_required until the user grants it.",
-        ] + hints).joined(separator: " ")
+        let unconfirmed = tabs.filter { $0["access"]?.stringValue == "not_granted" }.count
+        guard unconfirmed > 0 else { return nil }
+        let subject = unconfirmed == 1
+            ? "One tab is on a site MCPSafari hasn't confirmed access to, so its URL and title are withheld."
+            : "\(unconfirmed) tabs are on sites MCPSafari hasn't confirmed access to, so their URLs and titles are withheld."
+        return subject
+            + " A call on such a tab works if the user has allowed its site, and later listings then describe the tab."
+            + " If not, the call fails with permission_required, and the user can allow the site"
+            + " from the MCPSafari button in Safari's toolbar."
     }
 
     /// Which profile a call will land on. An explicit handle names it; otherwise it
