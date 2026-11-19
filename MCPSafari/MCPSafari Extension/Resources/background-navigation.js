@@ -305,6 +305,7 @@ async function tabIsLoading(tabId) {
 // Resolves once the tab's load is over, or at the timeout. The tab is read as
 // well as listened to, because the load can finish between the event that sent
 // us here and the listener going up.
+/** @returns {Promise<void>} */
 function waitForLoadComplete(tabId, timeoutMs) {
     return new Promise((resolve) => {
         const finish = () => {

@@ -162,6 +162,7 @@
         return `Attached ${describeFiles(files)} to file input`;
     }
 
+    /** @type {Promise<unknown>} */
     let dropQueue = Promise.resolve();
 
     // Drops share one target marker, so they run one at a time. The files are
@@ -223,10 +224,10 @@
     async function elementRect(params) {
         const el = resolveElement({ uid: params.uid, selector: params.selector });
         el.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-        await new Promise((resolve) => {
+        await /** @type {Promise<void>} */ (new Promise((resolve) => {
             const fallback = setTimeout(resolve, 100);
             requestAnimationFrame(() => { clearTimeout(fallback); resolve(); });
-        });
+        }));
         const rect = el.getBoundingClientRect();
         if (!(rect.width > 0) || !(rect.height > 0)) {
             throw toolError(
