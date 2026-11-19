@@ -204,7 +204,7 @@ Safari grants extensions access one site at a time. Safari 27.2 doesn't ask when
 
 So a tool that needs a page it hasn't been granted fails with `permission_required` rather than waiting. There are two versions of it, and the difference matters:
 
-- The site isn't allowed. Tell the user to click the MCPSafari button while that tab is showing and allow the site, or to allow it in Safari Settings > Extensions > MCPSafari Extension. While a call is waiting for access, the button shows a yellow **!**, and its tooltip names the site when Safari lets MCPSafari see it. The **!** goes once a call on that site gets through, the tab navigates or closes, or after 15 minutes. Safari shows one badge for the whole button, not one per tab.
+- The site isn't allowed. Tell the user to click the MCPSafari button while that tab is showing and allow the site, or to allow it in Safari Settings > Extensions > MCPSafari Extension. While a call is waiting for access, the button shows a **!** badge, and its tooltip names the site when Safari lets MCPSafari see it. The **!** goes once a call on that site gets through, the tab navigates or closes, or after 15 minutes. Safari shows one badge for the whole button, not one per tab.
 - A dialog is open and waiting (earlier Safari versions). The message says so and names the origin. Tell the user to look for the dialog, including behind other windows, and choose **Always Allow on This Website** or **Allow for One Day**.
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.

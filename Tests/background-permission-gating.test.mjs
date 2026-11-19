@@ -186,7 +186,7 @@ test("a probe refused outright says access is missing, not that a dialog is open
     // Safari 27.2 asks nothing, so the message says where to go and what marks it.
     assert.match(err.message, /doesn't ask by itself/);
     assert.match(err.message, /toolbar while this tab is showing/);
-    assert.match(err.message, /yellow "!"/);
+    assert.match(err.message, /shows a "!"/);
     // No dialog is open in this case, so pointing at one would send the user
     // hunting for a window that is not there.
     assert.doesNotMatch(err.message, /behind another window/);
@@ -560,7 +560,7 @@ test("concurrent calls on one tab share a single probe", async () => {
 // the only place to allow it is the MCPSafari button, which gave no sign. Seen
 // in real use: the user looked for a dialog that never came.
 
-test("a refused site puts a yellow ! on the toolbar button, naming the site", async () => {
+test("a refused site puts a ! on the toolbar button, naming the site", async () => {
     const harness = loadBackground({ probe: async () => { throw new Error(REFUSAL); } });
     // Cleared at startup, in case a suspended page left one behind.
     assert.equal(harness.toolbar.texts[0], "");
@@ -569,7 +569,6 @@ test("a refused site puts a yellow ! on the toolbar button, naming the site", as
 
     assert.equal(err.code, "permission_required");
     assert.equal(harness.toolbar.text, "!");
-    assert.equal(harness.toolbar.color, "#FFCC00");
     assert.match(harness.toolbar.title, /blocked\.example/);
     assert.match(harness.toolbar.title, /click here/);
 });

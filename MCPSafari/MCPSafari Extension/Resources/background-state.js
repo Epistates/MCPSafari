@@ -76,7 +76,7 @@ function toolErrorFromResponse(response) {
 //
 // Safari 27.2 shows no dialog for a site nobody has decided on: it refuses, and
 // the only place to allow the site is the toolbar button, which the refusal
-// marks with a yellow "!" (see `markAwaitingAccess`). It also hides that tab's
+// marks with a "!" (see `markAwaitingAccess`). It also hides that tab's
 // address from the extension, which is why the site can go unnamed.
 function permissionRequiredError(origin, pending) {
     const site = origin ? `this tab (${origin})` : "this tab";
@@ -89,7 +89,7 @@ function permissionRequiredError(origin, pending) {
               + `MCPSafari button in Safari's toolbar. Then retry.`
             : `MCPSafari isn't allowed on ${site}, and Safari doesn't ask by itself. Ask the user `
               + `to click the MCPSafari button in Safari's toolbar while this tab is showing (it `
-              + `has a yellow "!" while access is waiting) and allow the site, or to allow it in `
+              + `shows a "!" while access is waiting) and allow the site, or to allow it in `
               + `Safari Settings > Extensions > MCPSafari Extension, where "Always Allow on Every `
               + `Website" stops the asking for every site. Then retry.`
     );
@@ -479,9 +479,11 @@ async function handleIdentify(params, serverPort) {
 // Safari 27.2 refuses a site the user hasn't decided on without asking: no
 // dialog appears, and the only place to allow it is the MCPSafari button in the
 // toolbar, which gave no sign anything was waiting. So a refusal marks its tab
-// as waiting, and while any tab is waiting the button shows a yellow "!" and
-// its tooltip names the site. Safari ignores per-tab badges (measured on 27.2),
-// so the mark is the button's own and shows on every tab.
+// as waiting, and while any tab is waiting the button shows a "!" and its
+// tooltip names the site. The mark is the button's own, shown on every tab:
+// WebKit wipes a tab's badge whenever the tab navigates, and none showed at all
+// in a test on Safari 27.2. Safari draws badges in its own colour and ignores
+// `setBadgeBackgroundColor`, so the "!" is the signal.
 
 /** tabId to the site a call on it was refused for, and when. @type {Map<number, {origin: string|null, at: number}>} */
 const tabsAwaitingAccess = new Map();
@@ -489,7 +491,6 @@ const tabsAwaitingAccess = new Map();
 // keepalive alarm, about every 24 seconds, so it goes within a minute of that.
 const ACCESS_WAIT_SHOWN_MS = 15 * 60 * 1000;
 const ACCESS_BADGE_TEXT = "!";
-const ACCESS_BADGE_COLOR = "#FFCC00";
 
 function markAwaitingAccess(tabId, origin) {
     tabsAwaitingAccess.set(tabId, { origin, at: Date.now() });
@@ -549,9 +550,5 @@ function setAccessBadge(text, title) {
         try { Promise.resolve(call()).catch(() => {}); } catch (_) { /* not supported here */ }
     };
     quietly(() => action.setBadgeText({ text }));
-    if (text) {
-        quietly(() => action.setBadgeBackgroundColor({ color: ACCESS_BADGE_COLOR }));
-        quietly(() => action.setBadgeTextColor({ color: "#000000" }));
-    }
     quietly(() => action.setTitle({ title }));
 }
