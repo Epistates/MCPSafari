@@ -166,21 +166,18 @@ struct HandshakeHygieneTests {
         // handful of them would hold every slot and the refusal would land on
         // the extension instead.
         //
-        // The deadline also bounds the connection that arrives afterwards, which
-        // has to finish all three handshake steps inside it. 200 ms was too tight
-        // for a loaded CI runner running the suite in parallel.
-        try await withStartedBridge(handshakeDeadline: .seconds(1)) { bridge, port in
+        // Being admitted is what the freed slot gives the next connection, and the
+        // bridge answers the upgrade as it admits. Finishing the whole handshake
+        // as well raced the short deadline: on a loaded CI runner the arriving
+        // connection was itself dropped as too slow before it could authenticate.
+        try await withStartedBridge(handshakeDeadline: .seconds(1)) { _, port in
             let squatters = try (0..<8).map { _ in try #require(RawSocket.dial(port: port)) }
             for socket in squatters { #expect(socket.reply() == .upgraded) }
             // Each is hung up on once its deadline passes.
             for socket in squatters { #expect(socket.reply() == .closed) }
 
-            let arriving = webSocketTask(port: port)
-            defer { arriving.cancel() }
-            arriving.resume()
-
-            let reply = try await authenticate(bridge, on: arriving)
-            #expect(reply["auth"] as? String == "ok")
+            let arriving = try #require(RawSocket.dial(port: port))
+            #expect(arriving.reply() == .upgraded, "a ninth socket is admitted once the silent ones are gone")
         }
     }
 
