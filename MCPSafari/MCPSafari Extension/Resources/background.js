@@ -93,6 +93,7 @@ function delay(ms) {
 // accumulate one per tab ever touched.
 browser.tabs.onRemoved.addListener((tabId) => {
     tabAccessProbes.delete(tabId);
+    clearAwaitingAccess(tabId);
 });
 
 // Safari grants access per origin, so a pass stops meaning anything the moment
@@ -102,8 +103,19 @@ browser.tabs.onRemoved.addListener((tabId) => {
 // dialog. Clearing here rather than reading the origin on every call keeps the
 // hot path free of an extra `tabs.get`.
 browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.url) tabAccessProbes.delete(tabId);
+    if (!changeInfo.url) return;
+    tabAccessProbes.delete(tabId);
+    // The site that was waiting isn't this tab's any more.
+    clearAwaitingAccess(tabId);
 });
+
+// A site the user allows may be reported here. The waits are dropped and the
+// next call on each tab finds out for itself, marking it again if still refused.
+if (browser.permissions && browser.permissions.onAdded) {
+    browser.permissions.onAdded.addListener(() => {
+        for (const tabId of [...tabsAwaitingAccess.keys()]) clearAwaitingAccess(tabId);
+    });
+}
 
 /// Whether MCPSafari can reach whatever the user is looking at.
 ///
@@ -209,6 +221,7 @@ if (typeof browser.alarms !== "undefined") {
             // exists, so a port keeps being retried each time round for as long as
             // it is there, and `pruneRemovedTokenPorts` drops it when it is gone.
             staleTokensByPort.clear();
+            expireAccessWaits();
             loadAuthTokens().finally(() => {
                 // Was a second copy of this loop, which is how the give-up
                 // threshold below ended up disagreeing with `scheduleReconnect`.
@@ -280,6 +293,9 @@ async function loadAuthTokens() {
 }
 
 // ─── Initialize ──────────────────────────────────────────────────────
+
+// A badge from before this page was suspended describes waits it no longer knows.
+setAccessBadge("", "MCPSafari");
 
 Promise.all([loadAuthTokens(), restoreSessionState()]).then(() => {
     connectAll();

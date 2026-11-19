@@ -25,6 +25,9 @@ function loadBackground({
 } = {}) {
     const timers = [];
     const tabUpdatedListeners = [];
+    const tabRemovedListeners = [];
+    // What the toolbar button was last told, call by call.
+    const toolbar = { text: undefined, color: undefined, title: undefined, texts: [] };
     let probeStarted = false;
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
@@ -64,7 +67,13 @@ function loadBackground({
                 addListener: (listener) => { tabUpdatedListeners.push(listener); },
                 removeListener() {},
             },
-            onRemoved: { addListener() {} },
+            onRemoved: { addListener: (listener) => { tabRemovedListeners.push(listener); } },
+        },
+        action: {
+            setBadgeText: async ({ text }) => { toolbar.text = text; toolbar.texts.push(text); },
+            setBadgeBackgroundColor: async ({ color }) => { toolbar.color = color; },
+            setBadgeTextColor: async () => {},
+            setTitle: async ({ title }) => { toolbar.title = title; },
         },
         webNavigation: { getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: tabUrl }] },
         windows: { update: async () => {} },
@@ -90,6 +99,10 @@ function loadBackground({
     vm.runInContext(source, context);
 
     return {
+        toolbar,
+        closeTab(tabId) {
+            for (const listener of tabRemovedListeners) listener(tabId, {});
+        },
         call: (expression) => vm.runInContext(expression, context),
         /// Drives `tabs.onUpdated`, which the extension listens to so a tab
         /// that navigates loses its cached access grant.
@@ -257,7 +270,7 @@ test("tab listing parked on the dialog reports why instead of timing out", async
 });
 
 test("an unreadable tab url still produces a usable refusal", async () => {
-    const harness = loadBackground({ probe: parked, tabUrl: undefined });
+    const harness = loadBackground({ probe: parked, tabUrl: null });
 
     const pending = track(rejection(harness.call('sendToContentScript(1, { action: "read_page" })')));
     await fireWhenParked(harness, pending);
@@ -535,4 +548,78 @@ test("concurrent calls on one tab share a single probe", async () => {
     ));
 
     assert.equal(probes, 1);
+});
+
+// ─── The toolbar button says when access is waiting ──────────────────
+//
+// Safari 27.2 refuses a site nobody has decided on without asking anything, and
+// the only place to allow it is the MCPSafari button, which gave no sign. Seen
+// in real use: the user looked for a dialog that never came.
+
+test("a refused site puts a yellow ! on the toolbar button, naming the site", async () => {
+    const harness = loadBackground({ probe: async () => { throw new Error(REFUSAL); } });
+    // Cleared at startup, in case a suspended page left one behind.
+    assert.equal(harness.toolbar.texts[0], "");
+
+    const err = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    assert.equal(err.code, "permission_required");
+    assert.equal(harness.toolbar.text, "!");
+    assert.equal(harness.toolbar.color, "#FFCC00");
+    assert.match(harness.toolbar.title, /blocked\.example/);
+    assert.match(harness.toolbar.title, /click here/);
+});
+
+test("the ! goes once a call on that site gets through, on any of its tabs", async () => {
+    let allowed = false;
+    const harness = loadBackground({
+        probe: async () => { if (!allowed) throw new Error(REFUSAL); return [{ result: true }]; },
+    });
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+    await rejection(harness.call('sendToContentScript(2, { action: "read_page" })'));
+    assert.equal(harness.toolbar.text, "!");
+
+    // The user allows the site; the next call on either tab gets through, and the
+    // grant is per site, so both waits end.
+    allowed = true;
+    harness.call("tabAccessProbes.clear()");
+    await harness.call('sendToContentScript(2, { action: "read_page" })');
+
+    assert.equal(harness.toolbar.text, "");
+    assert.equal(harness.call("tabsAwaitingAccess.size"), 0);
+});
+
+test("closing or navigating the waiting tab takes the ! away", async () => {
+    const harness = loadBackground({ probe: async () => { throw new Error(REFUSAL); } });
+
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+    harness.closeTab(1);
+    assert.equal(harness.toolbar.text, "");
+
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+    harness.navigateTab(1, "https://elsewhere.example/");
+    assert.equal(harness.toolbar.text, "");
+});
+
+test("a wait nobody acted on stops showing after a while", async () => {
+    const harness = loadBackground({ probe: async () => { throw new Error(REFUSAL); } });
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    harness.call("expireAccessWaits()");
+    assert.equal(harness.toolbar.text, "!", "a fresh wait was dropped");
+
+    harness.call("tabsAwaitingAccess.get(1).at = Date.now() - ACCESS_WAIT_SHOWN_MS");
+    harness.call("expireAccessWaits()");
+    assert.equal(harness.toolbar.text, "");
+});
+
+test("a site Safari won't name still raises the !", async () => {
+    // Safari doesn't show an extension the address of a tab on a site it hasn't
+    // been allowed, so the tooltip can't say which site.
+    const harness = loadBackground({ probe: async () => { throw new Error(REFUSAL); }, tabUrl: null });
+
+    await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+
+    assert.equal(harness.toolbar.text, "!");
+    assert.match(harness.toolbar.title, /a site/);
 });

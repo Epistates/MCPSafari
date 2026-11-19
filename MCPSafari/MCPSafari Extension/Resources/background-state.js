@@ -240,6 +240,7 @@ async function probeAccess(tabId) {
             // about this site changes either way.
             refusal = permissionRequiredError(origin, true);
             tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
+            markAwaitingAccess(tabId, origin);
             throw refusal;
         }
         const message = String(err && err.message);
@@ -249,6 +250,7 @@ async function probeAccess(tabId) {
             throw err;
         }
         refusal = permissionRequiredError(origin, false);
+        markAwaitingAccess(tabId, origin);
     }
 
     // The tab can navigate while the probe is out, and the probe then ran on
@@ -262,6 +264,7 @@ async function probeAccess(tabId) {
     tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
     rememberOriginAccess(origin, refusal === null);
     if (refusal) throw refusal;
+    clearAwaitingAccess(tabId);
 }
 
 /**
@@ -304,6 +307,8 @@ function rememberOriginAccess(origin, granted) {
         return;
     }
     for (const refused of refusalsDuringLoads) refused.delete(origin);
+    // A grant is per site, so it answers every tab waiting on that site.
+    clearAwaitingOrigin(origin);
     // Re-adding moves it to the recent end. Only a change in what is stored is
     // written: a probe lands on most calls, and its order alone is not worth a
     // storage write.
@@ -374,3 +379,85 @@ function discoveredPortCount() {
     return count;
 }
 
+
+// ─── Access the user hasn't given yet ───────────────────────────────
+//
+// Safari 27.2 refuses a site the user hasn't decided on without asking: no
+// dialog appears, and the only place to allow it is the MCPSafari button in the
+// toolbar, which gave no sign anything was waiting. So a refusal marks its tab
+// as waiting, and while any tab is waiting the button shows a yellow "!" and
+// its tooltip names the site. Safari ignores per-tab badges (measured on 27.2),
+// so the mark is the button's own and shows on every tab.
+
+/** tabId to the site a call on it was refused for, and when. @type {Map<number, {origin: string|null, at: number}>} */
+const tabsAwaitingAccess = new Map();
+// A request nobody has acted on in this long stops being news. Checked on the
+// keepalive alarm, about every 24 seconds, so it goes within a minute of that.
+const ACCESS_WAIT_SHOWN_MS = 15 * 60 * 1000;
+const ACCESS_BADGE_TEXT = "!";
+const ACCESS_BADGE_COLOR = "#FFCC00";
+
+function markAwaitingAccess(tabId, origin) {
+    tabsAwaitingAccess.set(tabId, { origin, at: Date.now() });
+    showAccessBadge();
+}
+
+function clearAwaitingAccess(tabId) {
+    if (tabsAwaitingAccess.delete(tabId)) showAccessBadge();
+}
+
+function clearAwaitingOrigin(origin) {
+    let changed = false;
+    for (const [tabId, wait] of tabsAwaitingAccess) {
+        if (wait.origin === origin) {
+            tabsAwaitingAccess.delete(tabId);
+            changed = true;
+        }
+    }
+    if (changed) showAccessBadge();
+}
+
+function expireAccessWaits() {
+    const now = Date.now();
+    let changed = false;
+    for (const [tabId, wait] of tabsAwaitingAccess) {
+        if (now - wait.at >= ACCESS_WAIT_SHOWN_MS) {
+            tabsAwaitingAccess.delete(tabId);
+            changed = true;
+        }
+    }
+    if (changed) showAccessBadge();
+}
+
+function showAccessBadge() {
+    const waits = [...tabsAwaitingAccess.values()];
+    if (waits.length === 0) {
+        setAccessBadge("", "MCPSafari");
+        return;
+    }
+    // Safari doesn't show an extension the address of a tab on a site it hasn't
+    // been allowed, so the site can be unknown.
+    const hosts = [...new Set(waits.filter((wait) => wait.origin).map((wait) => new URL(wait.origin).host))];
+    setAccessBadge(
+        ACCESS_BADGE_TEXT,
+        hosts.length > 0
+            ? `MCPSafari is waiting for access to ${hosts.join(", ")}. On that tab, click here to allow it.`
+            : "MCPSafari is waiting for access to a site. On its tab, click here to allow it."
+    );
+}
+
+// Best effort, one call at a time: Safari may lack any of these, and the badge
+// only helps the user find the button.
+function setAccessBadge(text, title) {
+    const action = browser.action;
+    if (!action) return;
+    const quietly = (call) => {
+        try { Promise.resolve(call()).catch(() => {}); } catch (_) { /* not supported here */ }
+    };
+    quietly(() => action.setBadgeText({ text }));
+    if (text) {
+        quietly(() => action.setBadgeBackgroundColor({ color: ACCESS_BADGE_COLOR }));
+        quietly(() => action.setBadgeTextColor({ color: "#000000" }));
+    }
+    quietly(() => action.setTitle({ title }));
+}
