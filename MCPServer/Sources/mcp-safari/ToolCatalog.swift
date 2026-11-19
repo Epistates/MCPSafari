@@ -85,11 +85,15 @@ extension SafariMCPServer {
             ),
             Tool(
                 name: "tabs_create",
-                description: "Open a new tab. With a url, answers once the page has loaded.",
+                description: "Open a new tab. With a url, answers once the page has loaded. With newWindow, the tab opens in a new window of its own, offset from the window in front so both stay partly visible: use it when several agents share Safari, since a window shows one tab at a time.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "url": .object(["type": .string("string"), "description": .string("URL to open")]),
+                        "newWindow": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Open the tab in a new window instead of the window in front (default false)"),
+                        ]),
                         "tabId": .object([
                             "type": .string("string"),
                             "description": .string("Tab handle whose Safari profile gets the new tab (default: the selected profile)"),

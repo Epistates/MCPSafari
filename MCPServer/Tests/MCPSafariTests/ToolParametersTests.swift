@@ -97,18 +97,17 @@ struct ToolParametersTests {
         #expect(refusal("navigate", ["url": "https://example.com", "action": "goto"]) == nil)
     }
 
-    @Test func newWindowIsRefusedUntilExtensionBuild38() throws {
-        // Build 37's extension answers newWindow with an existing tab, so the
-        // option is withdrawn, and refused by name in any form.
-        for value: Value in [true, false, "true"] {
-            let message = try #require(refusal("tabs_create", ["newWindow": value, "url": "https://example.com"]))
-            #expect(message.contains("newWindow isn't available"))
-            #expect(message.contains("select_tab"))
+    @Test func newWindowIsSentOnlyWhenAskedFor() throws {
+        #expect(refusal("tabs_create", ["newWindow": "true"]) == "newWindow must be a boolean")
+        #expect(refusal("tabs_create", ["newWindow": true, "url": "https://example.com"]) == nil)
+
+        let asked = try SafariMCPServer.tabsCreateParams(["url": "https://example.com", "newWindow": true])
+        #expect(asked["newWindow"]?.boolValue == true)
+        // Without it, or with it false, the extension gets what it always got.
+        for args: [String: Value] in [["url": "https://example.com"], ["url": "https://example.com", "newWindow": false]] {
+            let params = try SafariMCPServer.tabsCreateParams(args)
+            #expect(Set(params.keys) == ["url"])
         }
-        #expect(!SafariMCPServer.declaresArgument("newWindow", for: "tabs_create"))
-        // Without it, the extension gets what it always got.
-        let params = try SafariMCPServer.tabsCreateParams(["url": "https://example.com"])
-        #expect(Set(params.keys) == ["url"])
     }
 
     @Test func anExtensionThatIgnoredNewWindowIsCalledOut() {
