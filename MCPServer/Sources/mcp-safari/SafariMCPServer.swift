@@ -29,10 +29,11 @@ actor SafariMCPServer {
     init(
         port: UInt16 = 8089,
         portCount: UInt16 = WebSocketBridge.defaultPortCount,
-        logger: Logger
+        logger: Logger,
+        instance: InstanceIdentity = InstanceIdentity()
     ) throws {
         self.logger = logger
-        self.bridge = try WebSocketBridge(port: port, portCount: portCount, logger: logger)
+        self.bridge = try WebSocketBridge(port: port, portCount: portCount, logger: logger, instance: instance)
         self.server = Server(
             name: "mcp-safari",
             version: MCPSafariProduct.version,
@@ -59,7 +60,9 @@ actor SafariMCPServer {
             logger: logger
         )
         do {
-            try await server.start(transport: transport)
+            try await server.start(transport: transport) { [weak self] info, _ in
+                await self?.clientIntroduced(info)
+            }
             logger.info("Safari MCP server started")
             await server.waitUntilCompleted()
         } catch {
@@ -67,6 +70,20 @@ actor SafariMCPServer {
             throw error
         }
         await bridge.stop()
+    }
+
+    /// Tells Safari which MCP client is behind this server, for the tooltip on the
+    /// connection's row in the popup. Profiles that connect later get it in the
+    /// handshake. Not awaited by `initialize`: Safari may not be there yet, and a
+    /// label is no reason to hold up the client. An extension that predates
+    /// naming answers `identify` with "Unknown action", which is ignored with
+    /// every other failure here.
+    private func clientIntroduced(_ info: Client.Info) async {
+        let client = ClientIdentity(name: String(info.name.prefix(100)), version: String(info.version.prefix(100)))
+        await bridge.setClient(client)
+        Task { [bridge] in
+            _ = try? await bridge.broadcast(action: "identify", params: client.parameters, timeout: 5)
+        }
     }
 
     /// Takes the bridge down and removes its token files. For a signal, which ends the
@@ -334,13 +351,31 @@ actor SafariMCPServer {
 
     private func handleStatus() async throws -> CallTool.Result {
         let status = await bridge.status()
+        let instance = Self.instanceStatus(bridge.instance, client: await bridge.client)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(status)
+        var content = [Self.textContent(String(decoding: data, as: UTF8.self))]
+        content.append(Self.textContent(Self.jsonText(["instance": AnyCodable(instance)]) ?? "{}"))
         return CallTool.Result(
-            content: [Self.textContent(String(decoding: data, as: UTF8.self))],
-            structuredContent: .object(["status": try Value(status)])
+            content: content,
+            structuredContent: .object([
+                "status": try Value(status),
+                "instance": try Value(AnyCodable(instance)),
+            ])
         )
+    }
+
+    /// Who this server tells Safari it is: its name, the folder it was started in,
+    /// and the MCP client behind it.
+    static func instanceStatus(_ instance: InstanceIdentity, client: ClientIdentity?) -> [String: AnyCodable] {
+        var object: [String: AnyCodable] = [:]
+        object["name"] = AnyCodable(instance.name ?? NSNull())
+        object["folder"] = AnyCodable(instance.folder ?? NSNull())
+        if let client {
+            object["client"] = AnyCodable(["name": AnyCodable(client.name), "version": AnyCodable(client.version ?? NSNull())])
+        }
+        return object
     }
 
     /// Asks every connected profile for its tabs and returns one merged listing,

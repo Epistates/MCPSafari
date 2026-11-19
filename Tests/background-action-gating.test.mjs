@@ -136,6 +136,7 @@ const PARAMS = {
 // still work when the page is refused, so an entry here cannot quietly outlive
 // its reason or hide a gate that was added later.
 const UNGATED = new Map([
+    ["identify", "records which MCP client is behind the connection, and touches no tab"],
     ["tabs_query", "lists tabs from the tabs API and is deadlined on its own; it is the call every session starts with"],
     ["tabs_create", "opens a new tab, a browser operation that needs no access to any page"],
     ["tabs_close", "closes a tab by id, a browser operation that needs no access to the page being closed"],

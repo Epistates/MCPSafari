@@ -131,12 +131,13 @@ struct DoctorTests {
     }
 
     @Test func usageTextCoversEveryAcceptedFlag() {
-        for flag in ["--port", "--port-range", "--log-level", "--verbose", "--json", "--help", "--version"] {
+        for flag in ["--port", "--port-range", "--log-level", "--verbose", "--name", "--json", "--help", "--version"] {
             #expect(usageText.contains(flag), "usage text is missing \(flag)")
         }
         #expect(usageText.contains(MCPSafariProduct.version))
         #expect(usageText.contains("MCP_SAFARI_LOG_LEVEL"))
         #expect(usageText.contains("MCP_SAFARI_PORT_RANGE"))
+        #expect(usageText.contains("MCP_SAFARI_NAME"))
         #expect(usageText.contains("doctor"))
     }
 

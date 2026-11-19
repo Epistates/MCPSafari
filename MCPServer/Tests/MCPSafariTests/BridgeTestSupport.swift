@@ -70,6 +70,7 @@ func holdFreePorts(count: UInt16) -> (first: UInt16, descriptors: [Int32])? {
 func withStartedBridge(
     port: UInt16 = 0,
     handshakeDeadline: Duration = .seconds(30),
+    instance: InstanceIdentity = InstanceIdentity(),
     _ body: (WebSocketBridge, UInt16) async throws -> Void
 ) async throws {
     let tokenRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -79,7 +80,8 @@ func withStartedBridge(
         port: port,
         logger: Logger(label: "BridgeTests"),
         tokenRoot: tokenRoot,
-        handshakeDeadline: handshakeDeadline
+        handshakeDeadline: handshakeDeadline,
+        instance: instance
     )
     await bridge.start()
     let boundPort = await bridge.port

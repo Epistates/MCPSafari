@@ -24,14 +24,15 @@
 // Served here in the background.
 //
 // A handler is given the port of the server that made the request as well, for
-// the two that keep per-server state: the tab `select_tab` pins is that
-// server's own.
+// the ones that keep per-server state: the tab `select_tab` pins is that
+// server's own, and so is the client `identify` names.
 /** @type {Map<string, (params: any, serverPort: number) => Promise<any>>} */
 const BACKGROUND_HANDLERS = new Map([
     ["tabs_query", () => handleTabsQuery()],
     ["tabs_create", (params) => handleTabsCreate(params)],
     ["tabs_close", (params, serverPort) => handleTabsClose(params, serverPort)],
     ["select_tab", (params, serverPort) => handleSelectTab(params, serverPort)],
+    ["identify", (params, serverPort) => handleIdentify(params, serverPort)],
     ["navigate", (params) => handleNavigate(params)],
     ["native_type_text", (params) => handleNativeTypeText(params)],
     ["native_press_key", (params) => handleNativePressKey(params)],
@@ -285,9 +286,9 @@ function redactResult(action, data) {
 
 // The tab tools that never fall back to the active tab. `tabs_close` and
 // `select_tab` demand a tab by name: closing whatever happens to be in front
-// because the caller left it out would be the wrong default. The other two have
+// because the caller left it out would be the wrong default. The others have
 // no target tab to resolve.
-const TAB_FREE_ACTIONS = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab"]);
+const TAB_FREE_ACTIONS = new Set(["identify", "tabs_query", "tabs_create", "tabs_close", "select_tab"]);
 
 function actsOnATab(action) {
     return !TAB_FREE_ACTIONS.has(action)

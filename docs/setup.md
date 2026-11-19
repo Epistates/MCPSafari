@@ -141,6 +141,8 @@ Any client that supports the MCP stdio transport can connect. Point it at `mcp-s
 
 Each MCP client starts its own server. A server takes `8089` if it is free and otherwise the next free port, and the extension connects to each one wherever it landed. These connections share Safari tabs and browser state.
 
+The MCPSafari toolbar popup names each connection, so you can tell the sessions apart: by the name you gave its server with `--name` (or `MCP_SAFARI_NAME`), or else by the last part of the folder the server was started in, with that folder on a line below. Two sessions started in the same folder show the same name, so give one of them a `--name`. See [Several agents at once](tools.md#several-agents-at-once).
+
 ### Ports
 
 A server tries `8089` and then the ports after it, ten in all by default: `8089` and the next nine, up to `8098`. `--port` moves where it starts and `--port-range` changes how many ports it tries, from 1 to 64:
@@ -176,6 +178,7 @@ Every connected profile is drivable. `tabs_context` lists the tabs of all of the
 | `--port-range <n>` | How many consecutive ports to try from `--port`, 1 to 64 (default: `10`). Also `MCP_SAFARI_PORT_RANGE`. See [Ports](#ports) |
 | `--log-level <level>` | `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `critical` (default: `notice`) |
 | `--verbose` | Shorthand for `--log-level debug` |
+| `--name <name>` | What the MCPSafari toolbar popup calls this server, up to 64 characters with no control characters (default: the last part of the folder the server was started in). Also `MCP_SAFARI_NAME`. See [Multiple MCP clients](#multiple-mcp-clients) |
 | `--help` / `-h` | Print usage and exit |
 | `--version` / `-V` | Print the version and exit |
 

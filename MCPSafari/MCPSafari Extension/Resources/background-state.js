@@ -10,7 +10,15 @@
 // given up on after AUTO_GIVE_UP_ATTEMPTS or AUTO_CLEANUP_MS.
 // Manually added ports are persisted in storage.local across restarts.
 
-/** @type {Map<number, {ws: WebSocket|null, state: string, attempts: number, manual: boolean, lastConnected: number}>} */
+/**
+ * `instance` and `client` are what the server and its MCP client say about
+ * themselves (see "Who a connection is" below). Both are reset each time a
+ * server authenticates, since a new run can be a different server.
+ *
+ * @type {Map<number, {ws: WebSocket|null, state: string, attempts: number, manual: boolean, lastConnected: number,
+ *   disconnectedAt?: number, instance?: {name: string|null, folder: string|null}|null,
+ *   client?: {name: string, version: string|null}|null}>}
+ */
 const connections = new Map();
 /** @type {Set<number>} Manually added ports (persisted across restarts) */
 const manualPorts = new Set();
@@ -384,6 +392,85 @@ function discoveredPortCount() {
         if (!conn.manual) count++;
     }
     return count;
+}
+
+// ─── Who a connection is ─────────────────────────────────────────────
+//
+// Several MCP clients can share one Safari, each through a server of its own,
+// and a port number says nothing about which session is behind it. So once the
+// handshake is done a server says who it is: the `--name` it was started with,
+// the folder it was started in, and the MCP client that introduced itself to
+// it. The popup names each connection from that. It is what the server claims,
+// not proof, and nothing here decides anything by it; it is only shown.
+
+const MAX_INSTANCE_NAME_LENGTH = 64;
+const MAX_INSTANCE_FOLDER_LENGTH = 1024;
+const MAX_CLIENT_FIELD_LENGTH = 100;
+// Swift's `CharacterSet.controlCharacters`: control and format characters,
+// which covers zero-width joiners, soft hyphens and bidirectional marks as well.
+const CONTROL_OR_FORMAT = /[\p{Cc}\p{Cf}]/u;
+
+function shortString(value, max) {
+    return typeof value === "string" && value.length > 0 && value.length <= max ? value : null;
+}
+
+/**
+ * What a server says about itself after the handshake: its `--name` and the
+ * folder it was started in. Anything else, or any field of the wrong shape, is
+ * dropped, so a connection with nothing usable is named by its port.
+ */
+function readInstanceIdentity(value) {
+    if (!value || typeof value !== "object") return null;
+    return {
+        name: shortString(value.name, MAX_INSTANCE_NAME_LENGTH),
+        folder: shortString(value.folder, MAX_INSTANCE_FOLDER_LENGTH),
+    };
+}
+
+/** The MCP client behind a server, as that client describes itself. Shown, never trusted. */
+function readClientInfo(value) {
+    if (!value || typeof value !== "object") return null;
+    const name = shortString(value.name, MAX_CLIENT_FIELD_LENGTH);
+    if (!name) return null;
+    return { name, version: shortString(value.version, MAX_CLIENT_FIELD_LENGTH) };
+}
+
+function cleanInstanceName(name) {
+    if (typeof name !== "string") return null;
+    const trimmed = name.trim();
+    if (trimmed === "" || trimmed.length > MAX_INSTANCE_NAME_LENGTH) return null;
+    // Control and format characters would let a name rewrite the popup row it
+    // is shown in.
+    return CONTROL_OR_FORMAT.test(trimmed) ? null : trimmed;
+}
+
+function cleanInstanceFolder(folder) {
+    if (typeof folder !== "string" || !folder.startsWith("/") || folder.length > MAX_INSTANCE_FOLDER_LENGTH) return null;
+    if (CONTROL_OR_FORMAT.test(folder)) return null;
+    const trimmed = folder.replace(/\/+$/, "");
+    // A server started from `/` was started by something with no project, so the
+    // folder says nothing about who it is.
+    return trimmed === "" ? null : trimmed;
+}
+
+/** What the user sees a connection called: its name, its folder's last part, or its port. */
+function instanceLabel(instance, port) {
+    const name = cleanInstanceName(instance && instance.name);
+    if (name) return name;
+    const folder = cleanInstanceFolder(instance && instance.folder);
+    if (folder) return folder.slice(folder.lastIndexOf("/") + 1) || folder;
+    return `port ${port}`;
+}
+
+/**
+ * `identify`: the MCP client behind this server, sent once the client has
+ * introduced itself. A profile that connects after that is told in the
+ * handshake instead.
+ */
+async function handleIdentify(params, serverPort) {
+    const conn = connections.get(serverPort);
+    if (conn) conn.client = readClientInfo(params && params.client);
+    return { client: conn ? conn.client : null };
 }
 
 

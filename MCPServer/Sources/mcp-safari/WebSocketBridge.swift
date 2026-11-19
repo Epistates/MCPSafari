@@ -80,6 +80,16 @@ actor WebSocketBridge {
     /// it refused, and with nothing connected there is nothing better to report.
     /// A connected profile's own numbers always win.
     private var rejectedExtension: ExtensionMetadata?
+
+    /// Who this server is, sent to each profile once it has authenticated, so the
+    /// extension can name the connection in its popup.
+    let instance: InstanceIdentity
+    /// The MCP client behind the server, once it has introduced itself.
+    private(set) var client: ClientIdentity?
+
+    func setClient(_ client: ClientIdentity) {
+        self.client = client
+    }
     private let networkQueue = DispatchQueue(label: "mcp-safari.websocket", qos: .userInitiated)
 
     /// The secret the extension and the bridge prove to each other that they share.
@@ -324,8 +334,10 @@ actor WebSocketBridge {
         tokenRoot: URL = WebSocketBridge.applicationSupportDirectoryURL,
         handshakeDeadline: Duration = .seconds(2),
         rebindDelay: Duration = .seconds(2),
+        instance: InstanceIdentity = InstanceIdentity(),
         beforeTokenPublication: (@Sendable () async -> Void)? = nil
     ) throws {
+        self.instance = instance
         self.rebindDelay = rebindDelay
         self.beforeTokenPublication = beforeTokenPublication
         self.tokenRoot = tokenRoot
@@ -1120,12 +1132,18 @@ actor WebSocketBridge {
         removeAuthenticating(conn)
 
         logger.info("Safari extension authenticated (profile \(profileID))")
-        sendAuthResponse([
+        // Who this server is goes only to a profile that has proved itself, and
+        // in the frame that tells it so. An extension that predates naming reads
+        // the fields it knows and ignores these, so the protocol is unchanged.
+        var ok: [String: Any] = [
             "auth": "ok",
             "serverVersion": MCPSafariProduct.version,
             "protocolVersion": MCPSafariProduct.bridgeProtocolVersion,
             "profile": profileID,
-        ], to: conn)
+            "instance": instance.frameObject,
+        ]
+        if let client { ok["client"] = client.frameObject }
+        sendAuthResponse(ok, to: conn)
     }
 
     private func sendAuthResponse(

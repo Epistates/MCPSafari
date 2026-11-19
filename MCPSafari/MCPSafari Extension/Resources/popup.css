@@ -133,6 +133,38 @@ body {
     flex: 1;
 }
 
+/* A connection's name sits where its state would, and the folder its server
+   started in takes the whole width of a second, smaller line, aligned with the
+   port. Both are cut short with an ellipsis; the tooltip has them in full. */
+.conn-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* Only a row with a folder wraps, so a row without one lays out as it always has. */
+.conn-row:has(.conn-folder) {
+    flex-wrap: wrap;
+    row-gap: 2px;
+}
+
+.conn-folder {
+    flex: 1 0 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding-left: 16px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    color: CanvasText;
+    color: -apple-system-secondary-label;
+}
+
 .auto-badge {
     font-size: 9px;
     padding: 1px 4px;

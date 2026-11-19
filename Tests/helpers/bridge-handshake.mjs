@@ -53,9 +53,10 @@ export const deliver = (socket, frame) =>
 /**
  * Plays a genuine server through the whole exchange on an open socket: reads the
  * hello, sends a correct challenge, checks the extension's proof, and says ok.
+ * `ok` adds fields to that last frame, such as the server's `instance`.
  * Returns the frames the extension sent, so a test can look at all of them.
  */
-export async function serverHandshake(socket, { token, port }) {
+export async function serverHandshake(socket, { token, port, ok = {} }) {
     const hello = helloOn(socket);
     const serverNonce = newNonce();
     await deliver(socket, challengeFor(hello, { token, port, serverNonce }));
@@ -63,6 +64,6 @@ export async function serverHandshake(socket, { token, port }) {
     if (proofFrame.auth?.clientProof !== expectedClientProof(token, port, hello.clientNonce, serverNonce)) {
         throw new Error(`the extension's proof was wrong: ${socket.sent[1]}`);
     }
-    await deliver(socket, { auth: "ok", protocolVersion: PROTOCOL_VERSION });
+    await deliver(socket, { auth: "ok", protocolVersion: PROTOCOL_VERSION, ...ok });
     return socket.sent.map((frame) => JSON.parse(frame));
 }

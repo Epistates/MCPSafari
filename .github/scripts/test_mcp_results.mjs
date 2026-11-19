@@ -635,7 +635,10 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
 
 /// Starts the real server on any free port and waits until its bridge is listening.
 /// The port it bound is how the token file is found.
-async function startServer(t, name) {
+///
+/// `initialize: false` leaves the MCP client unintroduced, for a test that has
+/// it introduce itself later. The server answers tool calls before that.
+async function startServer(t, name, { initialize = true } = {}) {
     // Its own token root, so no running Safari extension can find this server.
     const tokenRoot = await mkdtemp(join(tmpdir(), "mcpsafari-server-"));
     const server = spawn(binary, ["--port", "0"], { stdio: ["pipe", "pipe", "pipe"], env: serverEnvironment(tokenRoot) });
@@ -661,10 +664,12 @@ async function startServer(t, name) {
         assert.ok(answers.has(id), `no answer to ${method}: ${stderr}`);
         return answers.get(id).result;
     };
-    await ask("initialize", {
-        protocolVersion: "2025-11-25", capabilities: {},
-        clientInfo: { name, version: "1.0" },
-    });
+    if (initialize) {
+        await ask("initialize", {
+            protocolVersion: "2025-11-25", capabilities: {},
+            clientInfo: { name, version: "1.0" },
+        });
+    }
     // Status is how the port is learned, and asking also proves it came up.
     let status;
     for (let attempt = 0; attempt < 50; attempt++) {
@@ -701,13 +706,10 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
     });
 }
 
-// The two halves of the handshake are written in different languages, so each side's
-// own tests can only show it agrees with its own reading of the protocol. This runs
-// the extension's real background code, with its WebCrypto, against the real server.
-test("the extension's own handshake code authenticates against the server", { timeout: 30000 }, async (t) => {
-    const { ask, port, tokenFile } = await startServer(t, "interop-test");
-    const token = await readFile(tokenFile, "utf8");
-
+/// The extension's real background code, with its WebCrypto, connected to the
+/// server on `port`. Requests are answered without a browser behind them, apart
+/// from `identify`, which is about the connection itself and needs none.
+async function startExtension(t, port, token) {
     const listeners = [];
     const noop = () => {};
     const context = createContext({
@@ -734,9 +736,11 @@ test("the extension's own handshake code authenticates against the server", { ti
         },
     });
     runInContext(backgroundScriptSource(), context);
-    // Answer requests without a browser behind them.
     runInContext(
-        `handleRequest = async (request) => ({ id: request.id, success: true, data: JSON.stringify([{ id: 7, url: "https://example.com/", title: "T" }]) })`,
+        `const realHandleRequest = handleRequest;
+        handleRequest = async (request, port) => request.action === "identify"
+            ? realHandleRequest(request, port)
+            : ({ id: request.id, success: true, data: JSON.stringify([{ id: 7, url: "https://example.com/", title: "T" }]) })`,
         context
     );
     // Forget the connections as well as closing them, or the close schedules a
@@ -750,12 +754,65 @@ test("the extension's own handshake code authenticates against the server", { ti
         await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.equal(runInContext(`connections.get(${port})?.state`, context), "connected");
+    return context;
+}
 
-    const status = (await ask("tools/call", { name: "status", arguments: {} })).structuredContent.status;
+/// Who the extension thinks is behind `port`, copied out of its realm.
+function connectionIdentity(context, port) {
+    return JSON.parse(runInContext(
+        `JSON.stringify({ instance: connections.get(${port}).instance, client: connections.get(${port}).client })`,
+        context
+    ));
+}
+
+// The two halves of the handshake are written in different languages, so each side's
+// own tests can only show it agrees with its own reading of the protocol. This runs
+// the extension's real background code, with its WebCrypto, against the real server.
+test("the extension's own handshake code authenticates against the server", { timeout: 30000 }, async (t) => {
+    const { ask, port, tokenFile } = await startServer(t, "interop-test");
+    const token = await readFile(tokenFile, "utf8");
+    const context = await startExtension(t, port, token);
+
+    // After the proofs, the server says who it is: the folder it was started in,
+    // and the MCP client that introduced itself before the extension connected.
+    assert.deepEqual(connectionIdentity(context, port), {
+        instance: { name: null, folder: process.cwd() },
+        client: { name: "interop-test", version: "1.0" },
+    });
+
+    const reported = (await ask("tools/call", { name: "status", arguments: {} })).structuredContent;
+    const status = reported.status;
+    assert.deepEqual(reported.instance, {
+        name: null, folder: process.cwd(), client: { name: "interop-test", version: "1.0" },
+    });
     assert.deepEqual(status.profiles.map(({ id }) => id), ["default"]);
     assert.equal(status.extensionVersion, "9.9.9");
     assert.equal(status.extensionProtocolVersion, BRIDGE_PROTOCOL_VERSION);
 
     const tabs = (await ask("tools/call", { name: "tabs_context", arguments: {} })).structuredContent;
     assert.equal(tabs.tabs[0].id, "p0t7", "a request made it to the extension and back");
+});
+
+// A client that introduces itself once Safari is already connected is named to
+// it with `identify`, served by the extension's real router. The fixture in the
+// first test connects after `initialize`, so it never sees this action.
+test("a client that introduces itself after Safari connected is named to it", { timeout: 30000 }, async (t) => {
+    const { ask, port, tokenFile } = await startServer(t, "unused", { initialize: false });
+    const token = await readFile(tokenFile, "utf8");
+    const context = await startExtension(t, port, token);
+    assert.equal(connectionIdentity(context, port).client, null);
+
+    await ask("initialize", {
+        protocolVersion: "2025-11-25", capabilities: {},
+        clientInfo: { name: "late-client", version: "3.0" },
+    });
+    let client = null;
+    for (let attempt = 0; attempt < 100 && !client; attempt++) {
+        client = connectionIdentity(context, port).client;
+        if (!client) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.deepEqual(client, { name: "late-client", version: "3.0" });
+
+    const reported = (await ask("tools/call", { name: "status", arguments: {} })).structuredContent;
+    assert.deepEqual(reported.instance.client, { name: "late-client", version: "3.0" });
 });

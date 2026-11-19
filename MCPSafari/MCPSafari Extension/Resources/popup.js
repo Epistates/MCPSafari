@@ -9,20 +9,12 @@ function renderConnections(ports) {
 
     ports.sort((a, b) => a.port - b.port);
 
-    for (const { port, state, manual } of ports) {
+    for (const status of ports) {
         const row = document.createElement("div");
-        row.className = `conn-row ${state}`;
-
-        const label = manual ? "" : '<span class="auto-badge">auto</span>';
-
-        row.innerHTML = `
-            <span class="dot"></span>
-            <span class="conn-port">${port}</span>
-            ${label}
-            <span class="conn-state">${state}</span>
-            <button class="btn-icon btn-reconnect" data-port="${port}" title="Reconnect">&#x21bb;</button>
-            <button class="btn-icon btn-remove" data-port="${port}" title="Remove">&times;</button>
-        `;
+        row.className = `conn-row ${status.state}`;
+        // A property, not markup, so a server's strings are text here as is.
+        row.title = connectionTooltip(status);
+        row.innerHTML = connectionRowMarkup(status);
         container.appendChild(row);
     }
 
@@ -42,6 +34,58 @@ function renderConnections(ports) {
             refresh();
         });
     });
+}
+
+// Several sessions can each run a server, and a port number says nothing about
+// which is which. A server that has said who it is shows its name where the
+// state was, and under it the folder it was started in; the state moves to the
+// tooltip, with the MCP client behind it. An older server, or a port that is not
+// connected, shows its state as before. The name and folder come from the
+// server, so they are escaped like any other text that did not start in this
+// file.
+function connectionRowMarkup({ port, state, manual, label, folder }) {
+    const auto = manual ? "" : '<span class="auto-badge">auto</span>';
+    const named = isNamed(port, label);
+    const described = named
+        ? `<span class="conn-name">${escapeHtml(label)}</span>`
+        : `<span class="conn-state">${state}</span>`;
+    // Last, so that it wraps onto a line of its own (see popup.css).
+    const where = named && folder ? `<span class="conn-folder">${escapeHtml(shortFolder(folder))}</span>` : "";
+
+    return `
+        <span class="dot"></span>
+        <span class="conn-port">${port}</span>
+        ${auto}
+        ${described}
+        <button class="btn-icon btn-reconnect" data-port="${port}" title="Reconnect">&#x21bb;</button>
+        <button class="btn-icon btn-remove" data-port="${port}" title="Remove">&times;</button>
+        ${where}
+    `;
+}
+
+/**
+ * The row's tooltip, as plain text: everything the row may have cut short, then
+ * the state and the MCP client behind the server, such as "claude-code 2.1.0".
+ */
+function connectionTooltip({ port, state, label, folder, client }) {
+    const named = isNamed(port, label);
+    const who = client && client.name ? [client.name, client.version].filter(Boolean).join(" ") : null;
+    return [
+        named ? label : null,
+        named && folder ? shortFolder(folder) : null,
+        [state, who].filter(Boolean).join(" · "),
+    ].filter(Boolean).join("\n");
+}
+
+// The background names a connection that has said nothing by its port, which
+// the row already shows.
+function isNamed(port, label) {
+    return Boolean(label) && label !== `port ${port}`;
+}
+
+// A home folder as "~". /Users/Shared is everyone's, so it is left as it is.
+function shortFolder(folder) {
+    return String(folder).replace(/^\/Users\/(?!Shared(?:\/|$))[^/]+(?=\/|$)/, "~");
 }
 
 // Safari grants website access per site, and says so nowhere the user is

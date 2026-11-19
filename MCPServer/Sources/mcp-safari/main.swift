@@ -59,7 +59,7 @@ case .doctor(let port, let portCount, let json):
     print(output)
     exit(report.exitCode)
 
-case .serve(let port, let portCount, let logLevel):
+case .serve(let port, let portCount, let logLevel, let name):
     // Log to stderr so stdout is reserved for MCP stdio transport
     var logger = Logger(label: "mcp-safari") { label in
         StreamLogHandler.standardError(label: label)
@@ -69,7 +69,8 @@ case .serve(let port, let portCount, let logLevel):
     let lastPort = WebSocketBridge.lastPort(from: port, count: portCount)
     logger.info("Starting Safari MCP server on WebSocket port \(port), trying up to \(lastPort)")
 
-    let server = try SafariMCPServer(port: port, portCount: portCount, logger: logger)
+    let instance = InstanceIdentity(name: name, folder: InstanceIdentity.launchFolder())
+    let server = try SafariMCPServer(port: port, portCount: portCount, logger: logger, instance: instance)
     let signalSources = installShutdownHandlers(for: server, logger: logger)
     try await server.start()
     // The sources are only referenced here, and Swift may release a value after its

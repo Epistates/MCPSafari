@@ -153,6 +153,8 @@ Several MCP clients can drive Safari at the same time, each through its own serv
 - Keep each agent's tabs in a window of its own: `tabs_create` with `newWindow: true` opens one, the same size as the window in front and 40 points down and to the right of it, so a strip of each stays visible. A window shows one tab at a time, so in a shared window one agent's `screenshot` or `select_tab` hides the other's tab, and two screenshots at once make one fail with the retryable `tab_not_showing`. Native input typed into a shared window can also end up in the other agent's tab, if that agent switches tabs while the typing is under way.
 - Keep each agent's window at least partly visible: not minimized, not completely covered by other windows, and on the current Space. Safari stops running animation frames for a page whose window is minimized or completely covered, so some web apps show stale or empty content until the window is visible again. A strip of the window on screen is enough. A screenshot of a hidden page says so in its result.
 
+The MCPSafari toolbar popup names each connection, so you can tell the agents apart. Once a server has connected it tells the extension who it is: the `--name` it was started with (or `MCP_SAFARI_NAME`), the folder it was started in, and the MCP client that introduced itself to it. Each connected row shows the name, or the last part of the folder when there is no name, with the folder on a second line and your home folder shortened to `~`. The row's tooltip has the connection's state and the client, such as `claude-code 2.1.0`. Two sessions started in the same folder show the same name, so give one of them a `--name`. A server that says neither, such as one started from `/` with no name, is shown by its port and state, as before. The name is what the server says about itself: a label for you, not proof of who is behind it. `status` reports the same under `instance`.
+
 ### Element targeting
 
 Targeting options vary by tool. `click` accepts all four:
@@ -227,7 +229,7 @@ Every successful tool result includes an object in `structuredContent`, alongsid
 
 | Tools | Structured fields |
 |-|-|
-| `status` | `status` with listener, authentication and profile details |
+| `status` | `status` with listener, authentication and profile details; `instance`, what this server tells Safari it is: its `name` and `folder` (each `null` when it has none) and, once the MCP client has introduced itself, `client` (`name` and `version`) |
 | `tabs_context` | `tabs` and `profileFailures`; an incomplete listing names the missing profiles |
 | `tabs_create`, `select_tab`, `close_tab` | `tab`, with the profile-qualified handle; close returns `id` and `closed` |
 | `read_page`, `snapshot`, `find` | `page`, `snapshot`, `matches` respectively; `find` adds `unreachableFrames` when it could not search every frame |

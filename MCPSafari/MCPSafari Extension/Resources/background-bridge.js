@@ -262,6 +262,13 @@ function connectToPort(port) {
             stage = "ready";
             clearTimeout(handshakeTimer);
             authenticated = true;
+            // Who this server says it is, for the popup. Read only now, after it
+            // proved it holds the token, so a listener that is not the server
+            // cannot claim a name. A new run is a new connection, so nothing
+            // about the previous one carries over. An older server sends
+            // neither, and its row shows its state as before.
+            conn.instance = readInstanceIdentity(msg.instance);
+            conn.client = readClientInfo(msg.client);
             conn.lastConnected = Date.now();
             conn.state = "connected";
             conn.attempts = 0;
@@ -433,7 +440,17 @@ function visibleConnectionStatuses() {
             || conn.manual
             || authTokensByPort.has(port);
         if (!isVisible) continue;
-        ports.push({ port, state: conn.state, manual: conn.manual });
+        // Who is behind the port, once it has said. Only while it is connected:
+        // a port that dropped can come back as a different server.
+        const connected = conn.state === "connected";
+        ports.push({
+            port,
+            state: conn.state,
+            manual: conn.manual,
+            label: connected ? instanceLabel(conn.instance, port) : null,
+            folder: connected ? cleanInstanceFolder(conn.instance && conn.instance.folder) : null,
+            client: connected ? conn.client ?? null : null,
+        });
     }
     return ports;
 }

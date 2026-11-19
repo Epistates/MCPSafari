@@ -2,7 +2,12 @@ import Foundation
 import Logging
 
 enum CLICommand: Equatable {
-    case serve(port: UInt16, portCount: UInt16 = WebSocketBridge.defaultPortCount, logLevel: Logger.Level)
+    case serve(
+        port: UInt16,
+        portCount: UInt16 = WebSocketBridge.defaultPortCount,
+        logLevel: Logger.Level,
+        name: String? = nil
+    )
     case doctor(port: UInt16, portCount: UInt16 = WebSocketBridge.defaultPortCount, json: Bool)
     case help
     case version
@@ -33,6 +38,7 @@ func parseCommand(
     var logLevel: Logger.Level?
     var verbose = false
     var json = false
+    var name: String?
     var index = 0
 
     while index < options.count {
@@ -68,6 +74,10 @@ func parseCommand(
         case "--verbose" where !doctorMode:
             verbose = true
             index += 1
+        case "--name" where !doctorMode:
+            guard index + 1 < options.count else { throw CLIError(description: InstanceIdentity.nameUsage) }
+            name = try InstanceIdentity.validatedName(options[index + 1])
+            index += 2
         case "--json" where doctorMode:
             json = true
             index += 1
@@ -109,7 +119,14 @@ func parseCommand(
         Logger.Level(rawValue: value.lowercased()) ?? defaultLogLevel
     }
     let resolved = logLevel ?? (verbose ? .debug : nil) ?? fromEnvironment ?? defaultLogLevel
-    return .serve(port: port, portCount: portCount, logLevel: resolved)
+
+    // The flag beats the environment here too. A value that is set and unusable
+    // is an error, for the same reason as the port range: the user would
+    // otherwise find out in Safari's popup, under a name they did not choose.
+    if name == nil, let text = environment[InstanceIdentity.nameEnvironmentVariable], !text.isEmpty {
+        name = try InstanceIdentity.validatedName(text)
+    }
+    return .serve(port: port, portCount: portCount, logLevel: resolved, name: name)
 }
 
 /// A whole number of ports from one through `WebSocketBridge.maxPortCount`, or nil.
@@ -136,6 +153,8 @@ let usageText = """
           --port-range <n>  Ports to try from --port when one is taken, 1 through 64 (default: 10)
           --log-level <l>   trace, debug, info, notice, warning, error, critical (default: notice)
           --verbose         Shorthand for --log-level debug
+          --name <name>     What MCPSafari's toolbar popup calls this server, up to 64 characters
+                            (default: the last part of the folder the server was started in)
       -h, --help            Show this help and exit
       -V, --version         Show the version and exit
 
@@ -147,6 +166,7 @@ let usageText = """
     ENVIRONMENT:
       MCP_SAFARI_LOG_LEVEL   Log level used when --log-level and --verbose are absent
       MCP_SAFARI_PORT_RANGE  Port count used when --port-range is absent
+      MCP_SAFARI_NAME        Name used when --name is absent
       MCP_SAFARI_TOKEN_ROOT  Absolute path to write the token files under instead of
                              ~/Library/Application Support/MCPSafari. For tests: the Safari
                              extension reads only the standard location, so it cannot find a
