@@ -21,10 +21,16 @@ struct ProfileConnectionTests {
     ) async throws {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
+        // The shipped two-second handshake deadline is for a real extension,
+        // which answers in milliseconds. A URLSession client on a loaded CI
+        // runner can take longer, and these tests are about routing, so the
+        // deadline is the shared harness's (`withStartedBridge`), not the
+        // shipped one. HandshakeHygieneTests covers the deadline itself.
         let bridge = try WebSocketBridge(
             port: port,
             logger: Logger(label: "ProfileConnectionTests"),
-            tokenRoot: tokenRoot
+            tokenRoot: tokenRoot,
+            handshakeDeadline: .seconds(30)
         )
         await bridge.start()
         let boundPort = await bridge.port
