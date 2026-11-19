@@ -213,17 +213,58 @@ async function newWindowPlacement() {
     };
 }
 
+// How many times, NEW_WINDOW_TAB_POLL_MS apart, Safari's tab list is read for
+// the tab of a window it has just opened, which it can list a moment late.
+const NEW_WINDOW_TAB_ATTEMPTS = 20;
+const NEW_WINDOW_TAB_POLL_MS = 100;
+
 // A new window holding one new tab, for an agent that wants a window of its own:
 // a window shows one tab at a time, so agents sharing one hide each other's pages.
+//
+// What Safari answers `windows.create` with can't be relied on to name the
+// window it made. Measured on Safari 27.2, following that answer led to one of
+// the user's existing tabs, and the caller then acted on a tab it never opened
+// (a qualification run closed it). So the tab is found by what is new: a tab
+// that wasn't there before the call, in a window that wasn't either. When that
+// doesn't single out one tab, the call fails rather than return a guess.
 async function createTabInNewWindow(url) {
+    const before = await listTabsForNewWindow();
+    const knownTabs = new Set(before.map((tab) => tab.id));
+    const knownWindows = new Set(before.map((tab) => tab.windowId));
+
     const created = await browser.windows.create({
         ...(url ? { url } : {}),
         ...(await newWindowPlacement()),
     });
-    const tab = created?.tabs?.[0]
-        ?? (await browser.tabs.query({ windowId: created?.id }))[0];
-    if (!tab) throw new Error("Safari opened a window but reported no tab in it.");
-    return tab;
+    // Safari's answer narrows the search only when it names a window that is
+    // actually new. Two windows opened at once by two agents are told apart by it.
+    const reported = Number.isInteger(created?.id) && !knownWindows.has(created.id) ? created.id : null;
+
+    for (let attempt = 0; attempt < NEW_WINDOW_TAB_ATTEMPTS; attempt += 1) {
+        const fresh = (await listTabsForNewWindow()).filter((tab) =>
+            !knownTabs.has(tab.id) && !knownWindows.has(tab.windowId)
+            && (reported === null || tab.windowId === reported));
+        const windows = new Set(fresh.map((tab) => tab.windowId));
+        if (windows.size === 1) {
+            return fresh.sort((a, b) => (a.index ?? 0) - (b.index ?? 0))[0];
+        }
+        if (windows.size > 1) break;
+        await delay(NEW_WINDOW_TAB_POLL_MS);
+    }
+    throw new Error(
+        "Safari opened a new window but didn't make clear which tab is in it, so no tab is "
+        + "returned rather than a guess. Call tabs_context and look for the tab in a window of its own."
+    );
+}
+
+// Deadlined like the listing tabs_context makes, for the same reason.
+async function listTabsForNewWindow() {
+    try {
+        return await withDeadline(browser.tabs.query({}), TAB_LISTING_TIMEOUT_MS);
+    } catch (err) {
+        if (!(err instanceof DeadlineExceeded)) throw err;
+        throw permissionRequiredError(null, true);
+    }
 }
 
 async function handleTabsCreate(params) {

@@ -415,21 +415,48 @@ test("navigate reports a title only for a site that has been reached", async () 
 
 // ─── tabs_create with newWindow ──────────────────────────────────────
 
+// Safari's tab list as a new window comes up: the tabs in `appear` join the
+// list once `windows.create` has been called, and `reply` is what that call
+// answers with. The fixture's `tabs.query` ignores its filter and returns every
+// tab, which is what following a reply with no window id came to in Safari 27.2.
+function stageNewWindow(harness, { reply, appear, front = { id: 1, left: 100, top: 50, width: 1200, height: 800 } }) {
+    harness.evaluate(`(() => {
+        globalThis.windowCreations = [];
+        let opened = false;
+        const listed = browser.tabs.query;
+        browser.windows.getLastFocused = async () => (${JSON.stringify(front)});
+        browser.windows.create = async (createData) => {
+            windowCreations.push(createData);
+            opened = true;
+            return ${JSON.stringify(reply)};
+        };
+        browser.tabs.query = async (query) => [...(await listed(query)), ...(opened ? ${JSON.stringify(appear)} : [])];
+        browser.tabs.create = async () => { throw new Error("opened a tab in a shared window"); };
+        waitForTabLoad = async (tabId, created) => created;
+    })()`);
+}
+
+// Lets the extension's short polling waits run, which the fixture holds back.
+async function settled(harness, expression) {
+    const state = { done: false };
+    const running = harness.evaluate(expression);
+    // Handled at once, so a refusal isn't reported as unhandled while this waits.
+    running.then(() => { state.done = true; }, () => { state.done = true; });
+    for (let turn = 0; turn < 500 && !state.done; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        harness.fireTimers();
+    }
+    return running;
+}
+
+const OPENED = { id: 9, windowId: 7, index: 0, url: "https://untouched.example/new", status: "complete", title: "Opened page" };
+
 test("tabs_create with newWindow opens a window of its own, offset from the one in front", async () => {
     // Agents side by side each want a window: a window shows one tab at a time,
     // and a page whose window is completely covered stops drawing. The same size
     // at an offset leaves a strip of each window showing.
     const harness = loadBackground();
-    harness.evaluate(`
-        globalThis.windowCreations = [];
-        browser.windows.getLastFocused = async () => ({ id: 1, left: 100, top: 50, width: 1200, height: 800 });
-        browser.windows.create = async (createData) => {
-            windowCreations.push(createData);
-            return { id: 7, tabs: [{ id: 9, windowId: 7, url: createData.url, status: "complete", title: "Opened page" }] };
-        };
-        browser.tabs.create = async () => { throw new Error("opened a tab in the shared window"); };
-        waitForTabLoad = async (tabId, created) => created;
-    `);
+    stageNewWindow(harness, { reply: { id: 7, tabs: [OPENED] }, appear: [OPENED] });
 
     const created = await harness.evaluate('handleTabsCreate({ url: "https://untouched.example/new", newWindow: true })');
 
@@ -459,20 +486,15 @@ test("tabs_create without newWindow opens a tab as before and says nothing about
 });
 
 test("tabs_create with newWindow still opens the window when Safari cannot say where the front one is", async () => {
-    const harness = loadBackground();
-    harness.evaluate(`
-        globalThis.windowCreations = [];
-        browser.windows.create = async (createData) => { windowCreations.push(createData); return { id: 7 }; };
-        browser.tabs.query = async ({ windowId }) => (windowId === 7 ? [{ id: 11, windowId: 7, url: "", title: "" }] : []);
-    `);
-
     for (const front of [
         "async () => { throw new Error('no window has focus'); }",
         "async () => ({ id: 1 })",
         "async () => ({ id: 1, left: 0, top: 0, width: undefined, height: 800 })",
     ]) {
-        harness.evaluate(`windowCreations.length = 0; browser.windows.getLastFocused = ${front};`);
-        // No URL, so nothing to wait for; the tab comes from the window's own listing.
+        const harness = loadBackground();
+        stageNewWindow(harness, { reply: { id: 7 }, appear: [{ id: 11, windowId: 7, index: 0, url: "", title: "" }] });
+        harness.evaluate(`browser.windows.getLastFocused = ${front};`);
+        // No URL, so nothing to wait for.
         const created = await harness.evaluate("handleTabsCreate({ newWindow: true })");
         assert.deepEqual(JSON.parse(JSON.stringify(harness.evaluate("windowCreations"))), [{}], front);
         assert.equal(created.id, 11, front);
@@ -480,13 +502,62 @@ test("tabs_create with newWindow still opens the window when Safari cannot say w
     }
 });
 
-test("tabs_create with newWindow fails plainly if Safari reports no tab in the new window", async () => {
-    const harness = loadBackground();
-    harness.evaluate(`
-        browser.windows.getLastFocused = async () => ({ id: 1 });
-        browser.windows.create = async () => ({ id: 7, tabs: [] });
-        browser.tabs.query = async () => [];
-    `);
+test("tabs_create with newWindow returns the new window's tab whatever Safari answers", async () => {
+    // Safari 27.2 opened the window and answered with nothing that named it, and
+    // the old lookup handed the caller one of the user's existing tabs: a
+    // qualification run then closed it. The tab is found by what is new instead.
+    const newTab = { id: 12, windowId: 8, index: 0, url: "https://untouched.example/new", title: "" };
+    for (const reply of [
+        {},
+        { tabs: [TABS[0]] },
+        { id: 1, tabs: [TABS[0], TABS[1]] },
+        { id: 8 },
+    ]) {
+        const harness = loadBackground();
+        stageNewWindow(harness, { reply, appear: [newTab] });
 
-    await assert.rejects(harness.evaluate("handleTabsCreate({ newWindow: true })"), /reported no tab/);
+        const created = await harness.evaluate('handleTabsCreate({ url: "https://untouched.example/new", newWindow: true })');
+
+        assert.equal(created.id, 12, JSON.stringify(reply));
+    }
+});
+
+test("tabs_create with newWindow waits briefly for Safari to list the new window's tab", async () => {
+    const harness = loadBackground();
+    stageNewWindow(harness, { reply: {}, appear: [] });
+    harness.evaluate(`(() => {
+        const listed = browser.tabs.query;
+        let reads = 0;
+        browser.tabs.query = async (query) => {
+            reads += 1;
+            // Before the call, then twice more with the window still empty.
+            return reads > 3 ? [...(await listed(query)), { id: 13, windowId: 9, index: 0, url: "" }] : listed(query);
+        };
+    })()`);
+
+    const created = await settled(harness, "handleTabsCreate({ newWindow: true })");
+
+    assert.equal(created.id, 13);
+});
+
+test("tabs_create with newWindow refuses rather than guess which tab is new", async () => {
+    // No new tab shows up at all.
+    const empty = loadBackground();
+    stageNewWindow(empty, { reply: { id: 7, tabs: [] }, appear: [] });
+    await assert.rejects(settled(empty, "handleTabsCreate({ newWindow: true })"), /didn't make clear which tab/);
+
+    // Two windows open at once, another agent's among them, and Safari's answer
+    // names neither.
+    const twoWindows = [
+        { id: 21, windowId: 30, index: 0, url: "" },
+        { id: 22, windowId: 31, index: 0, url: "" },
+    ];
+    const crowded = loadBackground();
+    stageNewWindow(crowded, { reply: {}, appear: twoWindows });
+    await assert.rejects(settled(crowded, "handleTabsCreate({ newWindow: true })"), /didn't make clear which tab/);
+
+    // The same, with an answer that names one of them: that one is ours.
+    const named = loadBackground();
+    stageNewWindow(named, { reply: { id: 31 }, appear: twoWindows });
+    assert.equal((await named.evaluate("handleTabsCreate({ newWindow: true })")).id, 22);
 });
