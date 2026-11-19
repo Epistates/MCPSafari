@@ -63,8 +63,13 @@ function toolErrorFromResponse(response) {
 }
 
 // Two different situations, and the difference is the whole point: a dialog the
-// user has not seen yet, versus access they have already been refused. Both are
-// retryable, because in both cases a grant makes the same call work.
+// user has not seen yet, versus a site that isn't allowed. Both are retryable,
+// because in both cases a grant makes the same call work.
+//
+// Safari 27.2 shows no dialog for a site nobody has decided on: it refuses, and
+// the only place to allow the site is the toolbar button, which the refusal
+// marks with a yellow "!" (see `markAwaitingAccess`). It also hides that tab's
+// address from the extension, which is why the site can go unnamed.
 function permissionRequiredError(origin, pending) {
     const site = origin ? `this tab (${origin})` : "this tab";
     const error = new Error(
@@ -72,11 +77,13 @@ function permissionRequiredError(origin, pending) {
             ? `MCPSafari needs the user to allow access to ${site}. Safari is showing a `
               + `permission dialog that blocks every call for this tab until it is answered, and `
               + `it can sit behind another window. Ask the user to find it and choose "Always `
-              + `Allow on This Website", then retry.`
-            : `MCPSafari is not allowed on ${site}. Ask the user to grant it from the MCPSafari `
-              + `button in Safari's toolbar, or in Safari Settings > Extensions > MCPSafari `
-              + `Extension, where "Always Allow on Every Website" also stops the per-site `
-              + `asking. Then retry.`
+              + `Allow on This Website", or, if there's no dialog, to allow the site from the `
+              + `MCPSafari button in Safari's toolbar. Then retry.`
+            : `MCPSafari isn't allowed on ${site}, and Safari doesn't ask by itself. Ask the user `
+              + `to click the MCPSafari button in Safari's toolbar while this tab is showing (it `
+              + `has a yellow "!" while access is waiting) and allow the site, or to allow it in `
+              + `Safari Settings > Extensions > MCPSafari Extension, where "Always Allow on Every `
+              + `Website" stops the asking for every site. Then retry.`
     );
     error.code = "permission_required";
     error.retryable = true;

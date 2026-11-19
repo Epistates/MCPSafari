@@ -182,7 +182,11 @@ test("a probe refused outright says access is missing, not that a dialog is open
     const err = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
 
     assert.equal(err.code, "permission_required");
-    assert.match(err.message, /is not allowed on/);
+    assert.match(err.message, /isn't allowed on/);
+    // Safari 27.2 asks nothing, so the message says where to go and what marks it.
+    assert.match(err.message, /doesn't ask by itself/);
+    assert.match(err.message, /toolbar while this tab is showing/);
+    assert.match(err.message, /yellow "!"/);
     // No dialog is open in this case, so pointing at one would send the user
     // hunting for a window that is not there.
     assert.doesNotMatch(err.message, /behind another window/);

@@ -198,12 +198,12 @@ Three limits are worth knowing. Native input (`native: true`) reaches the top fr
 
 ### Website access
 
-Safari grants extensions access one site at a time, and it asks the first time MCPSafari touches a site it has no answer for. That question is a modal dialog, and **it can open behind another window**. While it is unanswered, every extension call for that tab is blocked.
+Safari grants extensions access one site at a time. Safari 27.2 doesn't ask when MCPSafari first touches a site nobody has decided on: it refuses, and the only place to allow the site is the MCPSafari button in Safari's toolbar. Safari also hides that tab's address from the extension, so the refusal may not be able to name the site. Earlier versions of Safari have asked instead, with a modal dialog that **can open behind another window** and blocks every extension call for that tab until it's answered.
 
-So a tool that needs a page it has not been granted fails with `permission_required` rather than waiting. There are two versions of it, and the difference matters:
+So a tool that needs a page it hasn't been granted fails with `permission_required` rather than waiting. There are two versions of it, and the difference matters:
 
-- The dialog is open and waiting. The message says so and names the origin. Tell the user to look for the dialog, including behind other windows, and choose **Always Allow on This Website** or **Allow for One Day**.
-- Access was refused, or was never asked for on this origin. Tell the user to grant it from the MCPSafari button in Safari's toolbar, or in Safari Settings > Extensions > MCPSafari Extension.
+- The site isn't allowed. Tell the user to click the MCPSafari button while that tab is showing and allow the site, or to allow it in Safari Settings > Extensions > MCPSafari Extension. While a call is waiting for access, the button shows a yellow **!**, and its tooltip names the site when Safari lets MCPSafari see it. The **!** goes once a call on that site gets through, the tab navigates or closes, or after 15 minutes. Safari shows one badge for the whole button, not one per tab.
+- A dialog is open and waiting (earlier Safari versions). The message says so and names the origin. Tell the user to look for the dialog, including behind other windows, and choose **Always Allow on This Website** or **Allow for One Day**.
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
 
@@ -219,7 +219,7 @@ Granted status is remembered across Safari restarts once a tool call has succeed
 
 Every tool that reads or acts on a page is gated this way, including `navigate` with `back` or `forward` (which runs a script in the page) and `resize_window`. A few operations are browser chrome and need no access to any page, so they work on an ungranted tab: `tabs_context`, `tabs_create`, `close_tab`, `select_tab`, and `navigate` with `goto` or `reload`. That is deliberate. Going to a new URL is how a caller gets off a page it cannot use, and selecting a tab only records which tab later calls mean.
 
-`select_tab` on a tab whose site is not granted succeeds. It pins the tab and brings it forward, and its result reports `"access": "not_granted"` with the same `accessHint` instead of a URL and title. The first call that reads the page then fails with `permission_required`, naming the site to grant.
+`select_tab` on a tab whose site is not granted succeeds. It pins the tab and brings it forward, and its result reports `"access": "not_granted"` with the same `accessHint` instead of a URL and title. The first call that reads the page then fails with `permission_required`, naming the site to grant when Safari lets MCPSafari see it.
 
 ### Results
 
