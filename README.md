@@ -26,7 +26,7 @@ brew trust epistates/tap
 brew install --cask epistates/tap/mcp-safari
 ```
 
-`brew trust` is needed once: installing a cask auto-trusts the cask, but not the `mcp-safari-server` formula it depends on, and without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`.
+`brew trust` is needed once: installing a cask auto-trusts the cask, but not the `mcp-safari-server` formula it depends on, and without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`. If you installed MCPSafari before Homebrew 7, run `brew trust epistates/tap` once before `brew upgrade` too, or the upgrade may keep the version you have.
 
 Open MCPSafari.app once so Safari picks up the extension, then enable **MCPSafari Extension** in Safari → Settings → Extensions. Grant access to the sites you want your agent to use.
 
