@@ -254,6 +254,8 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     // answered, the way they can while a multi-request call is still running.
     let selectedTab = 7;
     let moveSelectionAfter;
+    // Whether the fixture's page says it isn't showing, as content.js reports.
+    let hiddenPage = false;
     const requests = [];
     const untargeted = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab"]);
     await connect("default", async ({ action, params }) => {
@@ -269,7 +271,12 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         if (action === moveSelectionAfter) selectedTab = 9;
         if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user", resolvedTabId };
         const data = responseData(action, params);
-        return { success: true, data: typeof data === "string" ? data : JSON.stringify(data), resolvedTabId };
+        return {
+            success: true,
+            data: typeof data === "string" ? data : JSON.stringify(data),
+            resolvedTabId,
+            ...(hiddenPage ? { pageVisibility: "hidden" } : {}),
+        };
     });
 
     const { tools } = await call("tools/list");
@@ -277,7 +284,9 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(tabs.structuredContent.tabs[0].id, "p0t7");
     assert.deepEqual(tabs.structuredContent.profileFailures, []);
     // A granted listing has nothing to add. An ungranted one says so once for
-    // the whole listing, with the extension's hint said once rather than per tab.
+    // the whole listing, in the server's own words. Each tab's JSON already
+    // carries the extension's hint, and an older extension's hint says "not
+    // granted" of sites the user may well have allowed.
     assert.equal(tabs.content.length, 1);
     queryTabs = [tab, ungrantedTab(11), ungrantedTab(12)];
     const mixed = await tool("tabs_context");
@@ -285,8 +294,9 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(mixed.structuredContent.tabs.length, 3);
     assert.equal(mixed.structuredContent.tabs[1].access, "not_granted");
     assert.equal(mixed.content.length, 2);
-    assert.match(mixed.content[1].text, /Access to 2 tabs' sites is not granted/);
-    assert.equal(mixed.content[1].text.split("Grant access from the MCPSafari button").length - 1, 1);
+    assert.match(mixed.content[1].text, /^2 tabs are on sites MCPSafari hasn't confirmed access to/);
+    assert.match(mixed.content[1].text, /works if the user has allowed its site/);
+    assert.doesNotMatch(mixed.content[1].text, /Grant access from the MCPSafari button/);
     for (const name of ["tabs_create", "select_tab"]) {
         const result = await tool(name, name === "select_tab" ? { tabId: "p0t7" } : {});
         assert.equal(result.structuredContent.tab.id, "p0t7");
@@ -302,6 +312,16 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         }
     }
     assert.deepEqual((await tool("read_page", { format: "snapshot" })).structuredContent.page, snapshot);
+    // A page Safari isn't showing says so once, after the result's own text and
+    // beside its payload, and a visible page's result is as it was.
+    hiddenPage = true;
+    const hidden = await tool("read_page", {});
+    hiddenPage = false;
+    assert.equal(hidden.structuredContent.page, pageText);
+    assert.equal(hidden.structuredContent.pageVisibility, "hidden");
+    assert.equal(hidden.content.length, 2);
+    assert.match(hidden.content[1].text, /^Page visibility: hidden\./);
+    assert.equal("pageVisibility" in (await tool("read_page", {})).structuredContent, false);
     assert.deepEqual((await tool("snapshot")).structuredContent.snapshot, snapshot);
     assert.ok(Array.isArray((await tool("find", { selector: "body" })).structuredContent.matches));
     assert.ok(Array.isArray((await tool("read_console")).structuredContent.messages));
@@ -602,9 +622,9 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(partial.structuredContent.profileFailures.length, 1);
     assert.match(partial.structuredContent.profileFailures[0], /Profile unavailable/);
 
-    // Selecting a tab on a site Safari has not granted succeeds and says so. It
-    // still pins the tab's profile, and the result tells the model in prose that
-    // the next read will be refused rather than leaving it to find out.
+    // Selecting a tab on a site MCPSafari hasn't confirmed access to succeeds and
+    // says so. It still pins the tab's profile, and the result tells the model in
+    // prose what the next read will do rather than leaving it to find out.
     await connect("third", ({ action }) => action === "select_tab"
         ? { success: true, data: JSON.stringify({ id: 9, selected: true, access: "not_granted", accessHint: "Grant example.org from the MCPSafari toolbar button." }) }
         : { success: false, error: "Not used" });
@@ -613,7 +633,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(ungranted.structuredContent.tab.access, "not_granted");
     assert.match(ungranted.content[0].text, /not_granted/);
     const ungrantedText = ungranted.content.map(({ text }) => text).join("\n");
-    assert.match(ungrantedText, /Access to one tab's site is not granted/);
+    assert.match(ungrantedText, /One tab is on a site MCPSafari hasn't confirmed access to/);
     assert.match(ungrantedText, /Grant example\.org from the MCPSafari toolbar button\./);
     const pinned = (await tool("status")).structuredContent.status.profiles.find((profile) => profile.selected);
     assert.equal(pinned.handle, "p2");

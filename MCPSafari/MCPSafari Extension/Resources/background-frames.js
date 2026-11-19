@@ -43,6 +43,8 @@ function unreachableFrame(frame) {
     return { frameId: frame.frameId, origin: originOfUrl(frame.url) };
 }
 
+/** @typedef {{ frameId: number | null, origin: string | null, reason?: string }} UnreachableFrame */
+/** @type {UnreachableFrame} */
 const FRAME_ENUMERATION_FAILED = { frameId: null, origin: null, reason: "frame_enumeration_failed" };
 
 // A frame whose document refuses the content script (a sandboxed or already
@@ -286,6 +288,7 @@ async function sendToContentScript(tabId, message, frameId = 0) {
         await injectContentScripts(resolvedTabId);
         response = await ask();
     }
+    notePageVisibility(resolvedTabId, response);
     return unpackReply(response, message);
 }
 

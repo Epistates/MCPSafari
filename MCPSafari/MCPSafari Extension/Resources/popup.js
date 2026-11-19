@@ -18,7 +18,7 @@ function renderConnections(ports) {
         container.appendChild(row);
     }
 
-    container.querySelectorAll(".btn-reconnect").forEach((btn) => {
+    container.querySelectorAll(".btn-reconnect").forEach((/** @type {HTMLElement} */ btn) => {
         btn.addEventListener("click", async () => {
             const port = parseInt(btn.dataset.port, 10);
             await browser.runtime.sendMessage({ type: "reconnect", port });
@@ -27,7 +27,7 @@ function renderConnections(ports) {
         });
     });
 
-    container.querySelectorAll(".btn-remove").forEach((btn) => {
+    container.querySelectorAll(".btn-remove").forEach((/** @type {HTMLElement} */ btn) => {
         btn.addEventListener("click", async () => {
             const port = parseInt(btn.dataset.port, 10);
             await browser.runtime.sendMessage({ type: "removePort", port });
@@ -100,15 +100,20 @@ function siteAccessMarkup(access) {
         ? '<span class="site-state allowed">Allowed</span>'
         : access.pending
             ? '<span class="site-state">Asking…</span>'
-            : '<span class="site-state blocked">No access</span>';
+            : access.unresponsive
+                ? '<span class="site-state">Not answering</span>'
+                : '<span class="site-state blocked">No access</span>';
 
     const hint = access.allowed
         ? ""
         : access.pending
             ? '<p class="site-hint">Safari is asking whether to allow this site. Its dialog can '
               + "open behind another window.</p>"
-            : '<p class="site-hint">Allow this site from Safari Settings &gt; Extensions to let '
-              + "MCPSafari read it. Results are shared with your MCP client.</p>";
+            : access.unresponsive
+                ? '<p class="site-hint">This page isn\'t answering MCPSafari right now. It may be '
+                  + "busy, so try again in a moment.</p>"
+                : '<p class="site-hint">Allow this site from Safari Settings &gt; Extensions to let '
+                  + "MCPSafari read it. Results are shared with your MCP client.</p>";
 
     return `<div class="site-row"><span class="site-host">${escapeHtml(host)}</span>${state}</div>${hint}`;
 }
@@ -169,7 +174,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     window.addEventListener("unload", () => clearInterval(refreshTimer));
 
     document.getElementById("add-btn").addEventListener("click", async () => {
-        const input = document.getElementById("port-input");
+        const input = /** @type {HTMLInputElement} */ (document.getElementById("port-input"));
         const port = parseInt(input.value, 10);
         if (port >= 1024 && port <= 65535) {
             await browser.runtime.sendMessage({ type: "addPort", port });

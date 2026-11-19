@@ -490,3 +490,99 @@ test("resize_window uses the tab it was given rather than the current window", a
     assert.equal(size.width, 900);
     assert.equal(size.height, 700);
 });
+
+// ─── Hidden pages ────────────────────────────────────────────────────
+
+function hiddenDocument(visibilityState) {
+    return {
+        activeElement: null,
+        body: { innerText: "" },
+        createTreeWalker: () => ({ nextNode: () => null }),
+        elementFromPoint: () => null,
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        visibilityState,
+    };
+}
+
+test("every content reply says whether the page was showing", async () => {
+    const hidden = await contentHarness(hiddenDocument("hidden"))("ping", {});
+    assert.equal(hidden.pageVisibility, "hidden");
+    const visible = await contentHarness(hiddenDocument("visible"))("click", { selector: "#missing" });
+    assert.equal(visible.errorCode, "target_not_found");
+    assert.equal(visible.pageVisibility, "visible");
+});
+
+test("a wait that runs out on a hidden page is page_hidden, not a timeout to retry", async () => {
+    // Safari pauses a page it isn't showing, so a web app may never draw what
+    // the wait is looking for, and retrying waits out the same timeout again.
+    const hidden = await contentHarness(hiddenDocument("hidden"))("wait", { selector: "#later", timeout: 0.001 });
+    assert.equal(hidden.errorCode, "page_hidden");
+    assert.equal(hidden.retryable, true);
+    assert.equal(hidden.recoveryAction, "ask_user");
+    assert.match(hidden.error, /^Timeout waiting for selector: #later\. The page was hidden/);
+
+    const visible = await contentHarness(hiddenDocument("visible"))("wait", { text: "Done", timeout: 0.001 });
+    assert.equal(visible.errorCode, "wait_timeout");
+    assert.equal(visible.recoveryAction, "retry");
+});
+
+test("a reply from a hidden page marks the bridge response, and only that request's", async () => {
+    const handleRequest = backgroundHarness([
+        { data: "read", error: null, pageVisibility: "hidden" },
+        { data: "read", error: null, pageVisibility: "visible" },
+        { data: "read", error: null },
+        { data: null, error: "gone", errorCode: "target_not_found", pageVisibility: "hidden" },
+    ]);
+
+    const hidden = await handleRequest({ id: "1", action: "get_page_text", params: { tabId: 1 } });
+    assert.equal(hidden.success, true);
+    assert.equal(hidden.pageVisibility, "hidden");
+
+    const visible = await handleRequest({ id: "2", action: "get_page_text", params: { tabId: 1 } });
+    assert.equal("pageVisibility" in visible, false);
+
+    // A reply that says nothing (an older content script) doesn't inherit the
+    // hidden report an earlier request heard.
+    const silent = await handleRequest({ id: "3", action: "get_page_text", params: { tabId: 1 } });
+    assert.equal("pageVisibility" in silent, false);
+
+    const failed = await handleRequest({ id: "4", action: "get_page_text", params: { tabId: 1 } });
+    assert.equal(failed.success, false);
+    assert.equal(failed.pageVisibility, "hidden");
+});
+
+test("a hidden wait names how its tab is hidden and what brings it back", async () => {
+    const hiddenWait = {
+        data: null,
+        error: "Timeout waiting for selector: #later. The page was hidden when the time ran out.",
+        errorCode: "page_hidden",
+        retryable: true,
+        recoveryAction: "ask_user",
+        pageVisibility: "hidden",
+    };
+
+    const background = backgroundHarness(hiddenWait);
+    background.evaluate(`browser.tabs.get = async (id) => ({ id, windowId: 7, active: false })`);
+    const behind = await background({ id: "1", action: "wait", params: { tabId: 1, selector: "#later", timeout: 1 } });
+    assert.equal(behind.errorCode, "page_hidden");
+    assert.equal(behind.recoveryAction, "call_select_tab");
+    assert.match(behind.error, /^Timeout waiting for selector: #later\. The page was hidden when the time ran out: it isn't the tab showing in its window\./);
+    assert.match(behind.error, /newWindow: true/);
+
+    const minimized = backgroundHarness(hiddenWait);
+    minimized.evaluate(`browser.tabs.get = async (id) => ({ id, windowId: 7, active: true })`);
+    minimized.evaluate(`browser.windows.get = async (id) => ({ id, state: "minimized" })`);
+    const restored = await minimized({ id: "2", action: "wait", params: { tabId: 1, text: "Done", timeout: 1 } });
+    assert.equal(restored.recoveryAction, "ask_user");
+    assert.match(restored.error, /^Timeout waiting for text: "Done"\. .*its window is minimized\./);
+    assert.match(restored.error, /restore the window/);
+
+    // When Safari won't say how the tab stands, the content script's own
+    // account goes through as it was.
+    const unknown = backgroundHarness(hiddenWait);
+    unknown.evaluate(`browser.tabs.get = async () => { throw new Error("No tab with id: 1"); }`);
+    const asIs = await unknown({ id: "3", action: "wait", params: { tabId: 1, selector: "#later", timeout: 1 } });
+    assert.equal(asIs.errorCode, "page_hidden");
+    assert.equal(asIs.error, hiddenWait.error);
+});

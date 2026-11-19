@@ -26,8 +26,9 @@
 // A handler is given the port of the server that made the request as well, for
 // the ones that keep per-server state: the tab `select_tab` pins is that
 // server's own, and so is the client `identify` names.
-/** @type {Map<string, (params: any, serverPort: number) => Promise<any>>} */
-const BACKGROUND_HANDLERS = new Map([
+/** @typedef {(params: any, serverPort: number) => Promise<any>} BackgroundHandler */
+/** @type {Map<string, BackgroundHandler>} */
+const BACKGROUND_HANDLERS = new Map(/** @type {Array<[string, BackgroundHandler]>} */ ([
     ["tabs_query", () => handleTabsQuery()],
     ["tabs_create", (params) => handleTabsCreate(params)],
     ["tabs_close", (params, serverPort) => handleTabsClose(params, serverPort)],
@@ -40,7 +41,7 @@ const BACKGROUND_HANDLERS = new Map([
     ["screenshot", (params) => handleScreenshot(params)],
     ["javascript_tool", (params) => handleJavaScript(params)],
     ["resize_window", (params) => handleResizeWindow(params)],
-]);
+]));
 
 // Answered by the content script under the same name. `dispatchToContent`
 // decides which frame to ask.
@@ -125,7 +126,11 @@ async function routeAction(action, params, serverPort) {
     if (typeof handler === "function") return handler(params, serverPort);
 
     if (action === "wait") {
-        return waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
+        try {
+            return await waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
+        } catch (err) {
+            throw err && err.code === "page_hidden" ? await hiddenWaitError(params, err) : err;
+        }
     }
     if (action === "get_network_requests") return readNetworkRequests(params.tabId, params);
     if (CONTENT_ACTIONS.has(action)) {
@@ -309,6 +314,7 @@ async function withResolvedTab(action, params, serverPort) {
 async function handleRequest(request, serverPort) {
     const { id, action, params: requested } = request;
     let resolvedTabId = null;
+    const visibilitySince = pageVisibilityReportCount;
 
     try {
         const params = await withResolvedTab(action, requested ?? {}, serverPort);
@@ -329,8 +335,9 @@ async function handleRequest(request, serverPort) {
             // none. Handed back so a caller sequencing several untabbed calls
             // can pin the rest of the sequence to the first one's tab.
             resolvedTabId,
+            ...pageVisibilityFields(resolvedTabId, visibilitySince),
         };
     } catch (err) {
-        return failureResponse(id, err, resolvedTabId);
+        return { ...failureResponse(id, err, resolvedTabId), ...pageVisibilityFields(resolvedTabId, visibilitySince) };
     }
 }

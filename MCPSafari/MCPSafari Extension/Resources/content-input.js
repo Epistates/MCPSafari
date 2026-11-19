@@ -408,6 +408,10 @@
     // label is what told them apart) and cannot tell a disabled option from any
     // other. A user cannot choose a disabled option, so neither can this. The
     // events are the ones a real choice fires, in order.
+    /**
+     * @param {HTMLSelectElement} select
+     * @param {{ value?: any, label?: string }} choice
+     */
     function chooseOption(select, { value, label }) {
         const byValue = value !== undefined;
         const matches = Array.from(select.options).filter(

@@ -137,6 +137,63 @@ function tabNotLoadedError() {
     return error;
 }
 
+// What brings a hidden tab's page back, by why it's hidden (`tabShowingState`).
+const HIDDEN_TAB_ADVICE = {
+    background: "Call select_tab on it to bring it to the front, then retry. That hides the tab "
+        + "showing in that window now, so if the user or another agent is working there, open a "
+        + "window of your own with tabs_create and newWindow: true instead.",
+    minimized: "Ask the user to restore the window, then retry. It needn't be in front: part of it "
+        + "showing is enough.",
+    front: "Ask the user to bring the window at least partly into view, then retry.",
+};
+
+// The page did not answer and Safari's tab API did, so no dialog is holding the
+// tab (see DIALOG_CHECK_MS). What is left is the page: Safari is not showing it,
+// or it is busy. Calling that a permission dialog sent the user looking for one
+// that was not there, so each state here names what gets the page answering
+// again. Retryable, because the same call works once it does.
+//
+// `reachedBefore` is whether a call has run on this site before. When none has,
+// a dialog is still possible, because Safari's hold on its tab API doesn't last
+// as long as the dialog can (a listing held by one completes in about nine
+// seconds, see TAB_LISTING_TIMEOUT_MS), so the message keeps it in view.
+function pageNotAnsweringError(origin, state, reachedBefore) {
+    const site = origin ? `This tab (${origin})` : "This tab";
+    const dialog = reachedBefore
+        ? "No permission dialog is holding it: MCPSafari has reached this site before, and Safari "
+          + "is still answering for the tab."
+        : "MCPSafari hasn't reached this site before, so Safari may also be asking the user for "
+          + "access, in a dialog that can sit behind another window.";
+    const states = {
+        background: {
+            code: "page_hidden",
+            recoveryAction: "call_select_tab",
+            message: `${site} didn't answer. It isn't the tab showing in its window, and Safari `
+                + `slows or pauses pages it isn't showing. ${dialog} ${HIDDEN_TAB_ADVICE.background}`,
+        },
+        minimized: {
+            code: "page_hidden",
+            recoveryAction: "ask_user",
+            message: `${site} didn't answer. Its window is minimized, and Safari pauses pages it `
+                + `isn't showing. ${dialog} ${HIDDEN_TAB_ADVICE.minimized}`,
+        },
+        front: {
+            code: "page_not_responding",
+            recoveryAction: "ask_user",
+            message: `${site} didn't answer, though it's the tab showing in its window. ${dialog} `
+                + "Either the window is completely covered by other windows or on another Space, "
+                + `where Safari pauses the page, or the page is busy. ${HIDDEN_TAB_ADVICE.front} `
+                + "If it's already in view, retry in a moment.",
+        },
+    };
+    const { code, recoveryAction, message } = states[state];
+    const error = new Error(message);
+    error.code = code;
+    error.retryable = true;
+    error.recoveryAction = recoveryAction;
+    return error;
+}
+
 // The content script took the message and the document went away before it
 // answered, which is what a click that navigates looks like. Whether the action
 // ran is not known, so this is not retryable: sending it again is how a
@@ -191,7 +248,108 @@ async function withPermissionDeadline(promise, tabId, ms = PERMISSION_DEADLINE_M
         return await withDeadline(promise, ms);
     } catch (err) {
         if (!(err instanceof DeadlineExceeded)) throw err;
-        throw permissionRequiredError(await originOfTab(tabId), true);
+        throw await unansweredTabError(tabId);
+    }
+}
+
+// Called once a call on the tab has run out of time. Safari's dialog holds the
+// tab API too, so a `tabs.get` that does not come back either is the dialog, as
+// it always was. One that does come back says no dialog is holding the tab, and
+// what it says picks which state the page is in. `origin` is passed when it was
+// read before the call, because a dialog the call opened blocks reading it after.
+async function unansweredTabError(tabId, origin = null) {
+    let tab;
+    try {
+        tab = await withDeadline(browser.tabs.get(tabId), DIALOG_CHECK_MS);
+    } catch (err) {
+        if (!(err instanceof DeadlineExceeded) && await tabIsGone(tabId)) {
+            return tabClosedError(tabId, false);
+        }
+        return permissionRequiredError(origin, true);
+    }
+    if (!tab) return permissionRequiredError(origin, true);
+
+    const site = origin || originOfUrl(tab.url);
+    const reachedBefore = site !== null && grantedOrigins.has(site);
+    return pageNotAnsweringError(site, await tabShowingState(tab), reachedBefore);
+}
+
+// A wait that ran out on a hidden page (`waitTimeoutError` in content-io.js)
+// says so in general terms, because a page can't see how its tab stands. The
+// tab can, so the error is made specific here: which kind of hidden, and what
+// brings the page back. Left as it was when Safari won't say.
+async function hiddenWaitError(params, err) {
+    let state = null;
+    try {
+        const tab = await withDeadline(browser.tabs.get(params.tabId), DIALOG_CHECK_MS);
+        if (tab) state = await tabShowingState(tab);
+    } catch {
+        return err;
+    }
+    if (state === null) return err;
+    const why = {
+        background: "it isn't the tab showing in its window.",
+        minimized: "its window is minimized.",
+        front: "its window is completely covered by other windows, on another Space or minimized, "
+            + "or Safari is hidden or the screen is locked.",
+    }[state];
+    const error = new Error(
+        `Timeout waiting for ${waitTarget(params)}. The page was hidden when the time ran out: `
+        + `${why} Safari pauses pages it isn't showing, so a web app may not draw what you're `
+        + `waiting for until it's visible. ${HIDDEN_TAB_ADVICE[state]}`
+    );
+    error.code = "page_hidden";
+    error.retryable = true;
+    error.recoveryAction = state === "background" ? "call_select_tab" : "ask_user";
+    return error;
+}
+
+/**
+ * tabId to whether its page was showing when it last answered a content-script
+ * message, and which report that was. Every reply says (content.js), so a
+ * request learns whether it acted on a hidden page without asking again.
+ * Reports are counted rather than timed, because two requests can fall in the
+ * same millisecond, and `handleRequest` reads only those its own request heard.
+ * @type {Map<number, { visibility: string, report: number }>}
+ */
+const pageVisibilityReports = new Map();
+let pageVisibilityReportCount = 0;
+
+function notePageVisibility(tabId, response) {
+    if (response && typeof response.pageVisibility === "string") {
+        pageVisibilityReportCount += 1;
+        pageVisibilityReports.set(tabId, { visibility: response.pageVisibility, report: pageVisibilityReportCount });
+    }
+}
+
+// What a reply to the server adds about the page, given the report count when
+// its request started. Only "hidden" is said: a visible page is the ordinary
+// case, and saying nothing is what an older extension does.
+function pageVisibilityFields(tabId, since) {
+    const latest = tabId == null ? undefined : pageVisibilityReports.get(tabId);
+    return latest && latest.report > since && latest.visibility === "hidden"
+        ? { pageVisibility: "hidden" }
+        : {};
+}
+
+// How a tab stands in its window, from what `tabs.get` said about it: not the
+// tab showing there, in a minimized window, or the one showing in a window
+// that isn't minimized, as far as Safari says (see `windowIsMinimized`).
+async function tabShowingState(tab) {
+    if (tab.active === false) return "background";
+    if (await windowIsMinimized(tab.windowId)) return "minimized";
+    return "front";
+}
+
+// Safari reports a window's state through its own delegate, and WebKit answers
+// "normal" when the browser says nothing, so "minimized" may never come back.
+// It only picks the message, so anything short of a clear answer is "no".
+async function windowIsMinimized(windowId) {
+    try {
+        const found = await withDeadline(browser.windows.get(windowId), DIALOG_CHECK_MS);
+        return Boolean(found) && found.state === "minimized";
+    } catch {
+        return false;
     }
 }
 
@@ -251,11 +409,15 @@ async function probeAccess(tabId) {
         );
     } catch (err) {
         if (err instanceof DeadlineExceeded) {
-            // The dialog is open. Nothing has been decided, so nothing stored
-            // about this site changes either way.
-            refusal = permissionRequiredError(origin, true);
+            // The dialog is open, or the page is hidden or busy. Nothing has
+            // been decided, so nothing stored about this site changes either
+            // way. Cached all the same, so the other frames of one request
+            // don't each wait it out.
+            refusal = await unansweredTabError(tabId, origin);
             tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
-            markAwaitingAccess(tabId, origin);
+            // The "!" asks the user to allow a site. A page that is hidden or
+            // busy is waiting on something else, and its error says what.
+            if (refusal.code === "permission_required") markAwaitingAccess(tabId, origin);
             throw refusal;
         }
         const message = String(err && err.message);

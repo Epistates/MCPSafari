@@ -58,6 +58,7 @@
     // returns results that look complete and are not. Every lookup below
     // repeats itself against each open root instead. Closed roots stay
     // unreachable: the page chose that, and no API reaches in.
+    /** @param {Document | ShadowRoot} [root] */
     function* allRoots(root = document) {
         yield root;
         for (const element of root.querySelectorAll("*")) {

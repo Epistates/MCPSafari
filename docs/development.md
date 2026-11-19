@@ -52,7 +52,7 @@ The type check exists because the extension scripts share globals across files w
 bunx --package typescript@7.0.2 tsc -p tsconfig.json
 ```
 
-Expect diagnostics about property shapes; only `TS2304`, `TS2552` and `TS2554` fail CI. Keep the version here in step with the one in `ci.yml`. A new global that Safari provides, as `browser` is, is declared in `extension-globals.d.ts`.
+It should report nothing: any diagnostic fails CI. Where JavaScript can't say a type, give it one in JSDoc. A new global that Safari provides, as `browser` is, or one an interceptor puts on the page's `window`, is declared in `extension-globals.d.ts`, along with the tool-error fields set on `Error`. Keep the version here in step with the one in `ci.yml`.
 
 Pull request runs for CI and the security scans are cancelled when a newer push supersedes them. Runs on `main`, scheduled runs and releases never are.
 

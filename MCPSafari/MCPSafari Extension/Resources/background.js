@@ -94,6 +94,7 @@ function delay(ms) {
 browser.tabs.onRemoved.addListener((tabId) => {
     tabAccessProbes.delete(tabId);
     clearAwaitingAccess(tabId);
+    pageVisibilityReports.delete(tabId);
 });
 
 // Safari grants access per origin, so a pass stops meaning anything the moment
@@ -114,6 +115,15 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
 if (browser.permissions && browser.permissions.onAdded) {
     browser.permissions.onAdded.addListener(() => {
         for (const tabId of [...tabsAwaitingAccess.keys()]) clearAwaitingAccess(tabId);
+    });
+}
+
+// A tab coming to the front is what a `page_hidden` refusal asks for, whether
+// `select_tab` or the user brought it there, so the retry probes afresh rather
+// than being refused from the cache.
+if (browser.tabs.onActivated) {
+    browser.tabs.onActivated.addListener(({ tabId }) => {
+        tabAccessProbes.delete(tabId);
     });
 }
 
@@ -139,7 +149,14 @@ async function describeActiveTabAccess() {
         await ensureTabAccess(tabId);
         return { origin, allowed: true, pending: false };
     } catch (err) {
-        return { origin, allowed: false, pending: err.permissionPending === true };
+        return {
+            origin,
+            allowed: false,
+            pending: err.permissionPending === true,
+            // Safari answered for the tab and the page did not. "No access"
+            // would send the user to Settings over a page that is only busy.
+            unresponsive: err.code === "page_hidden" || err.code === "page_not_responding",
+        };
     }
 }
 

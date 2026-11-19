@@ -143,7 +143,7 @@ The tab `select_tab` pins belongs to the MCP client that pinned it. When two cli
 
 Naming a profile that is not connected fails with `profile_not_connected` rather than falling back to another one, because answering from a different browser window is worse than refusing.
 
-`tabs_context`, `tabs_create` and `select_tab` mark each tab `access: "granted"` or `"not_granted"`, with an `accessHint` pointing at the toolbar popup when it is not granted. `select_tab` on such a tab still succeeds and pins the tab's profile. The result also says in prose, once for a whole listing, that reading or acting on those tabs will fail with `permission_required` until the user grants the site.
+`tabs_context`, `tabs_create` and `select_tab` mark each tab `access: "granted"` or `"not_granted"`. `not_granted` means MCPSafari hasn't confirmed access to the site, which is also true of a site the user allowed until a call has run there (see [Website access](#website-access)). Such a tab carries an `accessHint` saying so and pointing at the toolbar button. `select_tab` on it still succeeds and pins the tab's profile. The result also says in prose, once for a whole listing, that a call on those tabs works if the user has allowed the site and otherwise fails with `permission_required`.
 
 ### Several agents at once
 
@@ -151,7 +151,7 @@ Several MCP clients can drive Safari at the same time, each through its own serv
 
 - Have each agent pass `tabId`, or pin its tab with `select_tab`. A call that names no tab, from an agent with no pin, acts on the tab in front, which another agent may have just changed.
 - Keep each agent's tabs in a window of its own: `tabs_create` with `newWindow: true` opens one, the same size as the window in front and 40 points down and to the right of it, so a strip of each stays visible. A window shows one tab at a time, so in a shared window one agent's `screenshot` or `select_tab` hides the other's tab, and two screenshots at once make one fail with the retryable `tab_not_showing`. Native input typed into a shared window can also end up in the other agent's tab, if that agent switches tabs while the typing is under way.
-- Keep each agent's window at least partly visible: not minimized, not completely covered by other windows, and on the current Space. Safari stops running animation frames for a page whose window is minimized or completely covered, so some web apps show stale or empty content until the window is visible again. A strip of the window on screen is enough. A screenshot of a hidden page says so in its result.
+- Keep each agent's window at least partly visible: not minimized, not completely covered by other windows, and on the current Space. Safari stops running animation frames for a page whose window is minimized or completely covered, so some web apps show stale or empty content until the window is visible again. A strip of the window on screen is enough. A screenshot of a hidden page says so in its result, and so does any other result from a hidden page (see [Hidden pages](#hidden-pages)). A call that a hidden page doesn't answer fails with `page_hidden` or `page_not_responding` (see [Website access](#website-access)).
 
 The MCPSafari toolbar popup names each connection, so you can tell the agents apart. Once a server has connected it tells the extension who it is: the `--name` it was started with (or `MCP_SAFARI_NAME`), the folder it was started in, and the MCP client that introduced itself to it. Each connected row shows the name, or the last part of the folder when there is no name, with the folder on a second line and your home folder shortened to `~`. The row's tooltip has the connection's state and the client, such as `claude-code 2.1.0`. Two sessions started in the same folder show the same name, so give one of them a `--name`. A server that says neither, such as one started from `/` with no name, is shown by its port and state, as before. The name is what the server says about itself: a label for you, not proof of who is behind it. `status` reports the same under `instance`.
 
@@ -209,19 +209,27 @@ So a tool that needs a page it hasn't been granted fails with `permission_requir
 
 Both are `retryable`, because the same call works once access is granted. Granting every site at once is one click: **Always Allow on Every Website** in that same settings pane. That is also the only way to reach cross-origin iframes, since Safari's per-site grant covers the top-level page only.
 
-Safari reports a URL and title for every tab, granted or not, which would otherwise let an agent read your browsing history. `tabs_context` therefore describes only tabs on sites MCPSafari has reached. Every other tab still appears with its handle, window, position, and state, so it stays usable, but carries no `url` or `title`, and reports `"access": "not_granted"` with an `accessHint` saying the user can grant the site from the MCPSafari button in Safari's toolbar. Tabs it can describe report `"access": "granted"`. `tabs_create` and `navigate` withhold the page title the same way, and `tabs_create` reports its `access` too. Where a tab ends up is held to the same rule: `navigate` and the "Page navigated to" note after a click name only the origin of a landing page on a site that is not granted, with a note that the URL and title are withheld, including a redirect or a back or forward entry nobody asked for. A `tabs_create` with no `url`, which opens the browser's homepage, is described the same way. A URL you passed to `tabs_create` is reported back as given.
+Safari reports a URL and title for every tab, granted or not, which would otherwise let an agent read your browsing history. `tabs_context` therefore describes only tabs on sites MCPSafari has reached. Every other tab still appears with its handle, window, position, and state, so it stays usable, but carries no `url` or `title`, and reports `"access": "not_granted"` with an `accessHint` saying that a call on the tab works if the user has allowed the site, and otherwise fails with `permission_required` until the user allows it from the MCPSafari button in Safari's toolbar. Tabs it can describe report `"access": "granted"`. `tabs_create` and `navigate` withhold the page title the same way, and `tabs_create` reports its `access` too. Where a tab ends up is held to the same rule: `navigate` and the "Page navigated to" note after a click name only the origin of a landing page on a site that is not granted, with a note that the URL and title are withheld, including a redirect or a back or forward entry nobody asked for. A `tabs_create` with no `url`, which opens the browser's homepage, is described the same way. A URL you passed to `tabs_create` is reported back as given.
 
 A call on a tab that has closed fails with `tab_closed`, not with `permission_required`, and a granted site is not forgotten because one call on it was slow.
 
 A call on a tab Safari has not loaded fails with `tab_not_loaded`. Safari reopens a window's tabs at launch without loading them, can unload a background tab to save memory, and loads a tab only when it is shown. `select_tab` brings the tab to the front, which loads it, and the same call then works. `navigate` with `reload` reports success on such a tab but leaves it unloaded.
 
-A site counts as reached once a call has run on a page there. MCPSafari does not check ahead, because asking Safari about a site it has not been granted is what raises the permission dialog, and a listing would raise one per site. So right after the user grants a site, its tabs still read as `not_granted` until a call reads one of them, such as `snapshot` on that tab, and the next `tabs_context` shows them.
+A tab that doesn't answer isn't always waiting on a permission dialog. Safari slows or pauses a page it isn't showing (a background tab, or a tab whose window is minimized, completely covered or on another Space), and a busy page can miss the check's two seconds too. While its dialog is open, Safari also stops answering for the tab itself, so MCPSafari asks it once more before naming the reason:
+
+- `page_hidden` with `call_select_tab`: the tab isn't the one showing in its window. `select_tab` brings it to the front, which hides the tab showing there now, so if the user or another agent is working in that window, open a window of your own with `tabs_create` and `newWindow: true` instead.
+- `page_hidden` with `ask_user`: its window is minimized. Ask the user to restore it; part of it showing is enough.
+- `page_not_responding` with `ask_user`: the tab is the one showing, so its window is completely covered or on another Space, or the page is busy. Ask the user to bring the window at least partly into view, or retry in a moment if it already is.
+
+Both are `retryable`. When Safari doesn't answer for the tab either, the call fails with `permission_required` as above. On a site MCPSafari hasn't reached before, the message keeps the dialog in view as well, because Safari doesn't hold its tab API for an unanswered dialog indefinitely.
+
+A site counts as reached once a call has run on a page there. MCPSafari does not check ahead, because asking Safari about a site it has not been granted is what raises the permission dialog, and a listing would raise one per site. So right after the user grants a site, its tabs still read as `not_granted` until a call reads one of them, such as `snapshot` on that tab, and the next `tabs_context` shows them. The same goes for every site after MCPSafari's stored data is reset, as a reinstall can do: the sites stay allowed in Safari, and each reads as `not_granted` until a call runs there.
 
 Granted status is remembered across Safari restarts once a tool call has succeeded on that site, for up to 500 sites. A site revoked in Safari Settings keeps showing its URL and title in `tabs_context` until the next call to it is refused, which also forgets it.
 
 Every tool that reads or acts on a page is gated this way, including `navigate` with `back` or `forward` (which runs a script in the page) and `resize_window`. A few operations are browser chrome and need no access to any page, so they work on an ungranted tab: `tabs_context`, `tabs_create`, `close_tab`, `select_tab`, and `navigate` with `goto` or `reload`. That is deliberate. Going to a new URL is how a caller gets off a page it cannot use, and selecting a tab only records which tab later calls mean.
 
-`select_tab` on a tab whose site is not granted succeeds. It pins the tab and brings it forward, and its result reports `"access": "not_granted"` with the same `accessHint` instead of a URL and title. The first call that reads the page then fails with `permission_required`, naming the site to grant when Safari lets MCPSafari see it.
+`select_tab` on a tab whose site is not granted succeeds. It pins the tab and brings it forward, and its result reports `"access": "not_granted"` with the same `accessHint` instead of a URL and title. The first call that reads the page then works if the user has allowed the site, and otherwise fails with `permission_required`, naming the site to grant when Safari lets MCPSafari see it.
 
 ### Results
 
@@ -241,6 +249,8 @@ Every successful tool result includes an object in `structuredContent`, alongsid
 
 `read_page` text and HTML always remain strings, including literal `42`, `null`, `{}`, or `[]`. Snapshot format returns data. `javascript_tool` decodes JSON primitives as their actual types; legacy replies carrying explanatory text (such as an isolated-world fallback note) remain strings so that context is preserved.
 
+Any result from a page that wasn't showing when it answered, success or failure, also carries `"pageVisibility": "hidden"` beside its payload (see [Hidden pages](#hidden-pages)). The key is absent when the page was showing.
+
 No `outputSchema` is declared yet. Result shapes are documented here and covered by protocol-level tests, but may evolve before 1.0. Clients should ignore unknown fields. A future declared schema will require every corresponding result to conform.
 
 ### Failures
@@ -251,10 +261,10 @@ Every tool failure carries a stable `code`, a human-readable `message`, a `retry
 |-|-|
 | `fix_input` | The arguments were wrong. Correct them and call again. |
 | `retry` | Transient. The same call may work. |
-| `ask_user` | Needs a person: grant website access, or allow Safari to come to the front. |
+| `ask_user` | Needs a person: grant website access, allow Safari to come to the front, or bring a hidden window into view. |
 | `call_status` | Check `status` for the bridge, the connected profiles, and token health. |
 | `call_tabs_context` | The tab is gone. List the open tabs and choose another. |
-| `call_select_tab` | Safari has not loaded the tab. `select_tab` on it brings it to the front and loads it; then call again. |
+| `call_select_tab` | Safari has not loaded the tab, or isn't showing it. `select_tab` on it brings it to the front and loads it; then call again. |
 | `list_tools` | The tool name is not one this server has. |
 | `inspect_error` | Nothing automatic to do; read the message. |
 | `inspect_batch_result` | A `run_steps` batch stopped partway; read the per-step results. |
@@ -329,6 +339,12 @@ A click that navigates replaces the page that would have reported its result, so
 An interaction that starts no navigation pays the 400 millisecond watch and answers as before. A navigation the page starts later than that, from a timer or after a request, is not waited for. A `click` on a link that opens a new tab (`target="_blank"`) does not navigate the tab you clicked in, so it answers after the watch with no note; call `tabs_context` to find the new tab. Native `press_key` and `type_text` are sent from the server rather than through the page, so they are not watched, though a `wait` sent afterwards is safe (below).
 
 `wait` survives a navigation that starts while it is pending, including one the page started itself. The extension notices the tab begin to load, waits for the load, and runs the wait again in the new page with the time that remains, instead of leaving the request to time out inside the page that was replaced. If the time runs out first, it fails with the retryable `wait_timeout` and says the page navigated while waiting. A `wait` for a number of `seconds` is a sleep and has nothing to time out on, so when a navigation outlasts it, it reports the time waited.
+
+### Hidden pages
+
+Safari pauses a page it isn't showing: a tab that isn't the one in front of its window, or a tab whose window is minimized, completely covered by other windows or on another Space. Animation frames stop and timers slow right down, so a web app that draws in them can show stale or empty content until the page is visible again. Most reads and writes still work on a hidden page, so calls run as usual, and a result from one says so in a line after its own text, starting `Page visibility: hidden.`, and with `pageVisibility` in its structured result. If the result looks wrong, bring the tab to the front with `select_tab`, or ask the user to make its window at least partly visible. `screenshot` says the same in its own words.
+
+A `wait` for a selector or text that runs out on a hidden page fails with `page_hidden` rather than `wait_timeout`, because retrying it as it stands waits out the same timeout again on a page that isn't drawing. The message says how the tab is hidden and what brings it back: `call_select_tab` when another tab is showing in its window, and `ask_user` when its window is minimized, covered, on another Space, or the screen is locked. It's `retryable` once that's done.
 
 ### Argument checking
 

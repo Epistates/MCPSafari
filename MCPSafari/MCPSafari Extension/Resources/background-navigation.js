@@ -76,7 +76,7 @@ async function handleNavigate(params) {
 function describeLanding(tab) {
     if (siteIsGranted(tab.url)) return `${redactUrlSecrets(tab.url)} (${tab.title || ""})`;
     const origin = originOfUrl(tab.url);
-    return `${origin ? `${origin} ` : ""}(URL and title withheld: MCPSafari has not been granted access to this site)`;
+    return `${origin ? `${origin} ` : ""}(URL and title withheld: MCPSafari hasn't confirmed access to this site)`;
 }
 
 // How long a page load is given to finish, for `navigate` and for the load an
@@ -253,14 +253,19 @@ function sleptMessage(seconds) {
     return `Waited ${seconds} seconds`;
 }
 
+// What a wait for a selector or text is looking for, as the content script
+// names it in its timeout (`waitFor` in content-io.js).
+function waitTarget(params) {
+    return params.selector ? `selector: ${params.selector}` : `text: "${params.text}"`;
+}
+
 // What the content script would have said for the same wait that ran out,
 // with the reason it ran out added, since the page it started on is gone.
 // Only a wait for a selector or text can run out: a sleep is never interrupted
 // into this.
 function waitInterruptedError(params) {
-    const target = params.selector ? `selector: ${params.selector}` : `text: "${params.text}"`;
     const error = new Error(
-        `Timeout waiting for ${target} (the page navigated while waiting and the time ran out on the new page)`
+        `Timeout waiting for ${waitTarget(params)} (the page navigated while waiting and the time ran out on the new page)`
     );
     error.code = "wait_timeout";
     error.retryable = true;
@@ -300,6 +305,7 @@ async function tabIsLoading(tabId) {
 // Resolves once the tab's load is over, or at the timeout. The tab is read as
 // well as listened to, because the load can finish between the event that sent
 // us here and the listener going up.
+/** @returns {Promise<void>} */
 function waitForLoadComplete(tabId, timeoutMs) {
     return new Promise((resolve) => {
         const finish = () => {
