@@ -254,6 +254,8 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     // answered, the way they can while a multi-request call is still running.
     let selectedTab = 7;
     let moveSelectionAfter;
+    // Whether the fixture's page says it isn't showing, as content.js reports.
+    let hiddenPage = false;
     const requests = [];
     const untargeted = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab"]);
     await connect("default", async ({ action, params }) => {
@@ -269,7 +271,12 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         if (action === moveSelectionAfter) selectedTab = 9;
         if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user", resolvedTabId };
         const data = responseData(action, params);
-        return { success: true, data: typeof data === "string" ? data : JSON.stringify(data), resolvedTabId };
+        return {
+            success: true,
+            data: typeof data === "string" ? data : JSON.stringify(data),
+            resolvedTabId,
+            ...(hiddenPage ? { pageVisibility: "hidden" } : {}),
+        };
     });
 
     const { tools } = await call("tools/list");
@@ -305,6 +312,16 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         }
     }
     assert.deepEqual((await tool("read_page", { format: "snapshot" })).structuredContent.page, snapshot);
+    // A page Safari isn't showing says so once, after the result's own text and
+    // beside its payload, and a visible page's result is as it was.
+    hiddenPage = true;
+    const hidden = await tool("read_page", {});
+    hiddenPage = false;
+    assert.equal(hidden.structuredContent.page, pageText);
+    assert.equal(hidden.structuredContent.pageVisibility, "hidden");
+    assert.equal(hidden.content.length, 2);
+    assert.match(hidden.content[1].text, /^Page visibility: hidden\./);
+    assert.equal("pageVisibility" in (await tool("read_page", {})).structuredContent, false);
     assert.deepEqual((await tool("snapshot")).structuredContent.snapshot, snapshot);
     assert.ok(Array.isArray((await tool("find", { selector: "body" })).structuredContent.matches));
     assert.ok(Array.isArray((await tool("read_console")).structuredContent.messages));

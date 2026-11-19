@@ -157,8 +157,19 @@ actor SafariMCPServer {
 
     /// Runs a tool whose arguments are already checked. A `run_steps` batch checks
     /// every step while it plans and then calls here, adding the deadline and tab
-    /// it pins to the arguments after that check.
+    /// it pins to the arguments after that check, so each step reports its own
+    /// page's visibility.
     private func dispatch(tool: String, arguments args: [String: Value]) async -> CallTool.Result {
+        let report = PageVisibilityReport()
+        let result = await Self.$pageVisibility.withValue(report) {
+            await dispatchUnreported(tool: tool, arguments: args)
+        }
+        // A screenshot reads visibility itself and says so in its own words.
+        guard report.sawHidden, tool != "screenshot" else { return result }
+        return Self.notingHiddenPage(result)
+    }
+
+    private func dispatchUnreported(tool: String, arguments args: [String: Value]) async -> CallTool.Result {
         let params = (name: tool, arguments: args)
         do {
             switch params.name {
@@ -231,6 +242,7 @@ actor SafariMCPServer {
         )
         response.profileIndex = profileIndex
         if let tab = Self.resolvedHandle(of: response) { Self.batchPin?.recordFirst(tab) }
+        Self.pageVisibility?.record(response)
         return response
     }
 
@@ -271,6 +283,50 @@ actor SafariMCPServer {
         func recordFirst(_ handle: TabHandle) {
             first.withLock { if $0 == nil { $0 = handle } }
         }
+    }
+
+    /// Whether a page this tool call read or acted on said it wasn't showing.
+    /// Set around each tool call by `dispatch`, and fed by `send`, where
+    /// responses arrive.
+    @TaskLocal static var pageVisibility: PageVisibilityReport?
+
+    final class PageVisibilityReport: Sendable {
+        private let hidden = OSAllocatedUnfairLock(initialState: false)
+
+        var sawHidden: Bool { hidden.withLock { $0 } }
+
+        /// A `page_hidden` or `page_not_responding` failure already says why,
+        /// in more detail than the note could.
+        func record(_ response: BridgeResponse) {
+            guard response.pageVisibility == "hidden",
+                  !["page_hidden", "page_not_responding"].contains(response.errorCode ?? "")
+            else { return }
+            hidden.withLock { $0 = true }
+        }
+    }
+
+    static let hiddenPageNote = "Page visibility: hidden. This tab's window is minimized, completely "
+        + "covered by other windows or on another Space, or another tab is showing in its window, and "
+        + "Safari pauses pages it isn't showing. Some web apps show stale or empty content until the page "
+        + "is visible again. If this result looks wrong, bring the tab to the front with select_tab, or "
+        + "ask the user to make its window at least partly visible."
+
+    /// `result` with the hidden-page note after its text, and `pageVisibility`
+    /// beside its payload. Most reads and writes work on a hidden page, so the
+    /// call stands; the note is there for a result that looks wrong.
+    static func notingHiddenPage(_ result: CallTool.Result) -> CallTool.Result {
+        var structured = result.structuredContent
+        if case var .object(fields) = structured {
+            fields["pageVisibility"] = .string("hidden")
+            structured = .object(fields)
+        }
+        var noted = CallTool.Result(
+            content: result.content + [textContent(hiddenPageNote)],
+            structuredContent: structured,
+            isError: result.isError
+        )
+        noted._meta = result._meta
+        return noted
     }
 
     /// Rewrites the `id` of a tab object the extension returned into the handle

@@ -31,9 +31,12 @@ struct BridgeResponse: Codable, Sendable {
     /// The profile the request was routed to. Not on the wire: the server sets
     /// it, because the tab id above only means something together with it.
     var profileIndex: Int?
+    /// `"hidden"` when the page this request read or acted on said it wasn't
+    /// showing as it answered. Absent otherwise, and from an older extension.
+    var pageVisibility: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, success, data, error, errorCode, retryable, recoveryAction, resolvedTabId
+        case id, success, data, error, errorCode, retryable, recoveryAction, resolvedTabId, pageVisibility
     }
 
     var toolFailure: ToolFailure {

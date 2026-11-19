@@ -274,6 +274,64 @@ async function unansweredTabError(tabId, origin = null) {
     return pageNotAnsweringError(site, await tabShowingState(tab), reachedBefore);
 }
 
+// A wait that ran out on a hidden page (`waitTimeoutError` in content-io.js)
+// says so in general terms, because a page can't see how its tab stands. The
+// tab can, so the error is made specific here: which kind of hidden, and what
+// brings the page back. Left as it was when Safari won't say.
+async function hiddenWaitError(params, err) {
+    let state = null;
+    try {
+        const tab = await withDeadline(browser.tabs.get(params.tabId), DIALOG_CHECK_MS);
+        if (tab) state = await tabShowingState(tab);
+    } catch {
+        return err;
+    }
+    if (state === null) return err;
+    const why = {
+        background: "it isn't the tab showing in its window.",
+        minimized: "its window is minimized.",
+        front: "its window is completely covered by other windows, on another Space or minimized, "
+            + "or Safari is hidden or the screen is locked.",
+    }[state];
+    const error = new Error(
+        `Timeout waiting for ${waitTarget(params)}. The page was hidden when the time ran out: `
+        + `${why} Safari pauses pages it isn't showing, so a web app may not draw what you're `
+        + `waiting for until it's visible. ${HIDDEN_TAB_ADVICE[state]}`
+    );
+    error.code = "page_hidden";
+    error.retryable = true;
+    error.recoveryAction = state === "background" ? "call_select_tab" : "ask_user";
+    return error;
+}
+
+/**
+ * tabId to whether its page was showing when it last answered a content-script
+ * message, and which report that was. Every reply says (content.js), so a
+ * request learns whether it acted on a hidden page without asking again.
+ * Reports are counted rather than timed, because two requests can fall in the
+ * same millisecond, and `handleRequest` reads only those its own request heard.
+ * @type {Map<number, { visibility: string, report: number }>}
+ */
+const pageVisibilityReports = new Map();
+let pageVisibilityReportCount = 0;
+
+function notePageVisibility(tabId, response) {
+    if (response && typeof response.pageVisibility === "string") {
+        pageVisibilityReportCount += 1;
+        pageVisibilityReports.set(tabId, { visibility: response.pageVisibility, report: pageVisibilityReportCount });
+    }
+}
+
+// What a reply to the server adds about the page, given the report count when
+// its request started. Only "hidden" is said: a visible page is the ordinary
+// case, and saying nothing is what an older extension does.
+function pageVisibilityFields(tabId, since) {
+    const latest = tabId == null ? undefined : pageVisibilityReports.get(tabId);
+    return latest && latest.report > since && latest.visibility === "hidden"
+        ? { pageVisibility: "hidden" }
+        : {};
+}
+
 // How a tab stands in its window, from what `tabs.get` said about it: not the
 // tab showing there, in a minimized window, or the one showing in a window
 // that isn't minimized, as far as Safari says (see `windowIsMinimized`).

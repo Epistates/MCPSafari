@@ -253,14 +253,19 @@ function sleptMessage(seconds) {
     return `Waited ${seconds} seconds`;
 }
 
+// What a wait for a selector or text is looking for, as the content script
+// names it in its timeout (`waitFor` in content-io.js).
+function waitTarget(params) {
+    return params.selector ? `selector: ${params.selector}` : `text: "${params.text}"`;
+}
+
 // What the content script would have said for the same wait that ran out,
 // with the reason it ran out added, since the page it started on is gone.
 // Only a wait for a selector or text can run out: a sleep is never interrupted
 // into this.
 function waitInterruptedError(params) {
-    const target = params.selector ? `selector: ${params.selector}` : `text: "${params.text}"`;
     const error = new Error(
-        `Timeout waiting for ${target} (the page navigated while waiting and the time ran out on the new page)`
+        `Timeout waiting for ${waitTarget(params)} (the page navigated while waiting and the time ran out on the new page)`
     );
     error.code = "wait_timeout";
     error.retryable = true;

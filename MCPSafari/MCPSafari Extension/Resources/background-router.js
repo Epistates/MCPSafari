@@ -125,7 +125,11 @@ async function routeAction(action, params, serverPort) {
     if (typeof handler === "function") return handler(params, serverPort);
 
     if (action === "wait") {
-        return waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
+        try {
+            return await waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
+        } catch (err) {
+            throw err && err.code === "page_hidden" ? await hiddenWaitError(params, err) : err;
+        }
     }
     if (action === "get_network_requests") return readNetworkRequests(params.tabId, params);
     if (CONTENT_ACTIONS.has(action)) {
@@ -309,6 +313,7 @@ async function withResolvedTab(action, params, serverPort) {
 async function handleRequest(request, serverPort) {
     const { id, action, params: requested } = request;
     let resolvedTabId = null;
+    const visibilitySince = pageVisibilityReportCount;
 
     try {
         const params = await withResolvedTab(action, requested ?? {}, serverPort);
@@ -329,8 +334,9 @@ async function handleRequest(request, serverPort) {
             // none. Handed back so a caller sequencing several untabbed calls
             // can pin the rest of the sequence to the first one's tab.
             resolvedTabId,
+            ...pageVisibilityFields(resolvedTabId, visibilitySince),
         };
     } catch (err) {
-        return failureResponse(id, err, resolvedTabId);
+        return { ...failureResponse(id, err, resolvedTabId), ...pageVisibilityFields(resolvedTabId, visibilitySince) };
     }
 }

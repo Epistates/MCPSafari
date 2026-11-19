@@ -94,6 +94,7 @@ function delay(ms) {
 browser.tabs.onRemoved.addListener((tabId) => {
     tabAccessProbes.delete(tabId);
     clearAwaitingAccess(tabId);
+    pageVisibilityReports.delete(tabId);
 });
 
 // Safari grants access per origin, so a pass stops meaning anything the moment

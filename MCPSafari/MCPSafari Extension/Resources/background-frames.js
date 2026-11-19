@@ -286,6 +286,7 @@ async function sendToContentScript(tabId, message, frameId = 0) {
         await injectContentScripts(resolvedTabId);
         response = await ask();
     }
+    notePageVisibility(resolvedTabId, response);
     return unpackReply(response, message);
 }
 

@@ -257,12 +257,7 @@
                 }
                 await new Promise((r) => setTimeout(r, 200));
             }
-            throw toolError(
-                "wait_timeout",
-                `Timeout waiting for selector: ${params.selector}`,
-                true,
-                "retry"
-            );
+            throw waitTimeoutError(`Timeout waiting for selector: ${params.selector}`);
         }
 
         if (params.text) {
@@ -275,15 +270,29 @@
                 }
                 await new Promise((r) => setTimeout(r, 200));
             }
-            throw toolError(
-                "wait_timeout",
-                `Timeout waiting for text: "${params.text}"`,
-                true,
-                "retry"
-            );
+            throw waitTimeoutError(`Timeout waiting for text: "${params.text}"`);
         }
 
         return "Nothing to wait for";
+    }
+
+    // Safari pauses a page it isn't showing: no animation frames, and timers
+    // slowed right down. A web app that draws in those may never show what a
+    // wait is looking for until the page is visible, so a wait that ran out on a
+    // hidden page isn't one to retry as it stands. The background names which
+    // kind of hidden it is (`hiddenWaitError`); `ask_user` is what's left if it
+    // can't.
+    function waitTimeoutError(message) {
+        if (document.visibilityState !== "hidden") return toolError("wait_timeout", message, true, "retry");
+        return toolError(
+            "page_hidden",
+            `${message}. The page was hidden when the time ran out, and Safari pauses pages it `
+            + "isn't showing, so a web app may not draw what you're waiting for until it's visible. "
+            + "Ask the user to bring its window at least partly into view, or bring the tab to the "
+            + "front with select_tab if another tab is showing in its window, then retry.",
+            true,
+            "ask_user"
+        );
     }
 
     // ─── Dialog Handling (delegate to interceptor) ────────────────────
