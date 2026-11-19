@@ -210,10 +210,17 @@ extension SafariMCPServer {
         if let url = try optionalString("url", in: args) {
             params["url"] = AnyCodable(try validatedNavigationURL(url))
         }
-        // Sent only when asked for, so a call without it reaches the extension
-        // exactly as before.
-        if try optionalBool("newWindow", in: args) == true {
-            params["newWindow"] = AnyCodable(true)
+        // Withdrawn until extension build 38. Build 37's extension answers
+        // `newWindow` with one of the user's existing tabs, so the agent would act
+        // on, or close, a tab it never opened. Refused here by name rather than as
+        // an unknown argument, because the docs still describe it.
+        if args["newWindow"] != nil {
+            throw ToolInputError(
+                "tabs_create's newWindow isn't available with this build of the Safari extension: it "
+                + "reports one of the user's existing tabs instead of the new one. It returns with "
+                + "extension build 38. Until then, call tabs_create without newWindow and pass the tab "
+                + "it returns as tabId, or pin it with select_tab."
+            )
         }
         return params
     }
