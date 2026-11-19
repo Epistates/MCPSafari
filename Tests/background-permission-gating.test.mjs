@@ -275,6 +275,22 @@ test("a background tab that doesn't answer is named as hidden, not as a permissi
     assert.equal(harness.call(`grantedOrigins.has("https://blocked.example")`), true);
 });
 
+test("a hidden page doesn't put a ! on the toolbar button, and a dialog still does", async () => {
+    // The "!" asks the user to allow a site. On an allowed site whose tab is
+    // hidden there is nothing to allow, and the tooltip would send them to the
+    // button for nothing.
+    const hidden = loadBackground({ probe: parked, tabActive: false });
+    hidden.call(`rememberOriginAccess("https://blocked.example", true)`);
+    const hiddenErr = await parkedAndTimed(hidden, 'sendToContentScript(1, { action: "read_page" })');
+    assert.equal(hiddenErr.code, "page_hidden");
+    assert.notEqual(hidden.toolbar.text, "!");
+
+    const dialog = loadBackground({ probe: parked, blockTabsAfterProbe: true });
+    const dialogErr = await parkedAndTimed(dialog, 'sendToContentScript(1, { action: "read_page" })');
+    assert.equal(dialogErr.code, "permission_required");
+    assert.equal(dialog.toolbar.text, "!");
+});
+
 test("a minimized window is named, and the user is asked to restore it", async () => {
     const harness = loadBackground({ probe: parked, windowState: "minimized" });
     harness.call(`rememberOriginAccess("https://blocked.example", true)`);

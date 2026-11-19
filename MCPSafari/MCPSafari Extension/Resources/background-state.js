@@ -347,7 +347,9 @@ async function probeAccess(tabId) {
             // don't each wait it out.
             refusal = await unansweredTabError(tabId, origin);
             tabAccessProbes.set(tabId, { at: Date.now(), error: refusal });
-            markAwaitingAccess(tabId, origin);
+            // The "!" asks the user to allow a site. A page that is hidden or
+            // busy is waiting on something else, and its error says what.
+            if (refusal.code === "permission_required") markAwaitingAccess(tabId, origin);
             throw refusal;
         }
         const message = String(err && err.message);
