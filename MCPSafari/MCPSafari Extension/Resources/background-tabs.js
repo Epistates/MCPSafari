@@ -174,7 +174,7 @@ async function handleTabsQuery() {
         if (!(err instanceof DeadlineExceeded)) throw err;
         throw permissionRequiredError(null, true);
     }
-    return tabs.map((t) => {
+    return uniqueTabs(tabs).map((t) => {
         const access = tabAccessFields(t.url);
         return {
             id: t.id,
@@ -360,6 +360,23 @@ async function handleSelectTab(params, serverPort) {
     };
 }
 
+// Safari's own pinned tabs (the ones fixed at the left of the tab bar, nothing to
+// do with a server's `select_tab` pin) belong to every window of a profile, and
+// Safari lists each one once per window, with the same id, the id of one window,
+// and that window's active flag in every copy. So a pinned tab one window is showing also comes back as
+// active from an active-tab query for any other window, ahead of the tab that
+// window is showing. A window shows one tab, so an unpinned active tab is that
+// one, and a pinned tab only when there is none.
+function windowShowingTab(activeTabs) {
+    return activeTabs.find((tab) => !tab.pinned) ?? activeTabs[0];
+}
+
+// The same copies in a full listing, which showed one tab several times over.
+function uniqueTabs(tabs) {
+    const seen = new Set();
+    return tabs.filter((tab) => !seen.has(tab.id) && seen.add(tab.id));
+}
+
 // Activating a tab does not mean it is still the one showing a moment later:
 // the user can click another, and a capture or a native keystroke then reaches
 // the wrong page. So the claim is checked against the window, which is the only
@@ -369,7 +386,7 @@ async function assertTabShowing(tabId, windowId, purpose) {
         browser.tabs.query({ active: true, windowId }),
         tabId
     );
-    if (showing.length > 0 && showing[0].id === tabId) return;
+    if (windowShowingTab(showing)?.id === tabId) return;
     const error = new Error(
         `The tab is no longer the one showing in its window (another tab was activated), so ${purpose} `
         + "would have reached the wrong page. Retry the call."

@@ -67,7 +67,7 @@ async function userActiveTabId() {
         throw permissionRequiredError(null, true);
     }
     if (tabs.length === 0) throw new Error("No active tab found");
-    return tabs[0].id;
+    return windowShowingTab(tabs).id;
 }
 
 // `tabs.get` rejects with a message that differs between browsers and says

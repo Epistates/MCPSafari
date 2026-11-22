@@ -134,6 +134,7 @@
 - A refusal seen while the stored list of granted sites is still loading is no longer undone when the list arrives. The late read was merged under what had been learned, and resurrected the site as granted, in memory and in storage.
 - The popup describes the tab you are looking at rather than one an agent pinned, startup no longer waits on a pinned tab that is parked behind Safari's dialog, and a rejected storage write is dropped quietly instead of surfacing as an unhandled promise rejection.
 - The dependency audit follows OSV's `next_page_token` and retries a transient network failure once. It read only the first page of each response, so a package with more advisories than one page holds was judged on that page alone, and a single dropped connection failed the run.
+- `screenshot` and native input no longer fail with `tab_not_showing` when a window of the same profile is showing one of Safari's pinned tabs. Safari lists a profile's pinned tabs once for every window, each copy with the same id and active flag. So asking which tab a window shows also returned another window's pinned tab, first, and the check read that as the user having switched tabs. A call that names no tab could also land on that pinned tab. `tabs_context` no longer lists a pinned tab once per window.
 - A bridge test that could fail on a busy CI runner now checks only what it is for: once silent sockets are dropped at their deadline, the next connection is let in. It used to make that connection finish a whole handshake inside the same one-second deadline as well.
 
 ### Security
