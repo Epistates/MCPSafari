@@ -86,7 +86,7 @@ struct RunStepsTests {
             ]])
         }
         #expect(refused("click", ["selector": "#a", "force": "false"]) == "steps[1] (click): force must be a boolean")
-        #expect(refused("click", ["selector": "#a", "native": true])?.hasPrefix("steps[1] (click): click does not take the argument \"native\"") == true)
+        #expect(refused("click", ["selector": "#a", "button": "right"])?.hasPrefix("steps[1] (click): click does not take the argument \"button\"") == true)
         #expect(refused("scroll", ["direction": "down", "amount": "9"]) == "steps[1] (scroll): amount must be an integer")
         #expect(refused("form_input", ["fields": ["#a": [1]]]) == "steps[1] (form_input): fields[\"#a\"] must be a string, number or boolean")
         #expect(refused("type_text", ["selector": "#a"]) == "steps[1] (type_text): text is required")

@@ -182,7 +182,7 @@ actor SafariMCPServer {
             case "read_page":       return try await handleReadPage(args)
             case "snapshot":        return try await handleSnapshot(args)
             case "find":            return try await handleFind(args)
-            case "click":           return try await handleInteraction("click", args)
+            case "click":           return try await handleClick(args)
             case "type_text":       return try await handleTypeText(args)
             case "form_input":      return try await handleFormInput(args)
             case "select_option":   return try await handleInteraction("select_option", args)
@@ -804,7 +804,20 @@ actor SafariMCPServer {
         }
     }
 
-    // MARK: - Native pointer (move_pointer, drag native=true)
+    // MARK: - Native pointer (click, hover, drag native=true)
+
+    private func handleClick(_ args: [String: Value]) async throws -> CallTool.Result {
+        guard try nativeRequested(args) else {
+            return try await handleInteraction("click", args)
+        }
+        let clickCount = args["doubleClick"]?.boolValue == true ? 2 : 1
+        return try await runNativeAction("native_pointer", args) { preparation in
+            let targets = try Self.nativePointerTargets(from: preparation.data)
+            return try await Self.clickNativePointer(
+                at: targets.from, clickCount: clickCount, deadline: Self.numberValue(args["_batchDeadline"])
+            )
+        }
+    }
 
     private func handleHover(_ args: [String: Value]) async throws -> CallTool.Result {
         guard try nativeRequested(args) else {

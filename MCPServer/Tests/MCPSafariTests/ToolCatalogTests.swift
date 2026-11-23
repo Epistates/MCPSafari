@@ -33,6 +33,16 @@ struct ToolCatalogTests {
         }
     }
 
+    // `native` was missing from `click`, so a site that ignores synthetic events
+    // could be read and typed into but not clicked.
+    @Test func everyToolWithARealPointerOrKeyboardPathOffersNative() {
+        for name in ["click", "hover", "drag", "press_key", "type_text"] {
+            let tool = SafariMCPServer.toolDefinitions.first { $0.name == name }
+            let native = tool.flatMap { properties(of: $0)["native"]?.objectValue }
+            #expect(native?["type"]?.stringValue == "boolean", "\(name) should declare native")
+        }
+    }
+
     @Test func everyToolIsDefinedOnce() {
         let names = SafariMCPServer.toolDefinitions.map(\.name)
         #expect(names.count == Set(names).count)

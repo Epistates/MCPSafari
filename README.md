@@ -11,7 +11,7 @@ Your agent starts with your existing logins, cookies, and history. Open a signed
 - Test your site in Safari. Let your agent check forms, menus, and drag-and-drop in the browser your Safari users will see.
 - Target elements by UID (from a snapshot), CSS, text, or coordinates. Fill React forms with setters that update application state.
 - Check what happened. Read console and network activity, and save screenshots to disk for review without filling the agent's context with image data.
-- Run DOM tasks in the background. Native typing, key presses, hover, and drag need Safari in front and Accessibility permission.
+- Run DOM tasks in the background. Native typing, key presses, clicks, hover, and drag need Safari in front and Accessibility permission.
 
 QA on real sites has shaped the tools, including fixes for [menus that ignored clicks](https://github.com/Epistates/MCPSafari/pull/74) and [drop zones that missed files](https://github.com/Epistates/MCPSafari/pull/75).
 
@@ -67,7 +67,7 @@ The heading should be “Example Domain”. If the connection fails, see [troubl
 
 Your agent acts in your existing browser session. It can access signed-in pages where you allow the extension. Tool results go to your MCP client and may be sent to its model provider; see [browser access and data](SECURITY.md#browser-access-and-data).
 
-Background DOM tasks do not need native input. For hover styling, real keyboard events, and native drag, Safari must be in front. Native hover and drag move your pointer, so leave the mouse alone while they run. See [synthetic and native input](docs/tools.md#synthetic-and-native-input).
+Background DOM tasks do not need native input. For hover styling, real keyboard events, and native clicks and drags, Safari must be in front. Native click, hover and drag move your pointer, so leave the mouse alone while they run. See [synthetic and native input](docs/tools.md#synthetic-and-native-input).
 
 Console and network capture have limits. Pages can alter the captured data, and resource timings do not include HTTP status or headers. See [debugging](docs/tools.md#debugging).
 

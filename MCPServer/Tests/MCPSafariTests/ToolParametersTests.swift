@@ -195,11 +195,13 @@ struct ToolParametersTests {
 
     // MARK: - Unknown argument names
 
-    // `click {native: true}` ran a synthetic click, and `waitForSelctor` did nothing
-    // at all. Both are the caller being told nothing, so both are refused.
+    // `click {native: true}` ran a synthetic click before click had a native path,
+    // and `waitForSelctor` did nothing at all. Both are the caller being told
+    // nothing, so an argument a tool doesn't declare is refused.
     @Test func anArgumentTheToolDoesNotDeclareIsRefusedWithTheOnesItDoes() {
-        let click = refusal("click", ["selector": "#a", "native": true])
-        #expect(click?.hasPrefix("click does not take the argument \"native\". Its arguments are: ") == true)
+        let click = refusal("click", ["selector": "#a", "button": "right"])
+        #expect(click?.hasPrefix("click does not take the argument \"button\". Its arguments are: ") == true)
+        #expect(click?.contains("native") == true)
         #expect(click?.contains("doubleClick") == true)
         #expect(click?.contains("waitForSelector") == true)
 

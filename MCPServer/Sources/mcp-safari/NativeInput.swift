@@ -8,7 +8,7 @@ import MCP
 // MARK: - Native Input
 
 /// Real keyboard and mouse events, for the `native: true` paths of
-/// `type_text`, `press_key`, `move_pointer` and `drag`.
+/// `type_text`, `press_key`, `click`, `hover` and `drag`.
 ///
 /// Synthetic DOM events cannot reach anything outside the page, so a native
 /// path exists for the cases that need the real input stream. That takes over
@@ -721,7 +721,7 @@ extension SafariMCPServer {
         let to: Point?
     }
 
-    /// Internal, not private: `hover` and `drag` build one of these to hand back
+    /// Internal, not private: `click`, `hover` and `drag` build one of these to hand back
     /// to the pointer code below.
     struct NativePointerTargets: Sendable {
         let from: CGPoint
@@ -748,6 +748,10 @@ extension SafariMCPServer {
         /// Where the pointer is now, when macOS will say.
         let location: @Sendable () -> CGPoint?
         let post: @Sendable (CGEventType, CGPoint) throws -> Void
+        /// A button event that is part of a click, carrying which click of a
+        /// run it is (1, then 2 for a double click). A page counts clicks by
+        /// that number, not by timing.
+        let press: @Sendable (CGEventType, CGPoint, Int64) throws -> Void
 
         static func live() throws -> NativePointer {
             guard let source = CGEventSource(stateID: .hidSystemState) else {
@@ -760,7 +764,8 @@ extension SafariMCPServer {
                     Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").map(\.processIdentifier))
                 },
                 location: { CGEvent(source: nil)?.location },
-                post: { try SafariMCPServer.postMouse(type: $0, at: $1, source: box.source) }
+                post: { try SafariMCPServer.postMouse(type: $0, at: $1, source: box.source) },
+                press: { try SafariMCPServer.postMouse(type: $0, at: $1, clickCount: $2, source: box.source) }
             )
         }
     }
@@ -920,6 +925,46 @@ extension SafariMCPServer {
         return "Dragged from (\(Int(start.x)), \(Int(start.y))) to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
+    /// Moves the pointer to the point the way `hover` does, then presses and
+    /// releases the left button there, `clickCount` times. The point is checked
+    /// again just before the press, because the move takes long enough for a
+    /// window to open over it or for the user to switch apps.
+    nonisolated static func clickNativePointer(
+        at target: CGPoint,
+        clickCount: Int = 1,
+        deadline: Double? = nil,
+        windows: NativeWindowLister = liveNativeWindows,
+        pointer: NativePointer? = nil
+    ) async throws -> String {
+        let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer)
+        let start = pointer.location() ?? target
+        try await postPointerPath(from: start, to: target, mouseType: .mouseMoved, pointer: pointer)
+        try await nativePointerPause(0.05)
+        try checkNativeDeadline(deadline)
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer)
+        for click in 1...max(1, clickCount) {
+            if click > 1 { try await nativePointerPause(0.08) }
+            try pointer.press(.leftMouseDown, target, Int64(click))
+            do {
+                try await nativePointerPause(0.06)
+            } catch {
+                // Never leave the OS button down, including when the call is cancelled.
+                try? pointer.press(.leftMouseUp, target, Int64(click))
+                throw error
+            }
+            try pointer.press(.leftMouseUp, target, Int64(click))
+        }
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
+        let verb = clickCount > 1 ? "Double-clicked" : "Clicked"
+        return "\(verb) at (\(Int(target.x)), \(Int(target.y))) with native input"
+    }
+
     private nonisolated static func nativePointerPause(_ seconds: Double) async throws {
         try await Task.sleep(for: .seconds(seconds))
     }
@@ -928,6 +973,7 @@ extension SafariMCPServer {
     nonisolated static func mouseEvent(
         type: CGEventType,
         at point: CGPoint,
+        clickCount: Int64? = nil,
         source: CGEventSource
     ) throws -> CGEvent {
         guard let event = CGEvent(
@@ -943,15 +989,19 @@ extension SafariMCPServer {
         // copy, or a hover into a Command-click on a link. Pointer input the
         // caller asked for carries none.
         event.flags = []
+        if let clickCount {
+            event.setIntegerValueField(.mouseEventClickState, value: clickCount)
+        }
         return event
     }
 
     private nonisolated static func postMouse(
         type: CGEventType,
         at point: CGPoint,
+        clickCount: Int64? = nil,
         source: CGEventSource
     ) throws {
-        try mouseEvent(type: type, at: point, source: source).post(tap: .cgSessionEventTap)
+        try mouseEvent(type: type, at: point, clickCount: clickCount, source: source).post(tap: .cgSessionEventTap)
     }
 
     // Interpolated so boundary events (mouseout/mouseleave, dragenter/dragover)

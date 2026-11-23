@@ -126,13 +126,20 @@ struct NativePointerGuardTests {
                 safariProcessIDs: { [NativePointerGuardTests.safari] },
                 location: { CGPoint(x: 0, y: 0) },
                 post: { [self] type, point in
-                    let count = lock.withLock { () -> Int in
-                        events.append("\(type.rawValue):\(Int(point.x)),\(Int(point.y))")
-                        return events.count
-                    }
-                    onPost?(count)
+                    record("\(type.rawValue):\(Int(point.x)),\(Int(point.y))")
+                },
+                press: { [self] type, point, click in
+                    record("\(type.rawValue):\(Int(point.x)),\(Int(point.y))#\(click)")
                 }
             )
+        }
+
+        private func record(_ event: String) {
+            let count = lock.withLock { () -> Int in
+                events.append(event)
+                return events.count
+            }
+            onPost?(count)
         }
     }
 
@@ -226,6 +233,93 @@ struct NativePointerGuardTests {
         }
 
         func ping() -> Bool { true }
+    }
+
+    // A click is a hover's move, then the button, at the same point, so the page
+    // sees what a person's click gives it: pointer movement, then mousedown,
+    // mouseup and click.
+    @Test func aClickMovesThereThenPressesAndReleasesOnce() async throws {
+        let fake = FakePointer()
+        let message = try await SafariMCPServer.clickNativePointer(
+            at: CGPoint(x: 90, y: 10), windows: overSafari, pointer: fake.pointer
+        )
+        let down = CGEventType.leftMouseDown.rawValue
+        let up = CGEventType.leftMouseUp.rawValue
+        let moves = fake.posted.dropLast(2)
+        #expect(!moves.isEmpty)
+        #expect(moves.allSatisfy { $0.hasPrefix("\(CGEventType.mouseMoved.rawValue):") })
+        #expect(moves.last == "\(CGEventType.mouseMoved.rawValue):90,10")
+        #expect(Array(fake.posted.suffix(2)) == ["\(down):90,10#1", "\(up):90,10#1"])
+        #expect(message == "Clicked at (90, 10) with native input")
+    }
+
+    @Test func aDoubleClickNumbersItsClicks() async throws {
+        let fake = FakePointer()
+        let message = try await SafariMCPServer.clickNativePointer(
+            at: CGPoint(x: 90, y: 10), clickCount: 2, windows: overSafari, pointer: fake.pointer
+        )
+        let down = CGEventType.leftMouseDown.rawValue
+        let up = CGEventType.leftMouseUp.rawValue
+        #expect(Array(fake.posted.suffix(4)) == ["\(down):90,10#1", "\(up):90,10#1", "\(down):90,10#2", "\(up):90,10#2"])
+        #expect(message == "Double-clicked at (90, 10) with native input")
+    }
+
+    @Test func aClickOnAPointSafariIsNotShowingSendsNothing() async {
+        let fake = FakePointer()
+        let failed = await failure {
+            try await SafariMCPServer.clickNativePointer(at: CGPoint(x: 5, y: 5), windows: { [] }, pointer: fake.pointer)
+        }
+        #expect(failed?.code == "native_input_focus_lost")
+        #expect(fake.posted.isEmpty)
+    }
+
+    // The move takes a moment. If Safari stops being the front app during it, the
+    // button must not go down on whatever app is in front now.
+    @Test func aClickThatLosesSafariOnTheWayDoesNotPress() async {
+        let fake = FakePointer(loseFrontOnCheck: 2)
+        let failed = await failure {
+            try await SafariMCPServer.clickNativePointer(at: CGPoint(x: 90, y: 10), windows: overSafari, pointer: fake.pointer)
+        }
+        #expect(failed?.code == "native_input_focus_lost")
+        #expect(!fake.posted.contains { $0.hasPrefix("\(CGEventType.leftMouseDown.rawValue):") })
+    }
+
+    @Test func aCancelledClickStillReleasesTheButton() async throws {
+        let pressed = "\(CGEventType.leftMouseDown.rawValue):"
+        let holder = TaskHolder()
+        let fake = FakePointer(onPost: { _ in holder.cancelWhenPressed(pressed) })
+        holder.fake = fake
+        let task = Task {
+            try await SafariMCPServer.clickNativePointer(at: CGPoint(x: 90, y: 10), windows: overSafari, pointer: fake.pointer)
+        }
+        holder.task = task
+        var cancelled = false
+        do { _ = try await task.value } catch is CancellationError { cancelled = true }
+
+        #expect(cancelled)
+        #expect(fake.posted.contains { $0.hasPrefix(pressed) })
+        #expect(fake.posted.last == "\(CGEventType.leftMouseUp.rawValue):90,10#1")
+    }
+
+    /// Cancels the click the moment its button goes down, so the test doesn't race
+    /// the short gap between press and release.
+    private final class TaskHolder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _task: Task<String, Error>?
+        private var _fake: FakePointer?
+        var task: Task<String, Error>? {
+            get { lock.withLock { _task } }
+            set { lock.withLock { _task = newValue } }
+        }
+        var fake: FakePointer? {
+            get { lock.withLock { _fake } }
+            set { lock.withLock { _fake = newValue } }
+        }
+
+        func cancelWhenPressed(_ prefix: String) {
+            guard fake?.posted.last?.hasPrefix(prefix) == true else { return }
+            task?.cancel()
+        }
     }
 
     // Never leave the OS button down, even when the call is cancelled mid-drag.

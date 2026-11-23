@@ -526,11 +526,13 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("tabs_create", { url: `file://${tokenPath}` }, /bridge token/);
     // The same goes for a string where a boolean is declared, which is truthy at
     // the extension, and for an argument the tool does not declare, which used to
-    // be dropped: `click {native: true}` ran a synthetic click.
+    // be dropped: `click {native: true}` ran a synthetic click before click had a
+    // native path, and `scroll {native: true}` would do the same now.
     await refuse("click", { selector: "body", force: "false" }, /force must be a boolean/);
     await refuse("click", { selector: "body", doubleClick: "false" }, /doubleClick must be a boolean/);
     await refuse("type_text", { selector: "input", text: "x", clearFirst: "false" }, /clearFirst must be a boolean/);
-    await refuse("click", { selector: "body", native: true }, /click does not take the argument "native"/);
+    await refuse("scroll", { direction: "down", native: true }, /scroll does not take the argument "native"/);
+    await refuse("click", { selector: "body", native: "true" }, /native must be a boolean/);
     await refuse("click", { selector: "body", waitForSelctor: "#a" }, /does not take the argument "waitForSelctor"/);
     await refuse("scroll", { direction: "sideways" }, /Invalid direction: sideways\. Use up, down, left, right\./);
     await refuse("form_input", { fields: { "#a": [1] } }, /fields\["#a"\] must be a string, number or boolean/);

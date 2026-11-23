@@ -195,7 +195,7 @@ extension SafariMCPServer {
 
             Tool(
                 name: "click",
-                description: "Click element by UID, selector, text, or x/y coordinates. Text that matches several elements equally fails with their UIDs. A target covered by another element (modal, banner) fails with target_covered, and one outside the viewport with target_not_visible, unless force=true.",
+                description: "Click element by UID, selector, text, or x/y coordinates. Text that matches several elements equally fails with their UIDs. A target covered by another element (modal, banner) fails with target_covered, and one outside the viewport with target_not_visible, unless force=true. Set native=true to move the real OS pointer there and press the button, so the page receives the trusted events a person's click produces.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
@@ -203,6 +203,10 @@ extension SafariMCPServer {
                         "x": Self.coordX,
                         "y": Self.coordY,
                         "doubleClick": .object(["type": .string("boolean")]),
+                        "native": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Click with the real OS pointer and left button. " + Self.nativeRequirements),
+                        ]),
                         "force": Self.force,
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
