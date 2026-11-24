@@ -198,6 +198,7 @@ actor SafariMCPServer {
             case "read_console":    return try await handleReadConsole(args)
             case "read_network":    return try await handleReadNetwork(args)
             case "resize_window":   return try await handleResizeWindow(args)
+            case "clear_cookies":   return try await handleClearCookies(args)
             case "run_steps":       return try await handleRunSteps(args)
             case "wait":            return try await handleWait(args)
             default:
@@ -956,6 +957,18 @@ actor SafariMCPServer {
     private func handleResizeWindow(_ args: [String: Value]) async throws -> CallTool.Result {
         let response = try await send("resize_window", args, params: try Self.resizeWindowParams(args))
         return textResult(response, as: "window")
+    }
+
+    /// Acts on a profile, not a tab: `tabId` only names which profile, as it does
+    /// for `tabs_create`, and is not sent.
+    private func handleClearCookies(_ args: [String: Value]) async throws -> CallTool.Result {
+        let response = try await bridge.send(
+            action: "clear_cookies",
+            params: try Self.clearCookiesParams(args),
+            timeout: Self.bridgeTimeout(args),
+            profileIndex: try await resolveProfileIndex(args)
+        )
+        return textResult(response, as: "cookies")
     }
 
     private func handleRunSteps(_ args: [String: Value]) async throws -> CallTool.Result {

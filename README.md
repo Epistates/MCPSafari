@@ -71,6 +71,10 @@ Background DOM tasks do not need native input. For hover styling, real keyboard 
 
 Console and network capture have limits. Pages can alter the captured data, and resource timings do not include HTTP status or headers. See [debugging](docs/tools.md#debugging).
 
+## Known caveats
+
+`clear_cookies` removes only the cookies Safari lets the extension see, and Safari shows it a cookie only when the cookie's own domain is granted. With **Always Allow on Every Website** it works as expected. With per-site grants, a cookie set for a parent domain (`.example.com` from `login.example.com`) or for a domain you never stopped on is invisible: the call succeeds, reports what it did remove, and leaves that cookie in place. A sign-in that redirects through an identity provider is the usual case, since you never land on its domains long enough to grant them from the toolbar button. To switch accounts reliably, use a dedicated Safari profile and grant MCPSafari every website there; website access is per profile, so your own profile keeps its per-site grants. See [cookies](docs/tools.md#cookies).
+
 ## Documentation
 
 - [Setup and troubleshooting](docs/setup.md): manual installation, client configuration, ports, and diagnostics.

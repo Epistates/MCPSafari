@@ -43,6 +43,7 @@ const BACKGROUND_HANDLERS = new Map(/** @type {Array<[string, BackgroundHandler]
     ["screenshot", (params) => handleScreenshot(params)],
     ["javascript_tool", (params) => handleJavaScript(params)],
     ["resize_window", (params) => handleResizeWindow(params)],
+    ["clear_cookies", (params) => handleClearCookies(params)],
 ]));
 
 // Answered by the content script under the same name. `dispatchToContent`
@@ -295,7 +296,7 @@ function redactResult(action, data) {
 // `select_tab` demand a tab by name: closing whatever happens to be in front
 // because the caller left it out would be the wrong default. The others have
 // no target tab to resolve.
-const TAB_FREE_ACTIONS = new Set(["identify", "ping", "tabs_query", "tabs_create", "tabs_close", "select_tab"]);
+const TAB_FREE_ACTIONS = new Set(["identify", "ping", "tabs_query", "tabs_create", "tabs_close", "select_tab", "clear_cookies"]);
 
 function actsOnATab(action) {
     return !TAB_FREE_ACTIONS.has(action)
