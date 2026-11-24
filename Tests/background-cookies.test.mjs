@@ -277,7 +277,7 @@ test("a public suffix is refused before the store is read", async () => {
         assert.equal(response.success, false, domain);
         assert.equal(response.errorCode, "invalid_input", domain);
         assert.match(response.error, /public suffix/, domain);
-        assert.match(response.error, new RegExp(`example\\.${domain.toLowerCase().replace(/\./g, "\\.")}`), domain);
+        assert.ok(response.error.includes(`such as example.${domain.toLowerCase()}.`), response.error);
         assert.equal(read, false, `${domain} reached the cookie store`);
     }
 });
