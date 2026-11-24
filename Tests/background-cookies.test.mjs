@@ -203,11 +203,50 @@ test("nothing found on a site never reached says access may be missing", async (
 });
 
 test("nothing found on a reached site is a plain removed: 0", async () => {
-    const harness = loadBackground({ granted: ["https://login.idp.example.com"] });
+    const harness = loadBackground({ granted: ["https://idp.example.com"] });
 
     const response = await harness.request({ domain: "idp.example.com" });
 
     assert.deepEqual(data(response), { removed: 0 });
+});
+
+// Safari grants a site with its subdomains, so a reached parent covers the
+// domain under it.
+test("a site reached at a parent domain covers the domain under it", async () => {
+    const harness = loadBackground({ granted: ["https://idp.example.com"] });
+
+    const response = await harness.request({ domain: "login.idp.example.com" });
+
+    assert.deepEqual(data(response), { removed: 0 });
+});
+
+// The reverse does not hold: Safari shows a cookie set for `.idp.example.com`
+// only with idp.example.com itself granted.
+test("a reached subdomain does not vouch for the cookies of the domain above it", async () => {
+    const harness = loadBackground({ granted: ["https://login.idp.example.com"] });
+
+    const response = await harness.request({ domain: "idp.example.com" });
+
+    const result = data(response);
+    assert.equal(result.removed, 0);
+    assert.equal(result.access, "not_granted");
+    assert.match(result.accessHint, /MCPSafari button/);
+});
+
+// The cookies removed may be a subdomain's, with the domain's own still in place
+// and out of sight, which is the account-switch case the tool is for.
+test("cookies removed on a domain not reached still say some may be left", async () => {
+    const harness = loadBackground({
+        granted: ["https://login.idp.example.com"],
+        cookies: [{ name: "sub", domain: "login.idp.example.com" }],
+    });
+
+    const response = await harness.request({ domain: "idp.example.com" });
+
+    const result = data(response);
+    assert.equal(result.removed, 1);
+    assert.equal(result.access, "not_granted");
+    assert.match(result.accessHint, /left in place/);
 });
 
 test("a domain that is not a bare hostname is refused before the store is read", async () => {

@@ -10,9 +10,9 @@
 // Safari profile runs its own instance of this extension with that profile's
 // cookie store. Only a count is returned, never a cookie's name or value.
 //
-// The cookies API sees only sites the extension has host access to, so a site
-// without it reads as having no cookies, and the result says so rather than
-// reporting a clean `removed: 0`.
+// The cookies API shows only the cookies whose own domain the extension has host
+// access to, so cookies it cannot see are left in place, and the result says so
+// whenever that may have happened.
 
 // The server checks the domain before it is sent; this is the same rule, so a
 // request that bypassed it cannot widen the match to every site. One label alone
@@ -21,10 +21,10 @@ const COOKIE_DOMAIN =
     /^(?=.{1,253}$)(?:localhost|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$/;
 
 const COOKIES_NOT_GRANTED_HINT =
-    "No cookies were found, and MCPSafari has not reached a page on this domain in this "
-    + "Safari profile. The extension cannot see the cookies of a site it has no access to, "
-    + "so if the user has not granted it, they can do so from the MCPSafari button in Safari's "
-    + "toolbar on a page of that site, then retry.";
+    "MCPSafari has not reached a page on this domain in this Safari profile, so cookies set for "
+    + "it may have been out of sight and left in place: Safari shows the extension only the cookies "
+    + "of sites it can access. If the user has not allowed the site, they can do so from the "
+    + "MCPSafari button in Safari's toolbar on a page of that site, then retry.";
 
 // A cookie's domain may carry a leading dot, which marks it as sent to subdomains
 // too and is not part of the host.
@@ -49,6 +49,10 @@ function cookieRemoval(cookie) {
     return removal;
 }
 
+// Safari grants a site together with its subdomains, so a site reached at
+// `idp.example.com` covers `login.idp.example.com`. The reverse does not hold: a
+// reached `login.idp.example.com` says nothing about cookies set for
+// `.idp.example.com`, which the cookies API shows only with that domain granted.
 function domainIsGranted(domain) {
     for (const origin of grantedOrigins) {
         let host;
@@ -57,7 +61,7 @@ function domainIsGranted(domain) {
         } catch {
             continue;
         }
-        if (host === domain || host.endsWith(`.${domain}`)) return true;
+        if (domain === host || domain.endsWith(`.${host}`)) return true;
     }
     return false;
 }
@@ -111,7 +115,9 @@ async function handleClearCookies(params) {
     // Resolves to null when there was nothing to remove.
     const removed = results.filter((result) => result !== null).length;
 
-    if (removed === 0 && !domainIsGranted(domain)) {
+    // Said even when some were removed: those may be a reached subdomain's, with
+    // the domain's own cookies still in place.
+    if (!domainIsGranted(domain)) {
         return { removed, access: "not_granted", accessHint: COOKIES_NOT_GRANTED_HINT };
     }
     return { removed };

@@ -433,7 +433,7 @@ extension SafariMCPServer {
 
             Tool(
                 name: "clear_cookies",
-                description: "Remove every cookie whose domain is domain or a subdomain of it, HttpOnly and Secure ones included, in one Safari profile. Use it to switch accounts on a site or identity provider that remembers the last one. The cookies of a site the extension has no access to cannot be seen, so removed 0 on a site not yet reached also reports access not_granted.",
+                description: "Remove every cookie whose domain is domain or a subdomain of it, HttpOnly and Secure ones included, in one Safari profile. Use it to switch accounts on a site or identity provider that remembers the last one. The cookies of a site the extension has no access to cannot be seen, so a result for a domain not yet reached also reports access not_granted, whatever the count.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
