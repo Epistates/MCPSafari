@@ -27,3 +27,13 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  # The Public Suffix List the extension checks `clear_cookies` against, copied
+  # into Resources/vendor. The tests fail on a bump until
+  # `node .github/scripts/vendor_tldts.mjs` has copied the new release.
+  - package-ecosystem: npm
+    directory: /.github/vendor
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

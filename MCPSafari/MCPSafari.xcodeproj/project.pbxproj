@@ -71,6 +71,7 @@
 			explicitFolders = (
 				Resources/_locales,
 				Resources/images,
+				Resources/vendor,
 			);
 			path = "MCPSafari Extension";
 			sourceTree = "<group>";

@@ -1,0 +1,8 @@
+{
+  "version": "7.5.4",
+  "integrity": "sha512-Rn2ABgjHZrA+jzqom5zhxA0hLohzYrIgfCPyhpTUxqsUrcsBYuab49LseR9waB9Jr8/MxdodvMHA91oRiGLO3Q==",
+  "files": {
+    "tldts.umd.min.js": "ed59e5a69a2e6db6a0aeecd99450f2415cf720f765da486a326c0f36448e66a0",
+    "tldts.LICENSE": "c64182d48160db948b6aa97a984f1a32974ce4d2053900361264cd33853796cb"
+  }
+}
