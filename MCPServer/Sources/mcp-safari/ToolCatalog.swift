@@ -372,7 +372,7 @@ extension SafariMCPServer {
 
             Tool(
                 name: "screenshot",
-                description: "Capture visible tab as PNG. Pass uid or selector to scroll that element into view and capture it with padding, scale to shrink the image, and filePath to save the PNG to disk and get the path back instead of inline image data.",
+                description: "Capture visible tab as PNG. A tab behind another in its window is brought forward for the capture, then the tab that was showing is put back. Pass uid or selector to scroll that element into view and capture it with padding, scale to shrink the image, and filePath to save the PNG to disk and get the path back instead of inline image data.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([

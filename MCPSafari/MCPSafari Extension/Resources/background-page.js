@@ -14,12 +14,42 @@ async function handleScreenshot(params) {
     await ensureTabAccess(tabId);
     const tab = await browser.tabs.get(tabId);
 
-    // captureVisibleTab captures the active tab in a window
+    // captureVisibleTab captures the active tab in a window, so a tab in the
+    // background is brought forward for the capture, and the tab that was
+    // showing is put back afterwards rather than left hidden behind it.
+    let previouslyShowing = null;
     if (!tab.active) {
+        previouslyShowing = await tabShowingIn(tab.windowId);
         await browser.tabs.update(tabId, { active: true });
         await delay(300);
     }
-    return captureShowingTab(params, tabId, tab);
+    try {
+        return await captureShowingTab(params, tabId, tab);
+    } finally {
+        if (previouslyShowing !== null) await giveFrontTabBack(tab.windowId, tabId, previouslyShowing);
+    }
+}
+
+// The tab a window is showing, or null when Safari doesn't say in time.
+async function tabShowingIn(windowId) {
+    try {
+        const showing = await withDeadline(browser.tabs.query({ active: true, windowId }), TAB_LISTING_TIMEOUT_MS);
+        return windowShowingTab(showing)?.id ?? null;
+    } catch {
+        return null;
+    }
+}
+
+// Only while the screenshot's tab is still the one showing: if the user or
+// another agent switched tabs since, their choice stands. Best effort, since
+// the capture is already done.
+async function giveFrontTabBack(windowId, tabId, previousTabId) {
+    try {
+        if (await tabShowingIn(windowId) !== tabId) return;
+        await withDeadline(browser.tabs.update(previousTabId, { active: true }), TAB_LISTING_TIMEOUT_MS);
+    } catch {
+        // The tab that was showing may have closed meanwhile.
+    }
 }
 
 async function captureShowingTab(params, tabId, tab) {
