@@ -626,6 +626,16 @@ actor WebSocketBridge {
             throw BridgeError.extensionError("Too many in-flight requests (maximum \(Self.maxPendingRequests)). Wait for pending operations to finish.")
         }
         let connection = try connection(forProfileIndex: profileIndex)
+        return try await send(action: action, params: params, timeout: timeout, on: connection)
+    }
+
+    /// Sends on one connection, whichever profile it serves now.
+    private func send(
+        action: String,
+        params: [String: AnyCodable],
+        timeout: TimeInterval,
+        on connection: BridgeConnection
+    ) async throws -> BridgeResponse {
         let connectionID = connection.id
 
         let request = BridgeRequest(action: action, params: params)
