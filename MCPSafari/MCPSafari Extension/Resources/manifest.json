@@ -24,7 +24,8 @@
             "background-navigation.js",
             "background-page.js",
             "background-frames.js",
-            "background-cookies.js",
+            "vendor/tldts.umd.min.js",
+    "background-cookies.js",
             "background.js"
         ]
     },

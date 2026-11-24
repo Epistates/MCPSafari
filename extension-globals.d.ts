@@ -2,6 +2,15 @@
 // not know about. Used only by the type check in tsconfig.json.
 declare const browser: any;
 
+// tldts, vendored in Resources/vendor and loaded as a classic script before
+// background-cookies.js. Only the call that file makes is declared.
+declare const tldts: {
+    getPublicSuffix(
+        hostname: string,
+        options?: { allowPrivateDomains?: boolean; extractHostname?: boolean },
+    ): string | null;
+};
+
 // Tool errors carry their code, whether to retry and what to do next as
 // properties on the Error itself, which is how they cross every boundary up
 // to the bridge reply (`failureResponse`).

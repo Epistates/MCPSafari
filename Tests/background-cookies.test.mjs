@@ -263,6 +263,39 @@ test("a domain that is not a bare hostname is refused before the store is read",
     }
 });
 
+// `co.uk` and `github.io` pass the shape check, so without the list they would
+// clear every British site's cookies, or every GitHub Pages site's, that the
+// extension can see. `github.io` and `s3.amazonaws.com` are in the list's
+// private section.
+test("a public suffix is refused before the store is read", async () => {
+    for (const domain of ["co.uk", "github.io", "s3.amazonaws.com", "CO.UK"]) {
+        let read = false;
+        const harness = loadBackground({ getAll: async () => { read = true; return []; } });
+
+        const response = await harness.request({ domain });
+
+        assert.equal(response.success, false, domain);
+        assert.equal(response.errorCode, "invalid_input", domain);
+        assert.match(response.error, /public suffix/, domain);
+        assert.match(response.error, new RegExp(`example\\.${domain.toLowerCase().replace(/\./g, "\\.")}`), domain);
+        assert.equal(read, false, `${domain} reached the cookie store`);
+    }
+});
+
+test("a site under a public suffix is cleared, and so is localhost", async () => {
+    for (const domain of ["bbc.co.uk", "user.github.io", "localhost"]) {
+        const harness = loadBackground({
+            cookies: [{ domain, name: "session" }],
+            granted: [`https://${domain}/*`],
+        });
+
+        const response = await harness.request({ domain });
+
+        assert.equal(response.success, true, `${domain}: ${response.error}`);
+        assert.equal(data(response).removed, 1, domain);
+    }
+});
+
 test("a removal Safari refuses doesn't lose the count of the ones that went", async () => {
     const harness = loadBackground({
         granted: ["https://idp.example.com"],

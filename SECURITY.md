@@ -49,6 +49,15 @@ downloaded file back to the workflow run and commit that produced it, which a ch
 Every workflow action is pinned by commit SHA, and dependency resolution is locked to
 `Package.resolved`.
 
+The extension carries one piece of third-party code: [tldts](https://github.com/remusao/tldts),
+the Public Suffix List that `clear_cookies` checks a domain against, in
+`MCPSafari/MCPSafari Extension/Resources/vendor/`. Its version is pinned in
+`.github/vendor/package.json`, and Dependabot proposes each new release once it has been public
+for seven days. `.github/scripts/vendor_tldts.mjs` copies a release in only after checking it
+against the integrity npm publishes, and the tests fail if the copy and the pin disagree. A
+release ships the list as it stood at that version, so a suffix added to the list later is
+refused once a release carries the newer copy.
+
 A release is built only from a commit that is on `main` and has passed the test suites and the
 dependency audit. Both products are built before the signing certificate is imported, so build-time
 code never runs with the key present. Each shipped archive is then unpacked and its signature,
@@ -155,7 +164,7 @@ The extension requests these permissions in `manifest.json`:
 | `nativeMessaging` | Read the per-port token files through the extension's own native handler (`TokenStore.swift`); the host app never handles a token |
 | `alarms` | Keepalive that rereads token files and redials servers |
 | `storage` | `storage.session`: the tab each server pinned with `select_tab`. `storage.local`: the sites known to be granted and manually added ports |
-| `cookies` | `clear_cookies`: remove the cookies of one named domain in the profile the extension runs in. Only a count is returned, never a cookie's name or value, and host access still bounds which sites' cookies it can see |
+| `cookies` | `clear_cookies`: remove the cookies of one named domain in the profile the extension runs in. Only a count is returned, never a cookie's name or value, and host access still bounds which sites' cookies it can see. A public suffix such as `co.uk` or `github.io` is refused, checked against the Public Suffix List the extension carries (see below) |
 
 | Host access / injection | Purpose and scope |
 |-|-|

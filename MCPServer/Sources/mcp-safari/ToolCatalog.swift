@@ -439,7 +439,7 @@ extension SafariMCPServer {
                     "properties": .object([
                         "domain": .object([
                             "type": .string("string"),
-                            "description": .string("Bare hostname such as idp.example.com, with no scheme, port or path"),
+                            "description": .string("Bare hostname such as idp.example.com, with no scheme, port or path. A public suffix that unrelated sites share, such as co.uk or github.io, is refused"),
                         ]),
                         "tabId": .object([
                             "type": .string("string"),

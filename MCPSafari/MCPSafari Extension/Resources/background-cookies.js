@@ -14,9 +14,9 @@
 // access to, so cookies it cannot see are left in place, and the result says so
 // whenever that may have happened.
 
-// The server checks the domain before it is sent; this is the same rule, so a
-// request that bypassed it cannot widen the match to every site. One label alone
-// is refused, except `localhost`, so `com` cannot clear everything under it.
+// The server checks the domain's shape before it is sent; this is the same rule,
+// so a request that bypassed it cannot widen the match to every site. One label
+// alone is refused, except `localhost`, so `com` cannot clear everything under it.
 const COOKIE_DOMAIN =
     /^(?=.{1,253}$)(?:localhost|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$/;
 
@@ -25,6 +25,18 @@ const COOKIES_NOT_GRANTED_HINT =
     + "it may have been out of sight and left in place: Safari shows the extension only the cookies "
     + "of sites it can access. If the user has not allowed the site, they can do so from the "
     + "MCPSafari button in Safari's toolbar on a page of that site, then retry.";
+
+// A public suffix is shared by unrelated sites: `co.uk` covers every British
+// company's site and `github.io` every GitHub Pages site, so clearing one would
+// sign the user out of all of them. The list's private section counts too, the
+// suffixes companies such as GitHub and Amazon give their customers.
+// `localhost` is the one name allowed, though the list's default rule makes it a
+// suffix. The list is tldts, loaded before this file; the server doesn't keep a
+// copy, so this is the only place it's checked.
+function isPublicSuffix(domain) {
+    return domain !== "localhost"
+        && tldts.getPublicSuffix(domain, { allowPrivateDomains: true, extractHostname: false }) === domain;
+}
 
 // A cookie's domain may carry a leading dot, which marks it as sent to subdomains
 // too and is not part of the host.
@@ -91,6 +103,15 @@ async function handleClearCookies(params) {
     const domain = typeof params.domain === "string" ? params.domain.toLowerCase() : "";
     if (!COOKIE_DOMAIN.test(domain)) {
         const error = new Error("domain must be a bare hostname such as idp.example.com");
+        error.code = "invalid_input";
+        error.recoveryAction = "fix_input";
+        throw error;
+    }
+    if (isPublicSuffix(domain)) {
+        const error = new Error(
+            `${domain} is a public suffix that unrelated sites share, so clearing it would remove all of their `
+            + `cookies. Name the site itself, such as example.${domain}.`
+        );
         error.code = "invalid_input";
         error.recoveryAction = "fix_input";
         throw error;
