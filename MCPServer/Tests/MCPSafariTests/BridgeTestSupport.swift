@@ -70,6 +70,7 @@ func holdFreePorts(count: UInt16) -> (first: UInt16, descriptors: [Int32])? {
 func withStartedBridge(
     port: UInt16 = 0,
     handshakeDeadline: Duration = .seconds(30),
+    answeringCheckSeconds: TimeInterval = 3,
     instance: InstanceIdentity = InstanceIdentity(),
     _ body: (WebSocketBridge, UInt16) async throws -> Void
 ) async throws {
@@ -81,6 +82,7 @@ func withStartedBridge(
         logger: Logger(label: "BridgeTests"),
         tokenRoot: tokenRoot,
         handshakeDeadline: handshakeDeadline,
+        answeringCheckSeconds: answeringCheckSeconds,
         instance: instance
     )
     await bridge.start()

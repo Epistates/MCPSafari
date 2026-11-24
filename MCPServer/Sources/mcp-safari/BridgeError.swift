@@ -11,6 +11,9 @@ extension WebSocketBridge {
         case notConnected
         case profileNotConnected(Int)
         case timeout(action: String, seconds: TimeInterval)
+        /// Timed out, and the extension then didn't answer a trivial check either,
+        /// so it has stopped answering altogether rather than this one call being slow.
+        case stoppedAnswering(action: String, seconds: TimeInterval)
         case encodingFailed
         case decodingFailed(String)
         /// The extension answered, and the answer could not be read.
@@ -30,6 +33,8 @@ extension WebSocketBridge {
                 "Safari profile p\(index) is not connected. Call status to see which profiles are connected, or tabs_context for current tab handles."
             case .timeout(let action, let seconds):
                 "Timed out waiting for \(action) after \(seconds) seconds. The operation may already have completed; inspect the browser state before retrying."
+            case .stoppedAnswering(let action, let seconds):
+                "Safari's MCPSafari extension stopped answering: \(action) got no reply in \(Int(seconds)) seconds, and neither did a check sent after it. Safari can pause extensions while its windows are hidden or all minimized. Ask the user to bring a Safari window into view, then inspect the browser state before retrying, since the operation may already have run."
             case .encodingFailed:
                 "Failed to encode bridge request."
             case .decodingFailed(let detail):
@@ -71,6 +76,13 @@ extension WebSocketBridge {
                     message: description,
                     retryable: false,
                     recoveryAction: "inspect_error"
+                )
+            case .stoppedAnswering:
+                ToolFailure(
+                    code: "extension_not_responding",
+                    message: description,
+                    retryable: false,
+                    recoveryAction: "ask_user"
                 )
             case .authenticationFailed:
                 ToolFailure(

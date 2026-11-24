@@ -115,6 +115,10 @@ actor WebSocketBridge {
     /// second an unauthenticated peer holds one of the few slots. Injected so a
     /// test does not have to wait out the real one.
     private let handshakeDeadline: Duration
+    /// How long the check that follows a timed-out request waits. The extension
+    /// answers it without touching a page, so a live one replies well inside the
+    /// default. Injected for the same reason as `handshakeDeadline`.
+    private let answeringCheckSeconds: TimeInterval
     /// Runs once the listener is ready and before its token is written. The gap is
     /// real but a few milliseconds wide, so a test that wants to dial inside it has
     /// to be able to hold it open.
@@ -334,6 +338,7 @@ actor WebSocketBridge {
         tokenRoot: URL = WebSocketBridge.applicationSupportDirectoryURL,
         handshakeDeadline: Duration = .seconds(2),
         rebindDelay: Duration = .seconds(2),
+        answeringCheckSeconds: TimeInterval = 3,
         instance: InstanceIdentity = InstanceIdentity(),
         beforeTokenPublication: (@Sendable () async -> Void)? = nil
     ) throws {
@@ -346,6 +351,7 @@ actor WebSocketBridge {
         self.port = port
         self.logger = logger
         self.handshakeDeadline = handshakeDeadline
+        self.answeringCheckSeconds = answeringCheckSeconds
 
         // Generate a random auth token. It is written after the listener binds so
         // the token filename matches the actual fallback port.
@@ -629,12 +635,16 @@ actor WebSocketBridge {
         return try await send(action: action, params: params, timeout: timeout, on: connection)
     }
 
-    /// Sends on one connection, whichever profile it serves now.
+    /// Sends on one connection, whichever profile it serves now. A request that
+    /// runs out of time is followed by a trivial check on the same connection, so
+    /// the failure can say whether the extension has stopped answering altogether
+    /// or only this call is stuck. The check itself is never checked on.
     private func send(
         action: String,
         params: [String: AnyCodable],
         timeout: TimeInterval,
-        on connection: BridgeConnection
+        on connection: BridgeConnection,
+        checkOnTimeout: Bool = true
     ) async throws -> BridgeResponse {
         let connectionID = connection.id
 
@@ -659,10 +669,14 @@ actor WebSocketBridge {
                     do {
                         try await Task.sleep(for: .seconds(timeout))
                     } catch { return }
-                    await self?.removePendingAndResume(
-                        id: request.id,
-                        error: BridgeError.timeout(action: action, seconds: timeout)
-                    )
+                    guard checkOnTimeout else {
+                        await self?.removePendingAndResume(
+                            id: request.id,
+                            error: BridgeError.timeout(action: action, seconds: timeout)
+                        )
+                        return
+                    }
+                    await self?.requestTimedOut(id: request.id, action: action, seconds: timeout, on: connection)
                 }
                 self.pendingRequests[request.id] = PendingRequest(
                     connectionID: connectionID,
@@ -758,6 +772,40 @@ actor WebSocketBridge {
         if listenerStatus != .listening { return .bridgeUnavailable(lastError) }
         if let profileIndex { return .profileNotConnected(profileIndex) }
         return .notConnected
+    }
+
+    /// The request stays pending while the check runs, so a reply that arrives
+    /// late still answers the call, and the check's result is then ignored.
+    private func requestTimedOut(id: String, action: String, seconds: TimeInterval, on connection: BridgeConnection) async {
+        guard pendingRequests[id] != nil else { return }
+        let answering = await connectionAnswers(connection)
+        removePendingAndResume(
+            id: id,
+            error: answering
+                ? BridgeError.timeout(action: action, seconds: seconds)
+                : BridgeError.stoppedAnswering(action: action, seconds: seconds)
+        )
+    }
+
+    /// Whether the extension on this connection replies at all. Any reply counts,
+    /// including an older extension's "Unknown action"; only silence until the
+    /// deadline says it has stopped. A connection that closes is reported by the
+    /// close itself, so that counts as answering here.
+    private func connectionAnswers(_ connection: BridgeConnection) async -> Bool {
+        do {
+            _ = try await send(
+                action: "ping",
+                params: [:],
+                timeout: answeringCheckSeconds,
+                on: connection,
+                checkOnTimeout: false
+            )
+            return true
+        } catch BridgeError.timeout {
+            return false
+        } catch {
+            return true
+        }
     }
 
     /// Removes a pending request by ID and resumes its continuation with an error,

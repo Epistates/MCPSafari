@@ -138,6 +138,7 @@ const PARAMS = {
 const UNGATED = new Map([
     ["identify", "records which MCP client is behind the connection, and touches no tab"],
     ["tabs_query", "lists tabs from the tabs API and is deadlined on its own; it is the call every session starts with"],
+    ["ping", "answers the server's check that the extension still replies, and touches nothing"],
     ["tabs_create", "opens a new tab, a browser operation that needs no access to any page"],
     ["tabs_close", "closes a tab by id, a browser operation that needs no access to the page being closed"],
     ["select_tab", "pins a tab id and brings it forward, which is bookkeeping; the first call that reads the page is gated"],

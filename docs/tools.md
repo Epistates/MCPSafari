@@ -274,6 +274,8 @@ An optional argument given with the wrong type, such as `bringToFront: "false"`,
 
 A `bridge_timeout` means no reply arrived before the deadline; the browser operation may already have completed. It is not automatically retryable. Inspect the target state before repeating a click, submission, upload, or JavaScript call. Canceling a request stops the server waiting, but cannot retract work already sent to Safari.
 
+After a timeout the server asks the extension a trivial question that touches no page. If that gets no reply within 3 seconds either, the extension has stopped answering altogether, and the call fails with `extension_not_responding` and `ask_user` instead of `bridge_timeout`. Safari can pause extensions while its windows are hidden or all minimized, so ask the user to bring a Safari window into view, then inspect the browser state before repeating the call, as after a timeout.
+
 A `malformed_response` means Safari did answer and the answer could not be read, so the operation may well have run; inspect the target before repeating it, as with a timeout. A `response_too_large` means the result was bigger than the bridge can carry (about 31 MiB). The call ran and its result was dropped, so ask for less: a smaller region, a lower limit, or a narrower selector. `status` reports `tokenRootOverride` as `null` unless the server was started with `MCP_SAFARI_TOKEN_ROOT`, a test setting that puts its token files where the Safari extension does not look.
 
 ### Safari profiles
