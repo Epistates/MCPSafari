@@ -104,21 +104,40 @@ async function handleClearCookies(params) {
         );
     } catch (err) {
         if (!(err instanceof DeadlineExceeded)) throw err;
-        throw permissionRequiredError(`https://${domain}`, true);
+        throw cookiesNotRespondingError(domain);
     }
 
     // `getAll({domain})` already means "this domain or a subdomain of it", but a
     // cookie set for a parent (`.example.com` when asked for `idp.example.com`)
     // is not the caller's to remove, so the match is held to that here too.
     const matching = (Array.isArray(cookies) ? cookies : []).filter((cookie) => cookieInDomain(cookie, domain));
-    const results = await Promise.all(matching.map((cookie) => browser.cookies.remove(cookieRemoval(cookie))));
-    // Resolves to null when there was nothing to remove.
-    const removed = results.filter((result) => result !== null).length;
+    // Each removal stands alone, so one Safari refuses doesn't lose the count of
+    // the ones that went.
+    const outcomes = await Promise.allSettled(matching.map((cookie) => browser.cookies.remove(cookieRemoval(cookie))));
+    // `remove` resolves to null when there was nothing to remove.
+    const removed = outcomes.filter((outcome) => outcome.status === "fulfilled" && outcome.value !== null).length;
+    const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+    // When none went, Safari's own reason is the answer.
+    if (failures.length > 0 && removed === 0) throw failures[0].reason;
 
+    const result = { removed, ...(failures.length > 0 ? { failed: failures.length } : {}) };
     // Said even when some were removed: those may be a reached subdomain's, with
     // the domain's own cookies still in place.
     if (!domainIsGranted(domain)) {
-        return { removed, access: "not_granted", accessHint: COOKIES_NOT_GRANTED_HINT };
+        return { ...result, access: "not_granted", accessHint: COOKIES_NOT_GRANTED_HINT };
     }
-    return { removed };
+    return result;
+}
+
+// The lookup has no tab and no page, so a slow answer is Safari's, not a
+// permission question about a tab. Nothing has been removed at this point.
+function cookiesNotRespondingError(domain) {
+    const error = new Error(
+        `Safari didn't answer the cookie lookup for ${domain} within ${PERMISSION_DEADLINE_MS / 1000} seconds, `
+        + "so nothing was removed. Retry the call."
+    );
+    error.code = "cookies_not_responding";
+    error.retryable = true;
+    error.recoveryAction = "retry";
+    return error;
 }

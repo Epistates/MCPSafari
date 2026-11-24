@@ -14,7 +14,7 @@ const source = backgroundScriptSource();
 const PROFILE_STORE = "persistent-3";
 const DEFAULT_STORE = { id: "persistent-1", incognito: false, tabIds: [] };
 
-function loadBackground({ cookies = [], granted = [], getAll, stores, tabs = [{ id: 5 }] } = {}) {
+function loadBackground({ cookies = [], granted = [], getAll, remove, stores, tabs = [{ id: 5 }], deadlinesExpire = false } = {}) {
     const store = cookies.map((cookie) => ({ path: "/", secure: false, httpOnly: false, storeId: PROFILE_STORE, ...cookie }));
     const removals = [];
     const queries = [];
@@ -31,6 +31,7 @@ function loadBackground({ cookies = [], granted = [], getAll, stores, tabs = [{ 
             }),
             remove: async (details) => {
                 removals.push(details);
+                if (remove) return remove(details);
                 const url = new URL(details.url);
                 const index = store.findIndex((cookie) => cookie.name === details.name
                     && cookie.storeId === details.storeId
@@ -70,7 +71,7 @@ function loadBackground({ cookies = [], granted = [], getAll, stores, tabs = [{ 
         Error,
         Promise,
         URL,
-        setTimeout: (callback, ms) => { if ((ms || 0) <= 400) queueMicrotask(callback); return 0; },
+        setTimeout: (callback, ms) => { if (deadlinesExpire || (ms || 0) <= 400) queueMicrotask(callback); return 0; },
         WebSocket: class { send() {} },
     });
     vm.runInContext(source, context);
@@ -260,4 +261,51 @@ test("a domain that is not a bare hostname is refused before the store is read",
         assert.equal(response.errorCode, "invalid_input");
         assert.equal(read, false, `${domain} reached the cookie store`);
     }
+});
+
+test("a removal Safari refuses doesn't lose the count of the ones that went", async () => {
+    const harness = loadBackground({
+        granted: ["https://idp.example.com"],
+        cookies: [{ name: "a", domain: "idp.example.com" }, { name: "b", domain: "idp.example.com" }],
+        remove: async (details) => {
+            if (details.name === "b") throw new Error("Safari refused");
+            return { url: details.url, name: details.name, storeId: details.storeId };
+        },
+    });
+
+    const response = await harness.request({ domain: "idp.example.com" });
+
+    assert.equal(response.success, true, response.error);
+    assert.deepEqual(data(response), { removed: 1, failed: 1 });
+});
+
+test("when no removal goes, Safari's reason is the answer", async () => {
+    const harness = loadBackground({
+        granted: ["https://idp.example.com"],
+        cookies: [{ name: "a", domain: "idp.example.com" }],
+        remove: async () => { throw new Error("Safari refused"); },
+    });
+
+    const response = await harness.request({ domain: "idp.example.com" });
+
+    assert.equal(response.success, false);
+    assert.match(response.error, /Safari refused/);
+});
+
+// There's no tab here, so a lookup that runs out of time isn't blamed on a
+// permission dialog.
+test("a cookie lookup Safari doesn't answer is retryable and removes nothing", async () => {
+    const harness = loadBackground({
+        granted: ["https://idp.example.com"],
+        cookies: [{ name: "a", domain: "idp.example.com" }],
+        getAll: () => new Promise(() => {}),
+        deadlinesExpire: true,
+    });
+
+    const response = await harness.request({ domain: "idp.example.com" });
+
+    assert.equal(response.success, false);
+    assert.equal(response.errorCode, "cookies_not_responding");
+    assert.equal(response.retryable, true);
+    assert.deepEqual(harness.removals, []);
 });
