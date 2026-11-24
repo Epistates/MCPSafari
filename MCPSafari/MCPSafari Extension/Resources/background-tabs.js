@@ -272,13 +272,44 @@ async function listTabsForNewWindow() {
     }
 }
 
-async function handleTabsCreate(params) {
+// A new tab goes into the agent's own window: the window of the tab the caller
+// named, else of the tab this server pinned with select_tab. Only with neither
+// does it go to Safari's front window, which is often the user's or another
+// agent's, and that is what pushed every agent into opening a window of its own.
+async function windowForNewTab(params, serverPort) {
+    if (params.tabId !== undefined) {
+        try {
+            return (await withDeadline(browser.tabs.get(params.tabId), PERMISSION_DEADLINE_MS)).windowId;
+        } catch (err) {
+            // Parked behind Safari's dialog, as `getActiveTabId` treats it.
+            if (err instanceof DeadlineExceeded) throw permissionRequiredError(null, true);
+            // The front window instead would put the tab exactly where the
+            // caller said not to, so a tab that's gone is theirs to hear about.
+            if (await tabIsGone(params.tabId)) throw tabClosedError(params.tabId, false);
+            throw err;
+        }
+    }
+    const pin = await currentPin(serverPort);
+    if (!pin) return undefined;
+    try {
+        return (await withDeadline(browser.tabs.get(pin.tabId), PERMISSION_DEADLINE_MS)).windowId;
+    } catch {
+        // Nothing was named, so a pin that can't be found falls back to the
+        // front window, as a call with no pin does. The next call that needs the
+        // pinned tab reports it.
+        return undefined;
+    }
+}
+
+async function handleTabsCreate(params, serverPort) {
     let created;
     if (params.newWindow === true) {
         created = await createTabInNewWindow(params.url);
     } else {
         const opts = {};
         if (params.url) opts.url = params.url;
+        const windowId = await windowForNewTab(params, serverPort);
+        if (windowId !== undefined) opts.windowId = windowId;
         created = await browser.tabs.create(opts);
     }
     // A URL is waited for the way `navigate`'s goto waits for one. Safari creates

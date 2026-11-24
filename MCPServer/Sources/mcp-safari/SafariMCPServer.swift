@@ -515,7 +515,10 @@ actor SafariMCPServer {
 
     private func handleTabsCreate(_ args: [String: Value]) async throws -> CallTool.Result {
         let profileIndex = try await resolveProfileIndex(args)
-        let params = try Self.tabsCreateParams(args)
+        var params = try Self.tabsCreateParams(args)
+        // The named tab's window is where the new tab opens, so the extension
+        // needs the tab as well as the profile it picks.
+        if let handle = try TabHandle.resolve(args["tabId"]) { params["tabId"] = AnyCodable(handle.tabID) }
         let response = try await bridge.send(
             action: "tabs_create",
             params: params,

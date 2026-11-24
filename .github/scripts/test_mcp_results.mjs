@@ -301,6 +301,12 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         const result = await tool(name, name === "select_tab" ? { tabId: "p0t7" } : {});
         assert.equal(result.structuredContent.tab.id, "p0t7");
     }
+    // A named tab picks the window as well as the profile, so its id goes along.
+    await tool("tabs_create", { tabId: "p0t7" });
+    assert.equal(requests.at(-1).action, "tabs_create");
+    assert.equal(requests.at(-1).tabId, 7);
+    await tool("tabs_create", {});
+    assert.equal(requests.at(-1).tabId, undefined);
     assert.deepEqual((await tool("close_tab", { tabId: "p0t7" })).structuredContent.tab, { id: "p0t7", closed: true });
 
     for (const text of ["42", "true", "null", '"quoted"', "{}", "[]", '{"nested":[1,true]}', "<p>hello</p>"]) {

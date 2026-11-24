@@ -30,7 +30,7 @@
 /** @type {Map<string, BackgroundHandler>} */
 const BACKGROUND_HANDLERS = new Map(/** @type {Array<[string, BackgroundHandler]>} */ ([
     ["tabs_query", () => handleTabsQuery()],
-    ["tabs_create", (params) => handleTabsCreate(params)],
+    ["tabs_create", (params, serverPort) => handleTabsCreate(params, serverPort)],
     ["tabs_close", (params, serverPort) => handleTabsClose(params, serverPort)],
     ["select_tab", (params, serverPort) => handleSelectTab(params, serverPort)],
     ["identify", (params, serverPort) => handleIdentify(params, serverPort)],
