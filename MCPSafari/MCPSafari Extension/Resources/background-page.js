@@ -19,7 +19,10 @@ async function handleScreenshot(params) {
         await browser.tabs.update(tabId, { active: true });
         await delay(300);
     }
+    return captureShowingTab(params, tabId, tab);
+}
 
+async function captureShowingTab(params, tabId, tab) {
     // Context before the frame: a page that loses focus between the two reads
     // then produces a warning about a good frame rather than an all-clear on a
     // stale one.
@@ -37,7 +40,7 @@ async function handleScreenshot(params) {
     // degradation into a refusal. A capture is sub-second when it is permitted
     // at all, so a deadline here separates "blocked on the dialog" from "slow".
     // captureVisibleTab takes the window, not the tab, and returns whichever
-    // tab is showing. The activation above is a request that the user's next
+    // tab is showing. The activation in `handleScreenshot` is a request that the user's next
     // click can undo, so it is confirmed on both sides of the capture: before,
     // so a stale tab is not captured, and after, so a switch during the capture
     // does not return another page's pixels under this tab's metadata.
