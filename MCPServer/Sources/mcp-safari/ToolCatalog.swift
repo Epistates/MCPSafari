@@ -22,6 +22,7 @@ extension SafariMCPServer {
     private static let coordX: Value = .object(["type": .string("number"), "description": .string("Viewport x in CSS px; events dispatch at this exact point (overrides uid/selector/text)")])
     private static let coordY: Value = .object(["type": .string("number"), "description": .string("Viewport y in CSS px")])
     private static let nativeRequirements = "Requires Safari to already be the frontmost application and Accessibility permission. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it."
+    private static let nativeKeyboardFocus = "If Safari's own controls, such as the address bar, hold the keyboard while the agent's window is in front, the keyboard is moved into its page first. To type into a particular field, click it with native=true first."
     private static let waitSel: Value = .object(["type": .string("string"), "description": .string("Wait for CSS selector after action")])
     private static let waitTxt: Value = .object(["type": .string("string"), "description": .string("Wait for visible text after action")])
     private static let waitTimeout: Value = .object(["type": .string("number"), "description": .string("Post-action wait timeout seconds (default: 10)")])
@@ -205,7 +206,7 @@ extension SafariMCPServer {
                         "doubleClick": .object(["type": .string("boolean")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Click with the real OS pointer and left button. " + Self.nativeRequirements),
+                            "description": .string("Click with the real OS pointer and left button; this is also how to give a field the keyboard before native typing. " + Self.nativeRequirements),
                         ]),
                         "force": Self.force,
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
@@ -223,7 +224,7 @@ extension SafariMCPServer {
                         "clearFirst": .object(["type": .string("boolean")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code; text over 1000 characters is refused. " + Self.nativeRequirements),
+                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code; text over 1000 characters is refused. " + Self.nativeKeyboardFocus + " " + Self.nativeRequirements),
                         ]),
                         "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
@@ -286,7 +287,7 @@ extension SafariMCPServer {
                         "key": .object(["type": .string("string")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Use a real macOS key event; shortcuts that quit, close, hide, or leave Safari (Command+Q, Command+W, Command+Tab) are refused. " + Self.nativeRequirements),
+                            "description": .string("Use a real macOS key event; shortcuts that quit, close, hide, or leave Safari (Command+Q, Command+W, Command+Tab) are refused. " + Self.nativeKeyboardFocus + " " + Self.nativeRequirements),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),

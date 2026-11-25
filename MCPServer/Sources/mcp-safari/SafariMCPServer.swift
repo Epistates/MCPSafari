@@ -770,7 +770,14 @@ actor SafariMCPServer {
             let (preparation, delivered) = try await NativeInputLock.withLock(
                 timeout: Self.bridgeTimeout(args)
             ) { () -> (BridgeResponse, String?) in
-                let preparation = try await send(action, args, params: interactionParams(args))
+                let preparation = try await Self.prepareNativeInput(
+                    pointer: action == "native_pointer",
+                    pageFocus: .live
+                ) { windowVerified in
+                    var params = interactionParams(args)
+                    if windowVerified { params["windowVerified"] = AnyCodable(true) }
+                    return try await send(action, args, params: params)
+                }
                 guard preparation.success else { return (preparation, nil) }
                 return (preparation, try await perform(preparation))
             }
