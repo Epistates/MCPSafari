@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- `tabs_create` with an explicit `url` no longer reports a false `access: "not_granted"` on already-granted sites that have not been touched yet in the current `grantedOrigins` cache. When the extension initially reports `not_granted` for a newly opened URL tab, the server runs one lightweight `javascript_tool` probe on that tab; if access succeeds, the response is upgraded to `access: "granted"` (populating `title` and dropping `accessHint`), while genuinely ungranted sites still report `not_granted`.
+
 ## [0.4.0] - 2026-11-18
 ### Added
 - JavaScript CodeQL coverage, immutable workflow action references, locked dependency resolution, and a tag-publishing gate requiring recorded real-Safari qualification.

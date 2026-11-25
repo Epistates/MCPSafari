@@ -130,4 +130,26 @@ struct TabsContextMergeTests {
         #expect(merged.tabs.count == 1)
         #expect(merged.tabs[0].objectValue?["id"] == nil)
     }
+
+    @Test func upgradingTabAccessMarksGrantedAndDropsHint() throws {
+        let initial = BridgeResponse(
+            id: "req",
+            success: true,
+            data: AnyCodable(#"{"id":42,"url":"https://muse.ai/","access":"not_granted","accessHint":"URL and title withheld"}"#),
+            error: nil,
+            errorCode: nil,
+            retryable: nil,
+            recoveryAction: nil
+        )
+        let upgraded = SafariMCPServer.upgradingTabAccess(
+            in: initial,
+            title: SafariMCPServer.extractProbeTitle(#""Chat — muse""#)
+        )
+        let raw = try #require(upgraded.data?.stringValue)
+        let decoded = try JSONDecoder().decode([String: AnyCodable].self, from: Data(raw.utf8))
+        #expect(decoded["access"]?.stringValue == "granted")
+        #expect(decoded["accessHint"] == nil)
+        #expect(decoded["title"]?.stringValue == "Chat — muse")
+        #expect(decoded["id"]?.intValue == 42)
+    }
 }
