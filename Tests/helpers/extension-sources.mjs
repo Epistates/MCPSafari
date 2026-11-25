@@ -62,10 +62,14 @@ export const BACKGROUND_SCRIPT_FILES = [
  * Concatenation is faithful here for the same reason the browser can load these
  * as separate files: they share one global scope, so evaluating them back to
  * back in one realm is what the background page already does.
+ *
+ * They're read as Latin-1 because Safari doesn't read them as UTF-8: the page
+ * it generates for them names no encoding. Text past ASCII in a comment
+ * survives that, but in a string it doesn't.
  */
 export function backgroundScriptSource() {
     return BACKGROUND_SCRIPT_FILES
-        .map((file) => readFileSync(new URL(file, RESOURCES), "utf8"))
+        .map((file) => readFileSync(new URL(file, RESOURCES), "latin1"))
         .join("\n");
 }
 

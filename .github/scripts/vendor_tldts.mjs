@@ -8,6 +8,11 @@
 // integrity npm publishes for it, and copies the browser build and its licence
 // into Resources/vendor. .github/vendor/tldts.json records the version and the
 // SHA-256 of each copied file, so an edit to a vendored file fails the tests too.
+//
+// The browser build is written as ASCII. Safari doesn't read background scripts
+// as UTF-8, and the build packs the list into strings it walks by character
+// offset, so one rule with an accented letter shifted every lookup after it:
+// `co.uk` came back as `uk`. A \u escape reads the same in any encoding.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -26,6 +31,17 @@ const FILES = {
     "tldts.umd.min.js": "package/dist/index.umd.min.js",
     "tldts.LICENSE": "package/LICENSE",
 };
+
+// Every UTF-16 unit past ASCII becomes a \u escape, so a character outside the
+// Basic Multilingual Plane becomes its surrogate pair, which is how a string
+// holds it anyway. A backslash in front would make the escape mean something
+// else, and the build has none.
+function asciiOnly(source) {
+    return source.replace(/[^\x00-\x7f]/g, (unit, at) => {
+        if (source[at - 1] === "\\") throw new Error(`tldts ${version} has a backslash before a non-ASCII character at ${at}`);
+        return `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`;
+    });
+}
 
 async function fetchOk(url) {
     const response = await fetch(url);
@@ -57,7 +73,8 @@ try {
     const files = {};
     for (const [name, member] of Object.entries(FILES)) {
         const destination = new URL(name, VENDOR);
-        copyFileSync(join(work, member), fileURLToPath(destination));
+        if (name.endsWith(".js")) writeFileSync(destination, asciiOnly(readFileSync(join(work, member), "utf8")));
+        else copyFileSync(join(work, member), fileURLToPath(destination));
         files[name] = createHash("sha256").update(readFileSync(destination)).digest("hex");
     }
     writeFileSync(LOCK, `${JSON.stringify({ version, integrity, files }, null, 2)}\n`);

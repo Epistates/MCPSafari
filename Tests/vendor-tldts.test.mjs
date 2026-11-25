@@ -16,6 +16,14 @@ test("the vendored tldts is the version the pin names", () => {
     assert.equal(lock.version, pin.dependencies.tldts, `the pin moved: ${REVENDOR}`);
 });
 
+// Safari doesn't read background scripts as UTF-8, and tldts walks its packed
+// list by character offset, so one accented rule shifted every lookup after it.
+test("the vendored tldts is ASCII, so Safari reads it as written", () => {
+    const source = readFileSync(new URL("tldts.umd.min.js", VENDOR));
+    const at = source.findIndex((byte) => byte > 0x7f);
+    assert.equal(at, -1, `vendor/tldts.umd.min.js has a byte past ASCII at ${at}: ${REVENDOR}`);
+});
+
 test("the vendored tldts files are the ones the vendor script copied", () => {
     assert.deepEqual(Object.keys(lock.files).sort(), ["tldts.LICENSE", "tldts.umd.min.js"]);
     for (const [name, sha256] of Object.entries(lock.files)) {

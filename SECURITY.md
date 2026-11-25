@@ -54,7 +54,9 @@ the Public Suffix List that `clear_cookies` checks a domain against, in
 `MCPSafari/MCPSafari Extension/Resources/vendor/`. Its version is pinned in
 `.github/vendor/package.json`, and Dependabot proposes each new release once it has been public
 for seven days. `.github/scripts/vendor_tldts.mjs` copies a release in only after checking it
-against the integrity npm publishes, and the tests fail if the copy and the pin disagree. A
+against the integrity npm publishes, and the tests fail if the copy and the pin disagree. Safari
+doesn't read the extension's background scripts as UTF-8, so the script writes each character past
+ASCII as a `\u` escape, and the shipped file differs from npm's only in those escapes. A
 release ships the list as it stood at that version, so a suffix added to the list later is
 refused once a release carries the newer copy.
 
