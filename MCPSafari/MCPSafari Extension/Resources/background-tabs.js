@@ -463,33 +463,61 @@ function requireTopFrameTarget(params, reason = NATIVE_INPUT_TOP_FRAME_ONLY) {
     }
 }
 
+// When the page refuses native input because Safari's own controls hold the
+// keyboard, the server can move it into the page through Accessibility, but
+// only once it has confirmed that the window in front is this tab's. The
+// refusal carries what it confirms against: the window's frame, and the tab's
+// title, which Safari shows as the window's. An older server ignores them.
+async function withNativeTarget(tabId, prepare) {
+    try {
+        return await prepare();
+    } catch (err) {
+        if (err && err.code === "native_input_focus_failed") {
+            try {
+                const tab = await browser.tabs.get(tabId);
+                const win = await browser.windows.get(tab.windowId);
+                err.details = {
+                    nativeTarget: {
+                        left: win.left,
+                        top: win.top,
+                        width: win.width,
+                        height: win.height,
+                        title: tab.title || "",
+                    },
+                };
+            } catch (_) { /* the refusal stands as it was */ }
+        }
+        throw err;
+    }
+}
+
 async function handleNativeTypeText(params) {
     requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
-    await sendToContentScript(tabId, {
+    await withNativeTarget(tabId, () => sendToContentScript(tabId, {
         action: "prepare_native_input",
         params,
-    });
+    }));
     return "Safari is ready for native input";
 }
 
 async function handleNativePressKey(params) {
     requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
-    await sendToContentScript(tabId, {
+    await withNativeTarget(tabId, () => sendToContentScript(tabId, {
         action: "prepare_native_key",
         params,
-    });
+    }));
     return "Safari is ready for native input";
 }
 
 async function handleNativePointer(params) {
     requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
-    return sendToContentScript(tabId, {
+    return withNativeTarget(tabId, () => sendToContentScript(tabId, {
         action: "native_pointer_points",
         params,
-    });
+    }));
 }
 
 // Object keys are strings, so ports come back as text and are turned into

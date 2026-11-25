@@ -253,3 +253,27 @@ test("native_pointer_points refuses when the page does not hold focus", async ()
     assert.equal(response.recoveryAction, "retry");
     assert.match(response.error, /native mouse events/);
 });
+
+// Safari's address bar holding the keyboard leaves the page without focus while
+// its window is in front. Once the server has confirmed through Accessibility
+// that the window in front is this tab's, a click is safe, and it's what gives
+// the page focus.
+test("native_pointer_points goes on without page focus once the server has verified the window", async () => {
+    const target = el({ left: 50, top: 60, width: 20, height: 10 });
+    const call = loadContent({ target, hasFocus: false });
+
+    const { data, error } = await call("native_pointer_points", { selector: "#target", windowVerified: true });
+
+    assert.equal(error, null);
+    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 160, y: 290 } });
+});
+
+// Anything but an explicit true from the server leaves the check in place.
+test("native_pointer_points keeps the focus check for anything but windowVerified true", async () => {
+    const target = el({ left: 50, top: 60, width: 20, height: 10 });
+    const call = loadContent({ target, hasFocus: false });
+
+    const response = await call("native_pointer_points", { selector: "#target", windowVerified: "true" });
+
+    assert.equal(response.errorCode, "native_input_focus_failed");
+});

@@ -510,11 +510,13 @@ function writeStorage(area, values) {
     } catch (_) { /* storage may not be available */ }
 }
 
+// `details`, when an error carries them, are for the server rather than the
+// caller, such as the window a native-input refusal was about.
 function failureResponse(id, error, resolvedTabId = null) {
     return {
         id,
         success: false,
-        data: null,
+        data: error && error.details ? JSON.stringify(error.details) : null,
         error: String(error.message || error),
         errorCode: typeof error.code === "string" ? error.code : "extension_error",
         retryable: error.retryable === true,

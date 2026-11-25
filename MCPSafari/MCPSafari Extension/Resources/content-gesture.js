@@ -246,8 +246,12 @@
     // Assumes 100% page zoom.
     function nativePointerPoints(params) {
         // The points are screen coordinates, so a Safari window that is not the
-        // one in front would have them land on another application.
-        assertPageFocused("native mouse events");
+        // one in front would have them land on another application. The server
+        // sets `windowVerified` once Accessibility has confirmed this tab's
+        // window is the one in front, which is all a click needs: with the
+        // address bar holding the keyboard the page has no focus, and clicking
+        // into it is how a person gives it focus.
+        if (params.windowVerified !== true) assertPageFocused("native mouse events");
         const toScreen = (cssX, cssY) => ({
             x: window.screenX + (window.outerWidth - window.innerWidth) + cssX,
             y: window.screenY + (window.outerHeight - window.innerHeight) + cssY,
