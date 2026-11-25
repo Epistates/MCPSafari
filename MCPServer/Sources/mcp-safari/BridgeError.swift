@@ -25,7 +25,7 @@ extension WebSocketBridge {
         var description: String {
             switch self {
             case .notConnected:
-                "No Safari extension connected. Open Safari and click the MCPSafari extension icon to connect."
+                "No Safari extension connected yet. If Safari is open and the MCPSafari extension is enabled, it may still be reconnecting — call status to check or retry in a few seconds; otherwise open Safari and click the MCPSafari extension icon."
             case .profileNotConnected(let index):
                 "Safari profile p\(index) is not connected. Call status to see which profiles are connected, or tabs_context for current tab handles."
             case .timeout(let action, let seconds):
@@ -55,7 +55,7 @@ extension WebSocketBridge {
                 ToolFailure(
                     code: "bridge_disconnected",
                     message: description,
-                    retryable: false,
+                    retryable: true,
                     recoveryAction: "call_status"
                 )
             case .profileNotConnected:
@@ -79,11 +79,11 @@ extension WebSocketBridge {
                     retryable: false,
                     recoveryAction: "call_status"
                 )
-            case .bridgeUnavailable:
+            case .bridgeUnavailable(let failure):
                 ToolFailure(
                     code: "bridge_unavailable",
                     message: description,
-                    retryable: false,
+                    retryable: failure == nil,
                     recoveryAction: "call_status"
                 )
             case .malformedResponse:

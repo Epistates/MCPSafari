@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- Tool calls no longer fail immediately with `bridge_disconnected` during the brief window while the bridge is starting up or the Safari extension is reconnecting. Requests now wait event-driven up to 12 seconds for an extension connection to finish authenticating before failing, while still failing fast when the listener could not bind or when a call names an unknown profile while another profile is already connected. `bridge_disconnected` and startup `bridge_unavailable` now report `retryable: true` so agents do not treat a transient reconnect gap as a closed browser.
+
 ## [0.4.0] - 2026-11-18
 ### Added
 - JavaScript CodeQL coverage, immutable workflow action references, locked dependency resolution, and a tag-publishing gate requiring recorded real-Safari qualification.

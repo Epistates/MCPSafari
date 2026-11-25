@@ -61,6 +61,22 @@ actor WebSocketBridge {
     }
 
     private var pendingRequests: [String: PendingRequest] = [:]
+
+    private struct ConnectionWaiter {
+        let profileIndex: Int?
+        let continuation: CheckedContinuation<Void, any Error>
+        let timeoutTask: Task<Void, Never>
+    }
+
+    private enum WaiterOutcome {
+        case connected
+        case timedOut
+        case failed(any Error)
+    }
+
+    /// Callers waiting briefly for an extension connection to finish starting up
+    /// or reconnecting instead of failing immediately with `bridge_disconnected`.
+    private var connectionWaiters: [UUID: ConnectionWaiter] = [:]
     /// The lock on this bridge's `<port>.pid` file while it owns a token. See
     /// `BridgeOwnerRecord`.
     private var ownerLock: Int32?
@@ -115,6 +131,10 @@ actor WebSocketBridge {
     /// second an unauthenticated peer holds one of the few slots. Injected so a
     /// test does not have to wait out the real one.
     private let handshakeDeadline: Duration
+    /// How long tool calls wait for an extension to finish connecting/reconnecting
+    /// before reporting `bridge_disconnected`. Zero preserves immediate failure
+    /// (the default for direct unit-test bridge construction).
+    private let connectGraceTimeout: Duration
     /// Runs once the listener is ready and before its token is written. The gap is
     /// real but a few milliseconds wide, so a test that wants to dial inside it has
     /// to be able to hold it open.
@@ -327,6 +347,11 @@ actor WebSocketBridge {
         return params
     }
 
+    /// Default grace window for tool calls waiting on a connecting or reconnecting
+    /// Safari extension. Covers the extension's initial reconnect backoff (1s -> 2s -> 4s -> 5s)
+    /// without stalling for a full bridge timeout when Safari is actually closed.
+    static let defaultConnectGraceTimeout: Duration = .seconds(12)
+
     init(
         port: UInt16 = 8089,
         portCount: UInt16 = WebSocketBridge.defaultPortCount,
@@ -334,6 +359,7 @@ actor WebSocketBridge {
         tokenRoot: URL = WebSocketBridge.applicationSupportDirectoryURL,
         handshakeDeadline: Duration = .seconds(2),
         rebindDelay: Duration = .seconds(2),
+        connectGraceTimeout: Duration = .zero,
         instance: InstanceIdentity = InstanceIdentity(),
         beforeTokenPublication: (@Sendable () async -> Void)? = nil
     ) throws {
@@ -346,6 +372,7 @@ actor WebSocketBridge {
         self.port = port
         self.logger = logger
         self.handshakeDeadline = handshakeDeadline
+        self.connectGraceTimeout = connectGraceTimeout
 
         // Generate a random auth token. It is written after the listener binds so
         // the token filename matches the actual fallback port.
@@ -498,6 +525,7 @@ actor WebSocketBridge {
         port = requestedPort
         listenerStatus = .failed
         lastError = failure
+        failAllConnectionWaiters()
         scheduleRebind()
     }
 
@@ -610,8 +638,94 @@ actor WebSocketBridge {
         selectedProfileIndex = nil
         listenerStatus = .stopped
         rejectedExtension = nil
+        failAllConnectionWaiters()
         drainPendingRequests(error: BridgeError.notConnected)
         logger.info("WebSocket server stopped")
+    }
+
+    private func hasConnection(forProfileIndex index: Int?) -> Bool {
+        if let index {
+            guard let profileID = profileID(atIndex: index) else { return false }
+            return connections[profileID] != nil
+        }
+        return !connections.isEmpty
+    }
+
+    /// Waits briefly for the Safari extension (or a specific profile) to finish
+    /// connecting/reconnecting before failing a tool call. Returns immediately
+    /// when already connected, when the listener has permanently failed/stopped,
+    /// or when `connectGraceTimeout` is zero.
+    func waitForConnection(profileIndex: Int? = nil, timeout: Duration? = nil) async throws {
+        if hasConnection(forProfileIndex: profileIndex) { return }
+        if stopped || listenerStatus == .failed {
+            throw noConnectionError(profileIndex: profileIndex)
+        }
+        // If another profile is already authenticated and this index has never
+        // existed, fail fast rather than waiting out the full grace window for a
+        // bogus handle such as p99.
+        if let profileIndex, !connections.isEmpty, self.profileID(atIndex: profileIndex) == nil {
+            throw noConnectionError(profileIndex: profileIndex)
+        }
+        let grace = timeout ?? connectGraceTimeout
+        guard grace > .zero else {
+            throw noConnectionError(profileIndex: profileIndex)
+        }
+        try Task.checkCancellation()
+
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { continuation in
+                if self.hasConnection(forProfileIndex: profileIndex) {
+                    continuation.resume()
+                    return
+                }
+                if self.stopped || self.listenerStatus == .failed {
+                    continuation.resume(throwing: self.noConnectionError(profileIndex: profileIndex))
+                    return
+                }
+                let timeoutTask = Task { [weak self] in
+                    do {
+                        try await Task.sleep(for: grace)
+                    } catch { return }
+                    await self?.finishConnectionWaiter(id: waiterID, outcome: .timedOut)
+                }
+                self.connectionWaiters[waiterID] = ConnectionWaiter(
+                    profileIndex: profileIndex,
+                    continuation: continuation,
+                    timeoutTask: timeoutTask
+                )
+            }
+        } onCancel: {
+            Task { await self.finishConnectionWaiter(id: waiterID, outcome: .failed(CancellationError())) }
+        }
+    }
+
+    private func finishConnectionWaiter(id: UUID, outcome: WaiterOutcome) {
+        guard let waiter = connectionWaiters.removeValue(forKey: id) else { return }
+        waiter.timeoutTask.cancel()
+        switch outcome {
+        case .connected:
+            waiter.continuation.resume()
+        case .timedOut:
+            waiter.continuation.resume(throwing: noConnectionError(profileIndex: waiter.profileIndex))
+        case .failed(let error):
+            waiter.continuation.resume(throwing: error)
+        }
+    }
+
+    private func notifyConnectionWaiters() {
+        for (id, waiter) in connectionWaiters {
+            if hasConnection(forProfileIndex: waiter.profileIndex) {
+                finishConnectionWaiter(id: id, outcome: .connected)
+            }
+        }
+    }
+
+    private func failAllConnectionWaiters() {
+        for id in Array(connectionWaiters.keys) {
+            finishConnectionWaiter(id: id, outcome: .timedOut)
+        }
     }
 
     /// Send a request to one profile's extension instance and await the correlated
@@ -625,6 +739,7 @@ actor WebSocketBridge {
         guard pendingRequests.count < Self.maxPendingRequests else {
             throw BridgeError.extensionError("Too many in-flight requests (maximum \(Self.maxPendingRequests)). Wait for pending operations to finish.")
         }
+        try await waitForConnection(profileIndex: profileIndex)
         let connection = try connection(forProfileIndex: profileIndex)
         let connectionID = connection.id
 
@@ -680,8 +795,12 @@ actor WebSocketBridge {
     func broadcast(
         action: String,
         params: [String: AnyCodable] = [:],
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        waitForConnection shouldWait: Bool = true
     ) async throws -> [ProfileOutcome] {
+        if shouldWait && profileStatuses().isEmpty {
+            try await waitForConnection()
+        }
         let targets = profileStatuses().map { (index: $0.index, id: $0.id) }
         guard !targets.isEmpty else { throw noConnectionError() }
 
@@ -1144,6 +1263,7 @@ actor WebSocketBridge {
         ]
         if let client { ok["client"] = client.frameObject }
         sendAuthResponse(ok, to: conn)
+        notifyConnectionWaiters()
     }
 
     private func sendAuthResponse(
