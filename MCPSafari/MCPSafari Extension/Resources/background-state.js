@@ -138,6 +138,27 @@ function tabNotLoadedError() {
     return error;
 }
 
+// The page still holds the content script of an MCPSafari that was since
+// updated, restarted or switched off and on. Safari keeps that script's world
+// for the page and lets nothing in it reach the extension that runs now: its
+// listener is dead, a script injected now runs in the same world and finds the
+// old one loaded, and a listener added there hears nothing either (Safari 27.2).
+// Only loading the page again gives it a world the extension can talk to. Until
+// this was told apart, such a tab failed every call as `reply_lost`, saying the
+// page had gone away and the call might have run, and neither was true.
+function pageNeedsReloadError() {
+    const error = new Error(
+        "This tab was open when MCPSafari was last updated or restarted, and Safari won't let "
+        + "MCPSafari reach the page until it loads again. Nothing was done. Reload it with navigate "
+        + "and action reload, then retry. Reloading discards anything typed into the page and not "
+        + "yet saved, so ask the user first if that might matter."
+    );
+    error.code = "page_needs_reload";
+    error.retryable = true;
+    error.recoveryAction = "reload_page";
+    return error;
+}
+
 // What brings a hidden tab's page back, by why it's hidden (`tabShowingState`).
 const HIDDEN_TAB_ADVICE = {
     background: "Call select_tab on it to bring it to the front, then retry. That hides the tab "

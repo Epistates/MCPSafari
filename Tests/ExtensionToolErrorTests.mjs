@@ -38,7 +38,7 @@ function contentHarness(document = {
 // browser reports a message nobody is listening for: Safari resolves undefined,
 // other engines throw the no-receiver error. Injecting the content script makes
 // the tab listen, unless `injectionTakes` is false.
-function backgroundHarness(contentResponse, { listening = true, silence = "undefined", injectionTakes = true } = {}) {
+function backgroundHarness(contentResponse, { listening = true, silence = "undefined", injectionTakes = true, staleNamespace = false } = {}) {
     const contentResponses = Array.isArray(contentResponse)
         ? [...contentResponse]
         : [contentResponse];
@@ -95,7 +95,9 @@ function backgroundHarness(contentResponse, { listening = true, silence = "undef
         },
         scripting: {
             executeScript: async (options) => {
-                if (!options.files) return;
+                // The only function the background runs is the check for an
+                // earlier MCPSafari's namespace in the frame.
+                if (!options.files) return [{ result: staleNamespace }];
                 injections.push(options.files);
                 if (injectionTakes && options.files.includes("content.js")) listening = true;
             },
@@ -256,6 +258,32 @@ test("a tab that still has no content script after injection fails without the a
     assert.equal(response.success, false);
     assert.match(response.error, /did not respond after injection/);
     assert.deepEqual(handleRequest.sends, [], "the action was sent to a page that could not take it");
+});
+
+// A tab open across an update or restart keeps the earlier MCPSafari's content
+// script, which nothing can reach, and an injection lands beside it and finds it
+// loaded. Live on build 45 every read of such a tab failed as reply_lost.
+test("a page holding an earlier MCPSafari's content script asks for a reload, with nothing sent", async () => {
+    const handleRequest = backgroundHarness([{ data: "done", error: null }], { listening: false, injectionTakes: false, staleNamespace: true });
+
+    const response = await handleRequest({ id: "request-1", action: "hover", params: { tabId: 1, uid: "f0e12" } });
+
+    assert.equal(response.success, false);
+    assert.equal(response.errorCode, "page_needs_reload");
+    assert.equal(response.retryable, true);
+    assert.equal(response.recoveryAction, "reload_page");
+    assert.match(response.error, /navigate and action reload/);
+    assert.deepEqual(handleRequest.sends, [], "the action was sent to a page that could not take it");
+});
+
+test("a read of a page holding an earlier MCPSafari's content script asks for a reload, not reply_lost", async () => {
+    const handleRequest = backgroundHarness([{ data: "done", error: null }], { listening: false, injectionTakes: false, staleNamespace: true });
+
+    const response = await handleRequest({ id: "request-1", action: "read_page", params: { tabId: 1 } });
+
+    assert.equal(response.success, false);
+    assert.equal(response.errorCode, "page_needs_reload");
+    assert.equal(response.recoveryAction, "reload_page");
 });
 
 test("a tab that has the content script is not injected into for an action that must not repeat", async () => {
