@@ -240,6 +240,47 @@ test("an authenticated socket outlives its token file until it closes", async ()
     assert.ok(!harness.evaluate("connections.has(9000)"), "gone once the socket is");
 });
 
+// Each run of a server writes a new token. In a second Safari profile a socket
+// to a server that had stopped could stay open for minutes with no close, and
+// while it did, a new server on the same port was known and never dialled: the
+// profile learned of it at 20 s and connected at 80 s, against 20 s for the first.
+test("a new token on a port is a new server, dialled even while the old socket hangs on", async () => {
+    const harness = loadBackground({ 8093: "old-run" });
+    await settle();
+    const stale = await harness.authenticate(8093, "old-run");
+
+    harness.tokenMap.set("8093", "new-run");
+    await harness.keepalive();
+
+    assert.ok(stale.closed, "the old run's socket is let go");
+    assert.deepEqual(harness.dialledPorts(), [8093, 8093]);
+    await harness.authenticate(8093, "new-run");
+    assert.equal(harness.evaluate("connections.get(8093).state"), "connected");
+});
+
+test("a new token on a port replaces a dial to the old run that never opened", async () => {
+    const harness = loadBackground({ 8093: "old-run" });
+    await settle();
+    const stuck = harness.sockets[0];
+
+    harness.tokenMap.set("8093", "new-run");
+    await harness.keepalive();
+
+    assert.ok(stuck.closed);
+    assert.deepEqual(harness.dialledPorts(), [8093, 8093]);
+});
+
+test("the same token again leaves a live connection alone", async () => {
+    const harness = loadBackground({ 8093: "run" });
+    await settle();
+    const live = await harness.authenticate(8093, "run");
+
+    await harness.keepalive();
+
+    assert.ok(!live.closed);
+    assert.equal(harness.sockets.length, 1);
+});
+
 test("a port added by hand survives having no token", async () => {
     const harness = loadBackground();
     await settle();

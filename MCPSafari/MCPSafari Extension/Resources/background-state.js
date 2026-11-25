@@ -13,10 +13,11 @@
 /**
  * `instance` and `client` are what the server and its MCP client say about
  * themselves (see "Who a connection is" below). Both are reset each time a
- * server authenticates, since a new run can be a different server.
+ * server authenticates, since a new run can be a different server. `token` is
+ * the one the last dial used, which names the run of the server it was for.
  *
  * @type {Map<number, {ws: WebSocket|null, state: string, attempts: number, manual: boolean, lastConnected: number,
- *   disconnectedAt?: number, instance?: {name: string|null, folder: string|null}|null,
+ *   token?: string, disconnectedAt?: number, instance?: {name: string|null, folder: string|null}|null,
  *   client?: {name: string, version: string|null}|null}>}
  */
 const connections = new Map();
