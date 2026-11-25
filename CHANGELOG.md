@@ -173,6 +173,9 @@
 - `snapshot` redacts more of what a form holds. It relied on `type="password"` or an `autocomplete` token, so a password revealed by a show-password toggle (the type flips to `text`), a field named `pin`, `otp`, `cvv`, `ssn`, `secret`, `token` or `2fa`, and any sensitive `<textarea>` came back verbatim. A field that was ever a password on the page stays redacted, and `name`, `id`, `aria-label`, `inputmode` and `autocomplete` are now read for secret words. Whole words are matched for the short ones, so `shipping` and `passenger` stay readable. A sensitive textarea also no longer repeats its default text.
 - The extension now asks Safari for the `cookies` permission, which `clear_cookies` needs. With it, MCPSafari can see the cookies of the sites you've allowed it on, sign-in cookies included. It only ever deletes them, and only for `clear_cookies`. To tell a site from a domain that many sites share, the extension carries a copy of the Public Suffix List; SECURITY.md says how it's kept up to date.
 
+### Known issues
+- A second Safari profile can take a minute or more to connect to a server that just started, while the profile you're using connects within seconds. Until it does, calls that name that profile's tabs fail with `profile_not_connected`. `status` lists the connected profiles, so retry once it shows up. Tracked in [#168](https://github.com/Epistates/MCPSafari/issues/168).
+
 ## [0.4.0] - 2026-11-18
 Tagged but not released. 0.4.1 is the first release of this line, and its entry includes everything planned for 0.4.0.
 
