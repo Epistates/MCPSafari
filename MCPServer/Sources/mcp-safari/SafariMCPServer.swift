@@ -162,11 +162,33 @@ actor SafariMCPServer {
     private func dispatch(tool: String, arguments args: [String: Value]) async -> CallTool.Result {
         let report = PageVisibilityReport()
         let result = await Self.$pageVisibility.withValue(report) {
-            await dispatchUnreported(tool: tool, arguments: args)
+            do {
+                return try await Self.whileNoServerTypes(tool, timeout: Self.bridgeTimeout(args)) {
+                    await dispatchUnreported(tool: tool, arguments: args)
+                }
+            } catch {
+                // Refused while another server typed, so it never ran.
+                return Self.failureResult(toolFailure(for: error))
+            }
         }
         // A screenshot reads visibility itself and says so in its own words.
         guard report.sawHidden, tool != "screenshot" else { return result }
         return Self.notingHiddenPage(result)
+    }
+
+    /// Runs a call that can move Safari's keyboard once no server is typing,
+    /// and any other call at once. A server sending native input holds the lock
+    /// alone for as long as it types, so a new window or tab switch from another
+    /// agent can't take the keyboard from under its text.
+    static func whileNoServerTypes<T>(
+        _ tool: String,
+        timeout: Double,
+        lockURL: URL = NativeInputLock.defaultURL,
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: () async throws -> T
+    ) async throws -> T {
+        guard focusMovingTools.contains(tool) else { return try await body() }
+        return try await NativeInputLock.withLock(at: lockURL, timeout: timeout, shared: true, body)
     }
 
     private func dispatchUnreported(tool: String, arguments args: [String: Value]) async -> CallTool.Result {

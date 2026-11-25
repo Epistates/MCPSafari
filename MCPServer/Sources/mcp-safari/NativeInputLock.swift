@@ -3,15 +3,18 @@ import Foundation
 
 // MARK: - Native Input Lock
 
-/// Keeps two mcp-safari processes from posting native input at the same time.
+/// Keeps two mcp-safari processes from posting native input at the same time,
+/// and keeps the others from moving Safari's keyboard while one of them types.
 ///
 /// Several servers can run side by side, one per MCP client, and they share the
 /// one keyboard and pointer. The focus lock orders calls inside a process; this
 /// orders them between processes. Two servers typing at once would interleave
 /// their keystrokes into one stream, and one's focus preparation would move the
-/// focus the other's characters depend on. An advisory `flock` on a file beside
-/// the tokens is enough: the kernel drops it when the holder exits, however it
-/// exits, so a killed server cannot leave the others waiting.
+/// focus the other's characters depend on. So would another server's new window
+/// or tab switch, which is why those wait too (`focusMovingTools`). An advisory
+/// `flock` on a file beside the tokens is enough: the kernel drops it when the
+/// holder exits, however it exits, so a killed server cannot leave the others
+/// waiting.
 enum NativeInputLock {
     static var defaultURL: URL {
         WebSocketBridge.applicationSupportDirectoryURL.appendingPathComponent("native-input.lock")
@@ -25,13 +28,20 @@ enum NativeInputLock {
     /// `timeout` seconds have passed. Waits by polling and suspending, not by
     /// blocking a thread, so a cancelled call stops waiting at once and other
     /// calls keep running.
+    ///
+    /// Native input holds the lock alone. A call that only moves Safari's
+    /// keyboard, such as opening a window or switching tabs, holds it `shared`:
+    /// such calls don't wait for each other, but they do wait while any server
+    /// types, because a keyboard moved mid-text sends the rest of that server's
+    /// characters into another page.
     static func withLock<T>(
         at url: URL = defaultURL,
         timeout: Double = defaultTimeout,
+        shared: Bool = false,
         isolation: isolated (any Actor)? = #isolation,
         _ body: () async throws -> T
     ) async throws -> T {
-        let descriptor = try await acquire(url, timeout: timeout)
+        let descriptor = try await acquire(url, timeout: timeout, shared: shared)
         defer {
             flock(descriptor, LOCK_UN)
             close(descriptor)
@@ -39,7 +49,7 @@ enum NativeInputLock {
         return try await body()
     }
 
-    private static func acquire(_ url: URL, timeout: Double) async throws -> Int32 {
+    private static func acquire(_ url: URL, timeout: Double, shared: Bool) async throws -> Int32 {
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
@@ -58,12 +68,12 @@ enum NativeInputLock {
         do {
             while true {
                 try Task.checkCancellation()
-                if flock(descriptor, LOCK_EX | LOCK_NB) == 0 { return descriptor }
+                if flock(descriptor, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB) == 0 { return descriptor }
                 let reason = errno
                 guard reason == EWOULDBLOCK || reason == EINTR else {
                     throw unavailable("it could not lock \(url.path) (\(String(cString: strerror(reason))))")
                 }
-                guard ProcessInfo.processInfo.systemUptime < deadline else { throw busy }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw shared ? busyMovingFocus : busy }
                 try await Task.sleep(for: .milliseconds(25))
             }
         } catch {
@@ -76,6 +86,15 @@ enum NativeInputLock {
         SafariMCPServer.NativeInputError(failure: ToolFailure(
             code: "native_input_busy",
             message: "Another mcp-safari server is sending native input and did not finish in time, so nothing was sent. The keyboard and pointer are shared, and two servers using them at once would mix their input. Retry in a moment.",
+            retryable: true,
+            recoveryAction: "retry"
+        ))
+    }
+
+    private static var busyMovingFocus: SafariMCPServer.NativeInputError {
+        SafariMCPServer.NativeInputError(failure: ToolFailure(
+            code: "native_input_busy",
+            message: "Another mcp-safari server is sending native input and did not finish in time, so this call did nothing. It can move Safari's keyboard, which would send the rest of that server's input into the wrong page. Retry in a moment.",
             retryable: true,
             recoveryAction: "retry"
         ))

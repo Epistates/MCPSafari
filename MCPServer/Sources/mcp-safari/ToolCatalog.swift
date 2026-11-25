@@ -65,6 +65,13 @@ extension SafariMCPServer {
         toolDefinitions.filter { $0.annotations.readOnlyHint == true }.map(\.name)
     )
 
+    /// The tools that can move Safari's keyboard to another page: a new tab or
+    /// window takes it, `select_tab` brings its tab and window forward, and a
+    /// screenshot of a background tab shows that tab for the capture. Native
+    /// typing goes wherever the keyboard is, so these wait while any server
+    /// types; see `NativeInputLock`.
+    nonisolated static let focusMovingTools: Set<String> = ["tabs_create", "select_tab", "screenshot"]
+
     nonisolated static let toolDefinitions: [Tool] = buildToolDefinitions()
 
     private nonisolated static func buildToolDefinitions() -> [Tool] {

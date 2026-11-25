@@ -13,6 +13,15 @@ struct ToolCatalogTests {
         #expect(SafariMCPServer.readOnlyTools == ["status", "tabs_context", "snapshot", "read_page", "find", "wait"])
     }
 
+    /// Another server's native typing waits for none of the others, so a tool
+    /// missing here could take the keyboard from under its text.
+    @Test func theToolsThatCanMoveSafarisKeyboardAreDeclaredAndNotReadOnly() {
+        let names = Set(SafariMCPServer.toolDefinitions.map(\.name))
+        #expect(SafariMCPServer.focusMovingTools == ["tabs_create", "select_tab", "screenshot"])
+        #expect(SafariMCPServer.focusMovingTools.isSubset(of: names))
+        #expect(SafariMCPServer.focusMovingTools.isDisjoint(with: SafariMCPServer.readOnlyTools))
+    }
+
     // read_console and read_network are readOnlyHint true until `clear` was noticed
     // to empty the buffer they read.
     @Test func noReadOnlyToolTakesAnArgumentThatClearsOrChangesAnything() {

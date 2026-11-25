@@ -122,6 +122,100 @@ struct NativeInputLockTests {
         #expect(cancelled, "a cancelled call kept waiting for the lock")
     }
 
+    /// Holds the lock in a task until the returned closure is called.
+    private func hold(_ url: URL, shared: Bool = false) async -> (release: () async throws -> Void, task: Task<Void, Error>) {
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        let (entered, signalEntered) = AsyncStream<Void>.makeStream()
+        let task = Task {
+            try await NativeInputLock.withLock(at: url, timeout: 10, shared: shared) {
+                signalEntered.yield()
+                for await _ in gate { break }
+            }
+        }
+        for await _ in entered { break }
+        return ({ open.yield(); try await task.value }, task)
+    }
+
+    @Test func callsThatMoveTheKeyboardDoNotWaitForEachOther() async throws {
+        let url = makeURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let first = await hold(url, shared: true)
+
+        let ran = OSAllocatedFlag()
+        try await NativeInputLock.withLock(at: url, timeout: 0.5, shared: true) { ran.set() }
+        try await first.release()
+
+        #expect(ran.value)
+    }
+
+    @Test func aCallThatMovesTheKeyboardWaitsWhileAServerTypes() async throws {
+        let url = makeURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let log = Log()
+        let typing = await hold(url)
+
+        let move = Task {
+            try await SafariMCPServer.whileNoServerTypes("tabs_create", timeout: 10, lockURL: url) {
+                await log.add("new window")
+            }
+        }
+        // Long enough for a call that was not held back to have got in.
+        try await Task.sleep(for: .milliseconds(150))
+        await log.add("typing done")
+        try await typing.release()
+        try await move.value
+
+        #expect(await log.entries == ["typing done", "new window"])
+    }
+
+    @Test func typingWaitsForACallThatIsMovingTheKeyboard() async throws {
+        let url = makeURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let log = Log()
+        let moving = await hold(url, shared: true)
+
+        let typing = Task {
+            try await NativeInputLock.withLock(at: url, timeout: 10) { await log.add("typed") }
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        await log.add("tab switched")
+        try await moving.release()
+        try await typing.value
+
+        #expect(await log.entries == ["tab switched", "typed"])
+    }
+
+    @Test func aCallThatMovesTheKeyboardIsRefusedUnrunWhenTypingOutlastsIt() async throws {
+        let url = makeURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let typing = await hold(url)
+
+        let ran = OSAllocatedFlag()
+        let refused = await failure {
+            try await SafariMCPServer.whileNoServerTypes("select_tab", timeout: 0.2, lockURL: url) { ran.set() }
+        }
+        try await typing.release()
+
+        #expect(refused?.code == "native_input_busy")
+        #expect(refused?.retryable == true)
+        #expect(refused?.message.contains("this call did nothing") == true)
+        #expect(!ran.value)
+    }
+
+    @Test func otherCallsDoNotWaitForTyping() async throws {
+        let url = makeURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let typing = await hold(url)
+
+        let ran = OSAllocatedFlag()
+        for tool in ["navigate", "read_page", "click"] {
+            try await SafariMCPServer.whileNoServerTypes(tool, timeout: 0.2, lockURL: url) { ran.set() }
+        }
+        try await typing.release()
+
+        #expect(ran.value)
+    }
+
     @Test func theLockFileLivesBesideTheTokens() {
         #expect(NativeInputLock.defaultURL.deletingLastPathComponent().standardizedFileURL
             == WebSocketBridge.applicationSupportDirectoryURL.standardizedFileURL)
