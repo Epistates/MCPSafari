@@ -28,17 +28,37 @@ enum UserActivity {
         WebSocketBridge.applicationSupportDirectoryURL.appendingPathComponent("native-input.last")
     }
 
-    /// The input a person makes: keys, clicks, pointer moves and scrolls.
-    private static let inputEventTypes: [CGEventType] = [
-        .keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+    /// The pointer input a person makes: clicks, moves and scrolls.
+    private static let pointerEventTypes: [CGEventType] = [
+        .leftMouseDown, .rightMouseDown, .otherMouseDown,
         .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel,
     ]
 
     /// Seconds since the last keyboard or pointer event, posted or real.
     static func secondsSinceAnyInput() -> Double {
-        inputEventTypes
+        (pointerEventTypes + [.keyDown, .flagsChanged])
             .map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }
             .min() ?? .infinity
+    }
+
+    /// Seconds since the last pointer event. Native typing posts only keys, so
+    /// any pointer event after it starts is a person's. About 20 microseconds,
+    /// so typing asks before every character.
+    static func secondsSincePointerInput() -> Double {
+        pointerEventTypes
+            .map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }
+            .min() ?? .infinity
+    }
+
+    /// Typing stopped because someone used the pointer partway through, usually
+    /// on the way to a click somewhere else, which would move the keyboard.
+    static func pointerUsedWhileTyping(delivered: Int, of total: Int) -> SafariMCPServer.NativeInputError {
+        SafariMCPServer.NativeInputError(failure: ToolFailure(
+            code: "native_input_user_active",
+            message: "Someone used the mouse or trackpad during native input, so typing stopped. Delivered \(delivered) of \(total) characters before that. Tell the user before retrying: a retry sends the whole input again.",
+            retryable: false,
+            recoveryAction: "ask_user"
+        ))
     }
 
     /// Notes that this server has just posted native input. Called while holding

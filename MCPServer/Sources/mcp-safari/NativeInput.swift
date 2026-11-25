@@ -106,17 +106,22 @@ extension SafariMCPServer {
         /// address bar or the find bar holding it, and a click in another tab or
         /// window moves it to another page.
         let keyboardPlace: @Sendable () -> KeyboardPlace
+        /// Seconds since the last pointer event. Typing posts none, so one
+        /// newer than the typing is a person reaching for the mouse.
+        let secondsSincePointerInput: @Sendable () -> Double
         let postText: @Sendable (String) throws -> Void
         let postKey: @Sendable (CGKeyCode, CGEventFlags) throws -> Void
 
         init(
             safariIsFrontmost: @escaping @Sendable () -> Bool,
             keyboardPlace: @escaping @Sendable () -> KeyboardPlace = { .unknown },
+            secondsSincePointerInput: @escaping @Sendable () -> Double = { .infinity },
             postText: @escaping @Sendable (String) throws -> Void,
             postKey: @escaping @Sendable (CGKeyCode, CGEventFlags) throws -> Void
         ) {
             self.safariIsFrontmost = safariIsFrontmost
             self.keyboardPlace = keyboardPlace
+            self.secondsSincePointerInput = secondsSincePointerInput
             self.postText = postText
             self.postKey = postKey
         }
@@ -129,6 +134,7 @@ extension SafariMCPServer {
             return NativeKeyboard(
                 safariIsFrontmost: { SafariMCPServer.safariIsActive() },
                 keyboardPlace: { SafariMCPServer.keyboardPlace() },
+                secondsSincePointerInput: { UserActivity.secondsSincePointerInput() },
                 postText: { try SafariMCPServer.postText($0, source: box.source) },
                 postKey: { try SafariMCPServer.postKey(code: $0, flags: $1, source: box.source) }
             )
@@ -228,6 +234,16 @@ extension SafariMCPServer {
         /// otherwise carry on blind. After a submit key the page may have
         /// navigated, which can make it a new page to Accessibility, so only the
         /// checks before it compare pages.
+        let typingStarted = ProcessInfo.processInfo.systemUptime
+        /// Someone reaching for the mouse is usually about to click somewhere
+        /// else, which moves the keyboard, so typing stops before their click
+        /// rather than at the focus check after it.
+        func ensureNoPointerInput() throws {
+            if keyboard.secondsSincePointerInput() < ProcessInfo.processInfo.systemUptime - typingStarted {
+                throw UserActivity.pointerUsedWhileTyping(delivered: delivered, of: characters.count)
+            }
+        }
+
         func ensureFocus(samePage: Bool = true) throws {
             if let problem = keyboard.focusProblem(stayingIn: samePage ? startingPage : nil).problem {
                 throw NativeInputError(failure: nativeFocusFailure(
@@ -251,6 +267,7 @@ extension SafariMCPServer {
                 try Task.checkCancellation()
                 try checkNativeDeadline(deadline)
                 if index > 0, index % nativeFocusCheckInterval == 0 { try ensureFocus() }
+                try ensureNoPointerInput()
                 try keyboard.postText(String(character))
                 delivered += 1
                 try await nativeKeystrokePause()
@@ -261,6 +278,7 @@ extension SafariMCPServer {
                 // in the wrong place, so it is not sent on the strength of a check
                 // made up to fifteen characters ago.
                 try ensureFocus()
+                try ensureNoPointerInput()
                 try keyboard.postKey(submitKeyCode, [])
                 try await nativeKeystrokePause()
             }

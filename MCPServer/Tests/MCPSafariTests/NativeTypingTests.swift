@@ -96,6 +96,8 @@ struct NativeTypingTests {
         /// Where Accessibility finds the keyboard at each check, counted from
         /// one; `.unknown`, the default, is Accessibility being unable to say.
         let place: @Sendable (Int) -> SafariMCPServer.KeyboardPlace
+        /// Seconds since the last pointer event, given how many events are out.
+        let pointer: @Sendable (Int) -> Double
 
         /// The page the text is typed into, and another one.
         static let page = SafariMCPServer.PageIdentity(element: NSNumber(value: 1))
@@ -104,10 +106,12 @@ struct NativeTypingTests {
         init(
             loseFocusOnCheck: Int? = nil,
             place: @escaping @Sendable (Int) -> SafariMCPServer.KeyboardPlace = { _ in .unknown },
+            pointer: @escaping @Sendable (Int) -> Double = { _ in .infinity },
             onText: (@Sendable (Int) -> Void)? = nil
         ) {
             self.loseFocusOnCheck = loseFocusOnCheck
             self.place = place
+            self.pointer = pointer
             self.onText = onText
         }
 
@@ -146,6 +150,7 @@ struct NativeTypingTests {
                     }
                     return place(check)
                 },
+                secondsSincePointerInput: { [self] in pointer(lock.withLock { events.count }) },
                 postText: { [self] text in
                     let count = lock.withLock { () -> Int in
                         events.append(text)
@@ -312,6 +317,44 @@ struct NativeTypingTests {
 
         #expect(fake.posted.count == 40)
         #expect(message == "Typed 40 character(s) with native input")
+    }
+
+    // MARK: - Someone using the pointer
+
+    // Native typing posts only keys, so a pointer event after it starts is a
+    // person's, usually on the way to a click somewhere else.
+
+    @Test func theMouseMovingMidTextStopsTheTypingBeforeTheNextCharacter() async throws {
+        let fake = FakeKeyboard(pointer: { $0 >= 7 ? 0 : .infinity })
+        let input = try plan(["text": .string(String(repeating: "x", count: 100))])
+
+        let failed = await failure { try await SafariMCPServer.typeNativeText(input, keyboard: fake.keyboard) }
+
+        #expect(fake.posted.count == 7)
+        #expect(failed?.code == "native_input_user_active")
+        #expect(failed?.retryable == false)
+        #expect(failed?.message.contains("Delivered 7 of 100 characters") == true)
+    }
+
+    @Test func theSubmitKeyIsNotSentOnceSomeoneHasMovedTheMouse() async throws {
+        let fake = FakeKeyboard(pointer: { $0 >= 5 ? 0 : .infinity })
+        let input = try plan(["text": "hello", "submitKey": "Enter"])
+
+        let failed = await failure { try await SafariMCPServer.typeNativeText(input, keyboard: fake.keyboard) }
+
+        #expect(fake.posted == ["h", "e", "l", "l", "o"], "Enter was sent: \(fake.posted)")
+        #expect(failed?.code == "native_input_user_active")
+    }
+
+    @Test func pointerInputFromBeforeTheTypingDoesNotStopIt() async throws {
+        // A pointer event a second before the typing began, such as the agent's
+        // own native click on the field.
+        let fake = FakeKeyboard(pointer: { _ in 1 })
+        let input = try plan(["text": .string(String(repeating: "x", count: 40)), "submitKey": "Enter"])
+
+        _ = try await SafariMCPServer.typeNativeText(input, keyboard: fake.keyboard)
+
+        #expect(fake.posted.count == 41)
     }
 
     @Test func whenAccessibilityCannotAnswerTypingGoesAheadAsItDidBefore() async throws {
