@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CryptoKit
 import Foundation
 
 // MARK: - Giving the page the keyboard
@@ -28,12 +29,17 @@ extension SafariMCPServer {
         let height: Double
         /// The tab's title, which Safari also shows as its window's title.
         let title: String?
+        /// SHA-256, in hex, of the tab's address without its fragment. A digest
+        /// rather than the address, so a secret in it never crosses the bridge.
+        let urlDigest: String?
     }
 
     /// A Safari window as Accessibility reports it.
     struct NativeWindowSummary: Equatable, Sendable {
         let frame: CGRect
         let title: String?
+        /// The address its page shows, from the page's own web area.
+        var url: String? = nil
     }
 
     /// Who has the keyboard when it isn't the page.
@@ -71,6 +77,8 @@ extension SafariMCPServer {
     struct NativePageFocus: Sendable {
         /// Safari's focused window, or nil when Accessibility can't say.
         let frontWindow: @Sendable () -> NativeWindowSummary?
+        /// Every Safari window, to make sure only one of them is the agent's.
+        let windows: @Sendable () -> [NativeWindowSummary]
         /// Asks Safari to focus the web area of its focused window. False when
         /// there was no web area to ask, or Safari refused.
         let focusPage: @Sendable () -> Bool
@@ -81,6 +89,7 @@ extension SafariMCPServer {
 
         static let live = NativePageFocus(
             frontWindow: { SafariMCPServer.safariFocusedWindow().map(SafariMCPServer.windowSummary) },
+            windows: { SafariMCPServer.safariWindows().map(SafariMCPServer.windowSummary) },
             focusPage: { SafariMCPServer.focusSafariWebArea() },
             focusedElement: { SafariMCPServer.focusedElementSummary() },
             settle: { try? await Task.sleep(nanoseconds: 150_000_000) }
@@ -91,9 +100,11 @@ extension SafariMCPServer {
     /// still count as the same window. The two round differently.
     nonisolated static let windowFrameTolerance: Double = 2
 
-    /// Whether the window Accessibility has in front is the agent's: the same
-    /// frame, and the same title when the tab has one. The title is the selected
-    /// tab's, so it also says the agent's tab is the one showing.
+    /// Whether a window is the agent's: the same frame, the same title when the
+    /// tab has one, and the same address. The title and the address are the
+    /// selected tab's, so they also say the agent's tab is the one showing. Two
+    /// windows can still agree on all three, such as two maximized windows on the
+    /// same page, which is why the caller also checks that only one does.
     nonisolated static func windowIsTarget(_ window: NativeWindowSummary, _ target: NativeTarget) -> Bool {
         let frame = window.frame
         let close = abs(frame.minX - target.left) <= windowFrameTolerance
@@ -101,8 +112,18 @@ extension SafariMCPServer {
             && abs(frame.width - target.width) <= windowFrameTolerance
             && abs(frame.height - target.height) <= windowFrameTolerance
         guard close else { return false }
-        guard let title = target.title, !title.isEmpty else { return true }
-        return window.title == title
+        if let title = target.title, !title.isEmpty, window.title != title { return false }
+        if let digest = target.urlDigest, !digest.isEmpty {
+            guard let url = window.url, urlDigest(url) == digest else { return false }
+        }
+        return true
+    }
+
+    /// The digest the extension sends for a tab's address, made the same way:
+    /// SHA-256 of everything before the first `#`, in lowercase hex.
+    nonisolated static func urlDigest(_ url: String) -> String {
+        let page = url.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? url
+        return SHA256.hash(data: Data(page.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Which control has the keyboard, in the terms a person would use.
@@ -165,6 +186,17 @@ extension SafariMCPServer {
         )
     }
 
+    /// The refusal when more than one window could be the agent's. Focusing the
+    /// wrong one would hand the keyboard to a page the user has open.
+    nonisolated static func ambiguousWindowFailure() -> ToolFailure {
+        ToolFailure(
+            code: "native_input_focus_failed",
+            message: "More than one Safari window shows the agent's page at the same size and position, so MCPSafari can't tell which one is the agent's. It didn't move the keyboard and nothing was sent. Ask the user to close or move the other window, or to click in the agent's page, then retry.",
+            retryable: true,
+            recoveryAction: "ask_user"
+        )
+    }
+
     /// The refusal when the window in front isn't the agent's. Focusing the page
     /// in front then would hand the keyboard to whatever the user has open.
     nonisolated static func wrongWindowFailure(_ window: NativeWindowSummary?) -> ToolFailure {
@@ -211,6 +243,9 @@ extension SafariMCPServer {
         let front = pageFocus.frontWindow()
         guard let front, windowIsTarget(front, target) else {
             throw NativeInputError(failure: wrongWindowFailure(front))
+        }
+        guard pageFocus.windows().filter({ windowIsTarget($0, target) }).count == 1 else {
+            throw NativeInputError(failure: ambiguousWindowFailure())
         }
 
         if pageFocus.focusPage() {
@@ -277,14 +312,32 @@ extension SafariMCPServer {
         return element(attribute(app, kAXFocusedWindowAttribute))
     }
 
-    nonisolated static func windowSummary(_ window: AXUIElement) -> NativeWindowSummary {
-        NativeWindowSummary(frame: frame(of: window) ?? .null, title: string(window, kAXTitleAttribute))
+    nonisolated static func safariWindows() -> [AXUIElement] {
+        guard let app = safariApplication(),
+              let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement]
+        else { return [] }
+        return windows
     }
 
-    /// The page of Safari's focused window: its largest web area, since the
-    /// window can also hold small ones, such as an extension's popover.
+    nonisolated static func windowSummary(_ window: AXUIElement) -> NativeWindowSummary {
+        let page = largestWebArea(in: window)
+        let url = page.flatMap { attribute($0, kAXURLAttribute) as? URL }
+        return NativeWindowSummary(
+            frame: frame(of: window) ?? .null,
+            title: string(window, kAXTitleAttribute),
+            url: url?.absoluteString
+        )
+    }
+
+    /// Asks Safari to focus the page of its focused window.
     nonisolated static func focusSafariWebArea() -> Bool {
-        guard let window = safariFocusedWindow() else { return false }
+        guard let window = safariFocusedWindow(), let page = largestWebArea(in: window) else { return false }
+        return AXUIElementSetAttributeValue(page, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+    }
+
+    /// A window's page: its largest web area, since the window can also hold
+    /// small ones, such as an extension's popover.
+    private nonisolated static func largestWebArea(in window: AXUIElement) -> AXUIElement? {
         var largest: (element: AXUIElement, area: CGFloat)?
         var level = [window]
         // The page sits a few levels below the window; a bound keeps a cyclic or
@@ -303,8 +356,7 @@ extension SafariMCPServer {
             }
             level = next
         }
-        guard let page = largest?.element else { return false }
-        return AXUIElementSetAttributeValue(page, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+        return largest?.element
     }
 
     nonisolated static func focusedElementSummary() -> FocusedElementSummary? {

@@ -9,10 +9,16 @@ import Testing
 struct NativePageFocusTests {
     private typealias Server = SafariMCPServer
 
-    private static let target = Server.NativeTarget(left: 40, top: 60, width: 1200, height: 900, title: "Nominations")
+    private static let address = "https://forms.example/apply"
+    /// What the extension sends for that address, from Node's SHA-256.
+    private static let addressDigest = "fbb7c5526aee5696b9af4a3c873d6a803163ff0ad4b6a80c8ac82995c8dfa155"
+    private static let target = Server.NativeTarget(
+        left: 40, top: 60, width: 1200, height: 900, title: "Nominations", urlDigest: addressDigest
+    )
     private static let targetWindow = Server.NativeWindowSummary(
         frame: CGRect(x: 40, y: 60, width: 1200, height: 900),
-        title: "Nominations"
+        title: "Nominations",
+        url: address
     )
 
     // MARK: Which window
@@ -20,20 +26,37 @@ struct NativePageFocusTests {
     @Test func theAgentsWindowIsKnownByItsFrameAndTitle() {
         #expect(Server.windowIsTarget(Self.targetWindow, Self.target))
         // The two sides round differently.
-        let rounded = Server.NativeWindowSummary(frame: CGRect(x: 41, y: 59, width: 1201, height: 899), title: "Nominations")
+        let rounded = Server.NativeWindowSummary(
+            frame: CGRect(x: 41, y: 59, width: 1201, height: 899), title: "Nominations", url: Self.address + "#dates"
+        )
         #expect(Server.windowIsTarget(rounded, Self.target))
     }
 
     @Test func anotherWindowIsNotTheAgentsEvenWithTheSameTitleOrFrame() {
-        let moved = Server.NativeWindowSummary(frame: CGRect(x: 80, y: 100, width: 1200, height: 900), title: "Nominations")
+        let moved = Server.NativeWindowSummary(
+            frame: CGRect(x: 80, y: 100, width: 1200, height: 900), title: "Nominations", url: Self.address
+        )
         #expect(!Server.windowIsTarget(moved, Self.target))
         // Same frame, another tab showing: the agent's tab isn't the one in front.
-        let otherTab = Server.NativeWindowSummary(frame: Self.targetWindow.frame, title: "Inbox")
+        let otherTab = Server.NativeWindowSummary(frame: Self.targetWindow.frame, title: "Inbox", url: Self.address)
         #expect(!Server.windowIsTarget(otherTab, Self.target))
+        // Same frame and title, another page.
+        let otherPage = Server.NativeWindowSummary(
+            frame: Self.targetWindow.frame, title: "Nominations", url: "https://forms.example/apply/2"
+        )
+        #expect(!Server.windowIsTarget(otherPage, Self.target))
+        // An address Accessibility won't give can't be confirmed.
+        let unread = Server.NativeWindowSummary(frame: Self.targetWindow.frame, title: "Nominations")
+        #expect(!Server.windowIsTarget(unread, Self.target))
+    }
+
+    @Test func theAddressDigestMatchesTheExtensionsAndIgnoresTheFragment() {
+        #expect(Server.urlDigest(Self.address) == Self.addressDigest)
+        #expect(Server.urlDigest(Self.address + "#section") == Self.addressDigest)
     }
 
     @Test func aTabWithNoTitleYetIsMatchedByFrameAlone() {
-        let untitled = Server.NativeTarget(left: 40, top: 60, width: 1200, height: 900, title: "")
+        let untitled = Server.NativeTarget(left: 40, top: 60, width: 1200, height: 900, title: "", urlDigest: "")
         let window = Server.NativeWindowSummary(frame: Self.targetWindow.frame, title: "Loading")
         #expect(Server.windowIsTarget(window, untitled))
     }
@@ -118,7 +141,7 @@ struct NativePageFocusTests {
 
     private static func response(_ success: Bool, target: Server.NativeTarget? = Self.target, code: String = "native_input_focus_failed") -> BridgeResponse {
         let data = target.map { t in
-            AnyCodable(#"{"nativeTarget":{"left":\#(t.left),"top":\#(t.top),"width":\#(t.width),"height":\#(t.height),"title":"\#(t.title ?? "")"}}"#)
+            AnyCodable(#"{"nativeTarget":{"left":\#(t.left),"top":\#(t.top),"width":\#(t.width),"height":\#(t.height),"title":"\#(t.title ?? "")","urlDigest":"\#(t.urlDigest ?? "")"}}"#)
         }
         return BridgeResponse(
             id: "r1",
@@ -136,11 +159,13 @@ struct NativePageFocusTests {
     private static func focus(
         _ calls: Calls,
         front: Server.NativeWindowSummary? = targetWindow,
+        others: [Server.NativeWindowSummary] = [],
         moves: Bool = true,
         holder: Server.FocusedElementSummary? = safari(description: "Smart Search Field")
     ) -> Server.NativePageFocus {
         Server.NativePageFocus(
             frontWindow: { front },
+            windows: { (front.map { [$0] } ?? []) + others },
             focusPage: { calls.focus(); return moves },
             focusedElement: { holder },
             settle: {}
@@ -186,6 +211,26 @@ struct NativePageFocusTests {
             #expect(calls.focusRequests == 0)
             #expect(calls.preparations == [false])
         }
+    }
+
+    /// Two maximized windows on the same page agree on frame, title and address,
+    /// and then there's no telling which is the agent's.
+    @Test func nothingIsFocusedWhenAnotherWindowLooksJustLikeTheAgents() async throws {
+        let calls = Calls()
+        await #expect {
+            _ = try await Server.prepareNativeInput(
+                pointer: true,
+                pageFocus: Self.focus(calls, others: [Self.targetWindow])
+            ) { verified in
+                calls.prepare(verified)
+                return Self.response(false)
+            }
+        } throws: { error in
+            (error as? Server.NativeInputError)?.failure.message
+                .hasPrefix("More than one Safari window shows the agent's page") == true
+        }
+        #expect(calls.focusRequests == 0)
+        #expect(calls.preparations == [false])
     }
 
     @Test func keysAreRefusedWithWhereTheKeyboardIsWhenItWontMove() async throws {

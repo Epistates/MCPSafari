@@ -466,8 +466,15 @@ function requireTopFrameTarget(params, reason = NATIVE_INPUT_TOP_FRAME_ONLY) {
 // When the page refuses native input because Safari's own controls hold the
 // keyboard, the server can move it into the page through Accessibility, but
 // only once it has confirmed that the window in front is this tab's. The
-// refusal carries what it confirms against: the window's frame, and the tab's
-// title, which Safari shows as the window's. An older server ignores them.
+// refusal carries what it confirms against: the window's frame, the tab's
+// title, which Safari shows as the window's, and a digest of the tab's address
+// without its fragment, so a secret in the address never crosses the bridge.
+// An older server ignores them.
+async function sha256Hex(text) {
+    const digest = await crypto.subtle.digest("SHA-256", utf8(text));
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function withNativeTarget(tabId, prepare) {
     try {
         return await prepare();
@@ -483,6 +490,7 @@ async function withNativeTarget(tabId, prepare) {
                         width: win.width,
                         height: win.height,
                         title: tab.title || "",
+                        urlDigest: tab.url ? await sha256Hex(tab.url.split("#")[0]) : "",
                     },
                 };
             } catch (_) { /* the refusal stands as it was */ }

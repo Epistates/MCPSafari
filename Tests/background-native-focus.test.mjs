@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 
+import { createHash } from "node:crypto";
+
+import { handshakeGlobals } from "./helpers/bridge-handshake.mjs";
 import { backgroundScriptSource } from "./helpers/extension-sources.mjs";
 
 const source = backgroundScriptSource();
@@ -10,7 +13,7 @@ const source = backgroundScriptSource();
 // The server can move the keyboard into the page through Accessibility, but only
 // after it has confirmed that the window in front is this tab's, so the refusal
 // carries the window's frame and the tab's title for it to check.
-function loadBackground({ contentReply }) {
+function loadBackground({ contentReply, url = "https://forms.example/apply" }) {
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         runtime: {
@@ -25,7 +28,7 @@ function loadBackground({ contentReply }) {
         },
         tabs: {
             query: async () => [{ id: 7, active: true, windowId: 3 }],
-            get: async (id) => ({ id, active: true, windowId: 3, url: "https://forms.example/apply", title: "Nominations" }),
+            get: async (id) => ({ id, active: true, windowId: 3, url, title: "Nominations" }),
             update: async () => {},
             sendMessage: async (_tabId, message) => contentReply(message.action),
             onUpdated: { addListener() {}, removeListener() {} },
@@ -33,13 +36,15 @@ function loadBackground({ contentReply }) {
             onActivated: { addListener() {} },
         },
         action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setBadgeTextColor: async () => {}, setTitle: async () => {} },
-        webNavigation: { getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: "https://forms.example/apply" }] },
+        webNavigation: { getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url }] },
         windows: {
             update: async () => {},
             get: async (id) => ({ id, left: 40, top: 60, width: 1200, height: 900, state: "normal", focused: true }),
         },
     };
     const context = vm.createContext({
+        // The address goes to the server as a SHA-256 digest, which needs WebCrypto.
+        ...handshakeGlobals,
         browser,
         clearTimeout() {},
         console: { error() {}, log() {}, warn() {} },
@@ -78,10 +83,24 @@ for (const [action, params] of [
         assert.equal(response.success, false);
         assert.equal(response.errorCode, "native_input_focus_failed");
         assert.deepEqual(JSON.parse(response.data), {
-            nativeTarget: { left: 40, top: 60, width: 1200, height: 900, title: "Nominations" },
+            nativeTarget: { left: 40, top: 60, width: 1200, height: 900, title: "Nominations", urlDigest: digest("https://forms.example/apply") },
         });
     });
 }
+
+const digest = (text) => createHash("sha256").update(text).digest("hex");
+
+// The address itself never crosses the bridge, and its fragment is left out:
+// the server compares against the page's address, which a jump within the page
+// doesn't change.
+test("the tab's address goes to the server as a digest without its fragment", async () => {
+    const request = loadBackground({ contentReply: unfocused, url: "https://forms.example/apply?token=s3cret#dates" });
+
+    const response = await request("native_press_key", { key: "a" });
+
+    assert.equal(JSON.parse(response.data).nativeTarget.urlDigest, digest("https://forms.example/apply?token=s3cret"));
+    assert.equal(response.data.includes("s3cret"), false);
+});
 
 test("a native refusal for any other reason carries nothing for the server", async () => {
     const request = loadBackground({
