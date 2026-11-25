@@ -1,6 +1,7 @@
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import os
 import MCP
 import Testing
 @testable import MCPSafari
@@ -348,8 +349,16 @@ struct NativeTypingTests {
 
     @Test func pointerInputFromBeforeTheTypingDoesNotStopIt() async throws {
         // A pointer event a second before the typing began, such as the agent's
-        // own native click on the field.
-        let fake = FakeKeyboard(pointer: { _ in 1 })
+        // own native click on the field, however slowly the typing goes.
+        let firstAsked = OSAllocatedUnfairLock<Double?>(initialState: nil)
+        let fake = FakeKeyboard(pointer: { _ in
+            let now = ProcessInfo.processInfo.systemUptime
+            let start = firstAsked.withLock { first in
+                if first == nil { first = now }
+                return first ?? now
+            }
+            return now - start + 1
+        })
         let input = try plan(["text": .string(String(repeating: "x", count: 40)), "submitKey": "Enter"])
 
         _ = try await SafariMCPServer.typeNativeText(input, keyboard: fake.keyboard)
