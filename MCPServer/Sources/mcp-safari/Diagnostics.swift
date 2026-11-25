@@ -295,6 +295,7 @@ enum Doctor {
         port: UInt16 = 8089,
         portCount: UInt16 = WebSocketBridge.defaultPortCount,
         registration: ExtensionRegistration = .unknown,
+        registeredCopies: [String]? = nil,
         tokenRootOverride: String? = WebSocketBridge.tokenRootOverride()
     ) -> DoctorReport {
         let extensionRegistered = registration.isRegistered
@@ -403,6 +404,17 @@ enum Doctor {
             ))
         }
 
+        // Safari can run every copy PlugInKit has registered, not just the one it
+        // names first. Xcode registers each app it builds, so a build left in
+        // DerivedData beside the installed app puts a second copy in every
+        // profile. Each copy numbers tabs its own way and both connect as the
+        // same profile, so a server's tab handles change from one call to the
+        // next and calls fail as if the tab had closed. A copy stops running once
+        // it is unregistered.
+        if let registeredCopies, !registeredCopies.isEmpty {
+            checks.append(extensionCopiesCheck(registeredCopies, installedApp: paths.appURL))
+        }
+
         checks.append(tokenFileCheck(
             in: paths.tokenDirectoryURL,
             ports: port...WebSocketBridge.lastPort(from: port, count: portCount)
@@ -450,6 +462,14 @@ enum Doctor {
         return .registered(bundlePath: parseExtensionPath(from: output))
     }
 
+    /// Every copy of the extension PlugInKit knows of. Without `-A` and `-D` it
+    /// answers with one copy, the newest, and a second copy of the same version
+    /// stays out of sight. nil when PlugInKit could not be asked.
+    static func registeredExtensionCopies() -> [String]? {
+        pluginkitOutput(["-m", "-A", "-D", "-v", "-i", MCPSafariProduct.extensionBundleIdentifier])
+            .map(parseExtensionPaths(from:))
+    }
+
     /// The path is the tail of the line, after the date, and can contain spaces
     /// ("MCPSafari Extension.appex"), so it is taken from the first path
     /// separator rather than by splitting on whitespace.
@@ -465,6 +485,48 @@ enum Doctor {
             let path = line[start...].trimmingCharacters(in: .whitespacesAndNewlines)
             return path.isEmpty ? nil : path
         }
+    }
+
+    static let launchServicesRegister =
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+    static func extensionCopiesCheck(_ copies: [String], installedApp: URL) -> DiagnosticCheck {
+        guard copies.count > 1 else {
+            return .init(
+                code: "extension_copies",
+                status: .ok,
+                message: "One copy of the Safari extension is registered.",
+                recovery: nil
+            )
+        }
+        let installedPrefix = installedApp.path + "/"
+        let installedIsRegistered = copies.contains { $0.hasPrefix(installedPrefix) }
+        // With the installed copy among them, the rest are the extras. Without
+        // it there's no telling which one is wanted, so each gets its command.
+        let extras = installedIsRegistered ? copies.filter { !$0.hasPrefix(installedPrefix) } : copies
+        let commands = extras.map { "\(launchServicesRegister) -u \(shellQuoted(containingApp(of: $0)))" }
+        return .init(
+            code: "extension_copies",
+            status: .warning,
+            message: "\(copies.count) copies of the Safari extension are registered: "
+                + copies.joined(separator: ", ")
+                + ". Safari can run each of them, so tab handles change between calls and calls fail "
+                + "as if the tab had closed.",
+            recovery: (installedIsRegistered
+                ? "Unregister the copies outside \(installedApp.path): "
+                : "Keep the copy you use and unregister the others: ")
+                + commands.joined(separator: " ; ")
+        )
+    }
+
+    /// The app holding an extension, which is what Launch Services registered.
+    private static func containingApp(of extensionPath: String) -> String {
+        let suffix = "/Contents/PlugIns/MCPSafari Extension.appex"
+        return extensionPath.hasSuffix(suffix) ? String(extensionPath.dropLast(suffix.count)) : extensionPath
+    }
+
+    private static func shellQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
 
     private static func pluginkitOutput(_ arguments: [String]) -> String? {
