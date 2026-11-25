@@ -23,7 +23,7 @@ struct NativePageFocusTests {
 
     // MARK: Which window
 
-    @Test func theAgentsWindowIsKnownByItsFrameAndTitle() {
+    @Test func theAgentsWindowIsKnownByItsSizeTitleAndAddress() {
         #expect(Server.windowIsTarget(Self.targetWindow, Self.target))
         // The two sides round differently.
         let rounded = Server.NativeWindowSummary(
@@ -52,11 +52,21 @@ struct NativePageFocusTests {
         #expect(!Server.windowIsTarget(otherTab, Self.target))
     }
 
-    @Test func anotherWindowIsNotTheAgentsEvenWithTheSameTitleOrFrame() {
-        let moved = Server.NativeWindowSummary(
-            frame: CGRect(x: 80, y: 100, width: 1200, height: 900), title: "Nominations", url: Self.address
+    /// Safari measures a window's top from the top of its own display, so on a
+    /// second display that isn't level with the main one the extension's
+    /// position and Accessibility's differ (974 points on the sitting's Mac).
+    @Test func theAgentsWindowIsKnownOnADisplayThatIsNotLevelWithTheMainOne() {
+        let elsewhere = Server.NativeWindowSummary(
+            frame: CGRect(x: 40, y: -914, width: 1200, height: 900), title: "Nominations", url: Self.address
         )
-        #expect(!Server.windowIsTarget(moved, Self.target))
+        #expect(Server.windowIsTarget(elsewhere, Self.target))
+    }
+
+    @Test func anotherWindowIsNotTheAgentsEvenWithTheSameTitleOrSize() {
+        let resized = Server.NativeWindowSummary(
+            frame: CGRect(x: 40, y: 60, width: 1000, height: 900), title: "Nominations", url: Self.address
+        )
+        #expect(!Server.windowIsTarget(resized, Self.target))
         // Same frame, another tab showing: the agent's tab isn't the one in front.
         let otherTab = Server.NativeWindowSummary(frame: Self.targetWindow.frame, title: "Inbox", url: Self.address)
         #expect(!Server.windowIsTarget(otherTab, Self.target))

@@ -100,18 +100,20 @@ extension SafariMCPServer {
     /// still count as the same window. The two round differently.
     nonisolated static let windowFrameTolerance: Double = 2
 
-    /// Whether a window is the agent's: the same frame, the same title when the
+    /// Whether a window is the agent's: the same size, the same title when the
     /// tab has one, and the same address. The title and the address are the
     /// selected tab's, so they also say the agent's tab is the one showing. Two
     /// windows can still agree on all three, such as two maximized windows on the
     /// same page, which is why the caller also checks that only one does.
+    ///
+    /// The position isn't compared. Safari measures a window's top from the top
+    /// of the display it's on, so on a second display that isn't level with the
+    /// main one the extension's position and Accessibility's never agree.
     nonisolated static func windowIsTarget(_ window: NativeWindowSummary, _ target: NativeTarget) -> Bool {
         let frame = window.frame
-        let close = abs(frame.minX - target.left) <= windowFrameTolerance
-            && abs(frame.minY - target.top) <= windowFrameTolerance
-            && abs(frame.width - target.width) <= windowFrameTolerance
+        let sameSize = abs(frame.width - target.width) <= windowFrameTolerance
             && abs(frame.height - target.height) <= windowFrameTolerance
-        guard close else { return false }
+        guard sameSize else { return false }
         if let title = target.title, !title.isEmpty, !windowTitle(window.title, shows: title) { return false }
         if let digest = target.urlDigest, !digest.isEmpty {
             guard let url = window.url, urlDigest(url) == digest else { return false }
