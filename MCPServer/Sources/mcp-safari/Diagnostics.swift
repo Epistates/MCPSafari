@@ -441,7 +441,9 @@ enum Doctor {
     /// how the extension Safari actually loaded gets identified, and that is not
     /// always the one inside the installed app.
     static func extensionRegistration() -> ExtensionRegistration {
-        guard let output = pluginkitOutput() else { return .unknown }
+        guard let output = pluginkitOutput(["-m", "-v", "-i", MCPSafariProduct.extensionBundleIdentifier]) else {
+            return .unknown
+        }
         guard output.contains(MCPSafariProduct.extensionBundleIdentifier) else {
             return .notRegistered
         }
@@ -452,21 +454,24 @@ enum Doctor {
     /// ("MCPSafari Extension.appex"), so it is taken from the first path
     /// separator rather than by splitting on whitespace.
     static func parseExtensionPath(from output: String) -> String? {
-        for line in output.split(separator: "\n") {
-            guard line.contains(MCPSafariProduct.extensionBundleIdentifier),
-                  let start = line.firstIndex(of: "/")
-            else { continue }
-            let path = line[start...].trimmingCharacters(in: .whitespacesAndNewlines)
-            if !path.isEmpty { return path }
-        }
-        return nil
+        parseExtensionPaths(from: output).first
     }
 
-    private static func pluginkitOutput() -> String? {
+    static func parseExtensionPaths(from output: String) -> [String] {
+        output.split(separator: "\n").compactMap { line in
+            guard line.contains(MCPSafariProduct.extensionBundleIdentifier),
+                  let start = line.firstIndex(of: "/")
+            else { return nil }
+            let path = line[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return path.isEmpty ? nil : path
+        }
+    }
+
+    private static func pluginkitOutput(_ arguments: [String]) -> String? {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
-        process.arguments = ["-m", "-v", "-i", MCPSafariProduct.extensionBundleIdentifier]
+        process.arguments = arguments
         process.standardOutput = output
         process.standardError = Pipe()
 

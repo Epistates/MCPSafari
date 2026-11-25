@@ -357,6 +357,21 @@ struct DoctorTests {
         #expect(Doctor.parseExtensionPath(from: " (0 plug-ins)\n") == nil)
     }
 
+    /// What `pluginkit -m -A -D -v` printed on 2026-11-24 with a release build
+    /// left in DerivedData: two copies of one version, and Safari ran both. Asked
+    /// without `-A -D`, PlugInKit named only one of them.
+    @Test func everyRegisteredCopyIsRead() {
+        let stray = "/Users/someone/DerivedData/b42/Build/Products/Release/MCPSafari.app/Contents/PlugIns"
+            + "/MCPSafari Extension.appex"
+        let installed = "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+        let output = "     com.epistates.MCPSafari.Extension(0.4.1)\tA76FC9BA-4859\t2026-11-24 17:12:58 +0000\t\(stray)\n"
+            + "     com.epistates.MCPSafari.Extension(0.4.1)\t30A7A2BA-21E9\t2026-11-24 16:14:46 +0000\t\(installed)\n"
+            + " (2 plug-ins)\n"
+
+        #expect(Doctor.parseExtensionPaths(from: output) == [stray, installed])
+        #expect(Doctor.parseExtensionPaths(from: " (0 plug-ins)\n").isEmpty)
+    }
+
     private func writeBundle(
         at url: URL,
         identifier: String,
