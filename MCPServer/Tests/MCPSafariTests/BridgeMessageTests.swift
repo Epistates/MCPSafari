@@ -89,7 +89,7 @@ struct BridgeMessageTests {
     @Test func bridgeErrorsProvideRecoveryMetadata() {
         #expect(WebSocketBridge.BridgeError.notConnected.toolFailure == ToolFailure(
             code: "bridge_disconnected",
-            message: "No Safari extension connected yet. If Safari is open and the MCPSafari extension is enabled, it may still be reconnecting — call status to check or retry in a few seconds; otherwise open Safari and click the MCPSafari extension icon.",
+            message: "No Safari extension connected. If Safari is open with MCPSafari turned on, it may still be reconnecting: call status, or retry in a few seconds. Otherwise open Safari and click the MCPSafari extension icon.",
             retryable: true,
             recoveryAction: "call_status"
         ))
