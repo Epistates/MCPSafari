@@ -126,7 +126,7 @@ extension SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object([
                         "tabId": Self.tab,
-                        "bringToFront": .object(["type": .string("boolean"), "description": .string("Activate and focus the tab (default: true)")]),
+                        "bringToFront": .object(["type": .string("boolean"), "description": .string("Show the tab in its window and focus that window within Safari (default: true). It doesn't bring Safari in front of another app.")]),
                     ]),
                     "required": .array([.string("tabId")]),
                 ])

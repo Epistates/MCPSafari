@@ -19,7 +19,7 @@ This reference describes `main`, which may include tools and options not yet in 
 | `tabs_context` | List open tabs across every connected Safari profile, with handles, state, and for sites MCPSafari has reached, URLs and titles (see [Website access](#website-access)) |
 | `tabs_create` | Open a new tab, optionally with a URL, in the window of `tabId`, else of the tab pinned with `select_tab`, else in the window in front. With a URL it answers once the page has loaded, as `navigate` does. With `newWindow: true` the tab opens in a new window of its own, offset from the window in front |
 | `close_tab` | Close a tab by handle |
-| `select_tab` | Pin a tab, and its Safari profile, as the default context for future calls |
+| `select_tab` | Pin a tab, and its Safari profile, as the default context for future calls. With `bringToFront`, the default, it also shows the tab in its window and focuses that window within Safari; it doesn't bring Safari in front of another app |
 
 ### Navigation
 
