@@ -112,11 +112,19 @@ extension SafariMCPServer {
             && abs(frame.width - target.width) <= windowFrameTolerance
             && abs(frame.height - target.height) <= windowFrameTolerance
         guard close else { return false }
-        if let title = target.title, !title.isEmpty, window.title != title { return false }
+        if let title = target.title, !title.isEmpty, !windowTitle(window.title, shows: title) { return false }
         if let digest = target.urlDigest, !digest.isEmpty {
             guard let url = window.url, urlDigest(url) == digest else { return false }
         }
         return true
+    }
+
+    /// Whether a window's title is its tab's. A window of a Safari profile other
+    /// than the default one puts the profile's name first, as in
+    /// "Work \u{2014} Example Domain", so the tab's title may follow it.
+    nonisolated static func windowTitle(_ windowTitle: String?, shows tabTitle: String) -> Bool {
+        guard let windowTitle else { return false }
+        return windowTitle == tabTitle || windowTitle.hasSuffix(" \u{2014} " + tabTitle)
     }
 
     /// The digest the extension sends for a tab's address, made the same way:

@@ -32,6 +32,26 @@ struct NativePageFocusTests {
         #expect(Server.windowIsTarget(rounded, Self.target))
     }
 
+    /// Safari puts a profile's name before the page title in that profile's
+    /// windows, so an agent working in a second profile was refused in its own
+    /// window (found at the 0.4.1 sitting).
+    @Test func aWindowOfAnotherProfileIsKnownWithItsProfileNameInTheTitle() {
+        let profiled = Server.NativeWindowSummary(
+            frame: Self.targetWindow.frame, title: "mcpsafari_test \u{2014} Nominations", url: Self.address
+        )
+        #expect(Server.windowIsTarget(profiled, Self.target))
+        // The name has to be the whole of what comes first: a title that merely
+        // ends the same way is another page.
+        let longer = Server.NativeWindowSummary(
+            frame: Self.targetWindow.frame, title: "Late Nominations", url: Self.address
+        )
+        #expect(!Server.windowIsTarget(longer, Self.target))
+        let otherTab = Server.NativeWindowSummary(
+            frame: Self.targetWindow.frame, title: "mcpsafari_test \u{2014} Inbox", url: Self.address
+        )
+        #expect(!Server.windowIsTarget(otherTab, Self.target))
+    }
+
     @Test func anotherWindowIsNotTheAgentsEvenWithTheSameTitleOrFrame() {
         let moved = Server.NativeWindowSummary(
             frame: CGRect(x: 80, y: 100, width: 1200, height: 900), title: "Nominations", url: Self.address
