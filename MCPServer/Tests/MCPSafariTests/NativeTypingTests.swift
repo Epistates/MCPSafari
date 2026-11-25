@@ -93,18 +93,38 @@ struct NativeTypingTests {
         private var pageChecks = 0
         let loseFocusOnCheck: Int?
         let onText: (@Sendable (Int) -> Void)?
-        /// What Accessibility says about keyboard focus at each check, counted from
-        /// one; nil, the default, is Accessibility being unable to say.
-        let pageFocus: @Sendable (Int) -> Bool?
+        /// Where Accessibility finds the keyboard at each check, counted from
+        /// one; `.unknown`, the default, is Accessibility being unable to say.
+        let place: @Sendable (Int) -> SafariMCPServer.KeyboardPlace
+
+        /// The page the text is typed into, and another one.
+        static let page = SafariMCPServer.PageIdentity(element: NSNumber(value: 1))
+        static let otherPage = SafariMCPServer.PageIdentity(element: NSNumber(value: 2))
 
         init(
             loseFocusOnCheck: Int? = nil,
-            pageFocus: @escaping @Sendable (Int) -> Bool? = { _ in nil },
+            place: @escaping @Sendable (Int) -> SafariMCPServer.KeyboardPlace = { _ in .unknown },
             onText: (@Sendable (Int) -> Void)? = nil
         ) {
             self.loseFocusOnCheck = loseFocusOnCheck
-            self.pageFocus = pageFocus
+            self.place = place
             self.onText = onText
+        }
+
+        /// Whether the keyboard is in the page at each check, with nil for
+        /// Accessibility being unable to say.
+        convenience init(
+            loseFocusOnCheck: Int? = nil,
+            pageFocus: @escaping @Sendable (Int) -> Bool?,
+            onText: (@Sendable (Int) -> Void)? = nil
+        ) {
+            self.init(loseFocusOnCheck: loseFocusOnCheck, place: { check in
+                switch pageFocus(check) {
+                case true?: .page(Self.page)
+                case false?: .outsidePage
+                case nil: .unknown
+                }
+            }, onText: onText)
         }
 
         var posted: [String] { lock.withLock { events } }
@@ -119,12 +139,12 @@ struct NativeTypingTests {
                         return focusChecks != loseFocusOnCheck
                     }
                 },
-                focusIsInPage: { [self] in
+                keyboardPlace: { [self] in
                     let check = lock.withLock { () -> Int in
                         pageChecks += 1
                         return pageChecks
                     }
-                    return pageFocus(check)
+                    return place(check)
                 },
                 postText: { [self] text in
                     let count = lock.withLock { () -> Int in
@@ -240,6 +260,58 @@ struct NativeTypingTests {
         #expect(fake.posted == ["h", "e", "l", "l", "o"], "Enter was sent: \(fake.posted)")
         #expect(failed?.retryable == false)
         #expect(failed?.message.contains("Delivered 5 of 5 characters") == true)
+    }
+
+    // MARK: - Focus in the agent's page
+
+    // Being in some page is not enough: a click in another tab or window, by the
+    // user or by a page, moves the keyboard into that page, and the rest of the
+    // text went there.
+
+    @Test func theKeyboardMovingToAnotherPageMidTextStopsAtTheNextCheck() async throws {
+        let fake = FakeKeyboard(place: { $0 >= 2 ? .page(FakeKeyboard.otherPage) : .page(FakeKeyboard.page) })
+        let input = try plan(["text": .string(String(repeating: "x", count: 100))])
+
+        let failed = await failure { try await SafariMCPServer.typeNativeText(input, keyboard: fake.keyboard) }
+
+        #expect(fake.posted.count == 16)
+        #expect(failed?.code == "native_input_focus_lost")
+        #expect(failed?.retryable == false)
+        #expect(failed?.message.contains("moved to another page") == true)
+        #expect(failed?.message.contains("Delivered 16 of 100 characters") == true)
+    }
+
+    @Test func theSubmitKeyIsNotSentIntoAnotherPage() async throws {
+        let fake = FakeKeyboard(place: { $0 >= 2 ? .page(FakeKeyboard.otherPage) : .page(FakeKeyboard.page) })
+        let input = try plan(["text": "hello", "submitKey": "Enter"])
+
+        let failed = await failure { try await SafariMCPServer.typeNativeText(input, keyboard: fake.keyboard) }
+
+        #expect(fake.posted == ["h", "e", "l", "l", "o"], "Enter was sent: \(fake.posted)")
+        #expect(failed?.message.contains("moved to another page") == true)
+    }
+
+    /// Enter can submit a form, and the page that loads can be a new page to
+    /// Accessibility. That is the submit working, not the keyboard straying.
+    @Test func aNewPageAfterTheSubmitKeyIsNotAFailure() async throws {
+        // Checks: before typing, before the Enter, and after it.
+        let fake = FakeKeyboard(place: { $0 >= 3 ? .page(FakeKeyboard.otherPage) : .page(FakeKeyboard.page) })
+        let input = try plan(["text": "hello", "submitKey": "Enter"])
+
+        let message = try await SafariMCPServer.typeNativeText(input, keyboard: fake.keyboard)
+
+        #expect(fake.posted == ["h", "e", "l", "l", "o", "key:36:0"])
+        #expect(message == "Typed 5 character(s) with native input then pressed Enter")
+    }
+
+    @Test func aPageAccessibilityCannotNameDoesNotStopTheTyping() async throws {
+        let fake = FakeKeyboard(place: { $0 == 1 ? .page(FakeKeyboard.page) : .page(nil) })
+        let input = try plan(["text": .string(String(repeating: "x", count: 40))])
+
+        let message = try await SafariMCPServer.typeNativeText(input, keyboard: fake.keyboard)
+
+        #expect(fake.posted.count == 40)
+        #expect(message == "Typed 40 character(s) with native input")
     }
 
     @Test func whenAccessibilityCannotAnswerTypingGoesAheadAsItDidBefore() async throws {

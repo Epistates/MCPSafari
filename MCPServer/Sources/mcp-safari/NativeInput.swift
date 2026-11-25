@@ -101,22 +101,22 @@ extension SafariMCPServer {
     /// driven by a fake in tests without keystrokes reaching the real keyboard.
     struct NativeKeyboard: Sendable {
         let safariIsFrontmost: @Sendable () -> Bool
-        /// Whether keyboard focus is inside the web page, or nil when
-        /// Accessibility cannot say. Safari being frontmost does not mean that:
-        /// Command-L, or a key the page does not take, leaves the address bar or
-        /// the find bar holding the keyboard.
-        let focusIsInPage: @Sendable () -> Bool?
+        /// Where Accessibility finds the keyboard. Safari being frontmost does
+        /// not say: Command-L, or a key the page does not take, leaves the
+        /// address bar or the find bar holding it, and a click in another tab or
+        /// window moves it to another page.
+        let keyboardPlace: @Sendable () -> KeyboardPlace
         let postText: @Sendable (String) throws -> Void
         let postKey: @Sendable (CGKeyCode, CGEventFlags) throws -> Void
 
         init(
             safariIsFrontmost: @escaping @Sendable () -> Bool,
-            focusIsInPage: @escaping @Sendable () -> Bool? = { nil },
+            keyboardPlace: @escaping @Sendable () -> KeyboardPlace = { .unknown },
             postText: @escaping @Sendable (String) throws -> Void,
             postKey: @escaping @Sendable (CGKeyCode, CGEventFlags) throws -> Void
         ) {
             self.safariIsFrontmost = safariIsFrontmost
-            self.focusIsInPage = focusIsInPage
+            self.keyboardPlace = keyboardPlace
             self.postText = postText
             self.postKey = postKey
         }
@@ -128,26 +128,61 @@ extension SafariMCPServer {
             let box = EventSourceBox(source)
             return NativeKeyboard(
                 safariIsFrontmost: { SafariMCPServer.safariIsActive() },
-                focusIsInPage: { SafariMCPServer.focusedElementIsInWebArea() },
+                keyboardPlace: { SafariMCPServer.keyboardPlace() },
                 postText: { try SafariMCPServer.postText($0, source: box.source) },
                 postKey: { try SafariMCPServer.postKey(code: $0, flags: $1, source: box.source) }
             )
         }
 
-        /// Why native input may not go on, or nil if it may. Safari not being in
-        /// front is checked first and is the clearer cause; a focus that is
-        /// somewhere Accessibility can place outside the page is the second. A
-        /// focus Accessibility cannot place at all is allowed, which is how this
-        /// behaved before the check existed.
-        func focusProblem() -> NativeFocusProblem? {
-            guard safariIsFrontmost() else { return .safariNotFrontmost }
-            return focusIsInPage() == false ? .focusOutsidePage : nil
+        /// Why native input may not go on, or nil if it may, and the page that
+        /// holds the keyboard when Accessibility can say which. Safari not being
+        /// in front is checked first and is the clearer cause; a focus that is
+        /// somewhere Accessibility can place outside the page is the second; a
+        /// keyboard in a page other than `page`, where the text began, is the
+        /// third. A focus Accessibility cannot place at all is allowed, which is
+        /// how this behaved before the check existed.
+        func focusProblem(stayingIn page: PageIdentity? = nil) -> (problem: NativeFocusProblem?, page: PageIdentity?) {
+            guard safariIsFrontmost() else { return (.safariNotFrontmost, nil) }
+            switch keyboardPlace() {
+            case .outsidePage:
+                return (.focusOutsidePage, nil)
+            case .page(let current):
+                if let page, let current, current != page { return (.focusInAnotherPage, current) }
+                return (nil, current)
+            case .unknown:
+                return (nil, nil)
+            }
         }
     }
 
     enum NativeFocusProblem {
         case safariNotFrontmost
         case focusOutsidePage
+        case focusInAnotherPage
+    }
+
+    /// Where Accessibility finds the keyboard.
+    enum KeyboardPlace: Sendable {
+        /// In a web page: the outermost web area above the focused element, so
+        /// a field in a frame belongs to its tab's page. Nil when Accessibility
+        /// stopped answering on the way up and can't say which page.
+        case page(PageIdentity?)
+        /// Somewhere Accessibility can place outside any page, such as the
+        /// address bar or the find bar.
+        case outsidePage
+        /// Accessibility can't say: it is refused, it timed out, or nothing
+        /// reports focus.
+        case unknown
+    }
+
+    /// One web page as Accessibility shows it. Two are the same page when they
+    /// are the same element.
+    struct PageIdentity: Equatable, @unchecked Sendable {
+        let element: AnyObject
+
+        static func == (lhs: PageIdentity, rhs: PageIdentity) -> Bool {
+            CFEqual(lhs.element, rhs.element)
+        }
     }
 
     /// The source is only ever used by one task at a time, one event after
@@ -182,15 +217,19 @@ extension SafariMCPServer {
         var delivered = 0
 
         try checkNativeDeadline(deadline)
-        if let problem = keyboard.focusProblem() {
+        let (problem, startingPage) = keyboard.focusProblem()
+        if let problem {
             throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false, problem: problem))
         }
 
         /// A key that moved focus mid-text, such as Command-L, sends what follows
-        /// into the address bar, so the page is asked again wherever the loop
-        /// would otherwise carry on blind.
-        func ensureFocus() throws {
-            if let problem = keyboard.focusProblem() {
+        /// into the address bar, and a click in another tab or window sends it
+        /// into that page, so the keyboard is asked again wherever the loop would
+        /// otherwise carry on blind. After a submit key the page may have
+        /// navigated, which can make it a new page to Accessibility, so only the
+        /// checks before it compare pages.
+        func ensureFocus(samePage: Bool = true) throws {
+            if let problem = keyboard.focusProblem(stayingIn: samePage ? startingPage : nil).problem {
                 throw NativeInputError(failure: nativeFocusFailure(
                     eventsAlreadySent: true,
                     delivered: (delivered, characters.count),
@@ -234,7 +273,7 @@ extension SafariMCPServer {
             ))
         }
 
-        try ensureFocus()
+        try ensureFocus(samePage: input.submitKeyCode == nil)
 
         let suffix = input.submitKey.map { " then pressed \($0)" } ?? ""
         return "Typed \(input.text.count) character(s) with native input\(suffix)"
@@ -283,6 +322,10 @@ extension SafariMCPServer {
             message = "Keyboard focus left the page during native input, into Safari's address bar, find bar or another control outside it, so some events may have gone there instead.\(progress) Tell the user before retrying: a retry sends the whole input again."
         case (.focusOutsidePage, false):
             message = "Keyboard focus is not in the page, but in Safari's address bar, find bar or another control outside it, so nothing was sent. Native keys go wherever the keyboard focus is. Ask the user to click into the page, or omit native to use synthetic input, which does not depend on keyboard focus."
+        case (.focusInAnotherPage, true):
+            message = "Keyboard focus moved to another page during native input, such as another tab or window, so some events may have gone there instead.\(progress) Tell the user before retrying: a retry sends the whole input again."
+        case (.focusInAnotherPage, false):
+            message = "Keyboard focus is in a page other than the one this call is for, so nothing was sent. Ask the user to click into the agent's page, or omit native to use synthetic input, which does not depend on keyboard focus."
         }
         return ToolFailure(
             code: "native_input_focus_lost",
@@ -297,7 +340,18 @@ extension SafariMCPServer {
     /// Accessibility cannot say, because it is refused, the answer times out, or
     /// nothing reports focus; callers then go on as they did before this check.
     nonisolated static func focusedElementIsInWebArea() -> Bool? {
-        guard AXIsProcessTrusted() else { return nil }
+        switch keyboardPlace() {
+        case .page: true
+        case .outsidePage: false
+        case .unknown: nil
+        }
+    }
+
+    /// Where the keyboard is, by Accessibility: in a page when the focused
+    /// element has an `AXWebArea` among its ancestors, and which page by the
+    /// outermost of them.
+    nonisolated static func keyboardPlace() -> KeyboardPlace {
+        guard AXIsProcessTrusted() else { return .unknown }
         let system = AXUIElementCreateSystemWide()
         // A busy Safari must not hold up a keystroke for the default six seconds.
         AXUIElementSetMessagingTimeout(system, 1)
@@ -305,30 +359,34 @@ extension SafariMCPServer {
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let focused, CFGetTypeID(focused) == AXUIElementGetTypeID()
-        else { return nil }
+        else { return .unknown }
         var element = unsafeDowncast(focused, to: AXUIElement.self)
+        var page: AXUIElement?
 
-        // The page sits a few levels down from the window; a bound keeps a cyclic
-        // or runaway tree from looping.
+        // The page sits a few levels down from the window, and a frame's page a
+        // few more below it; a bound keeps a cyclic or runaway tree from looping.
         for _ in 0..<64 {
             var role: CFTypeRef?
             guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success else {
-                return nil
+                return page == nil ? .unknown : .page(nil)
             }
-            if (role as? String) == "AXWebArea" { return true }
+            if (role as? String) == "AXWebArea" { page = element }
 
             var parent: CFTypeRef?
             switch AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parent) {
             case .success:
-                guard let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
+                guard let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else {
+                    return page == nil ? .unknown : .page(nil)
+                }
                 element = unsafeDowncast(parent, to: AXUIElement.self)
             case .noValue, .attributeUnsupported:
-                return false // the top of the tree, and no web area on the way
+                // The top of the tree.
+                return page.map { .page(PageIdentity(element: $0)) } ?? .outsidePage
             default:
-                return nil
+                return page == nil ? .unknown : .page(nil)
             }
         }
-        return nil
+        return page == nil ? .unknown : .page(nil)
     }
 
     /// Refuses before a bridge request is made when native input cannot work: no
