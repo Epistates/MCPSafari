@@ -2,7 +2,7 @@
 
 // Screenshots, page JavaScript execution and window resizing.
 
-// ─── Screenshot Handler ─────────────────────────────────────────────
+// --- Screenshot Handler ---------------------------------------------
 
 async function handleScreenshot(params) {
     requireTopFrameTarget(params, SCREENSHOT_TOP_FRAME_ONLY);
@@ -113,9 +113,9 @@ async function capturePageContext(tabId) {
     }
 }
 
-// ─── JavaScript Execution Handler ────────────────────────────────────
+// --- JavaScript Execution Handler ------------------------------------
 
-// ─── JavaScript execution ────────────────────────────────────────────
+// --- JavaScript execution --------------------------------------------
 //
 // The agent's code is compiled in the page's own world, so it sees the page's
 // globals. A page whose Content Security Policy forbids evaluating strings
@@ -230,7 +230,7 @@ async function handleJavaScript(params) {
         : value;
 }
 
-// ─── Window Resize Handler ───────────────────────────────────────────
+// --- Window Resize Handler -------------------------------------------
 
 async function handleResizeWindow(params) {
     // Routed like every other handler. Reading `currentWindow` directly ignored

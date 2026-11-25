@@ -11,7 +11,7 @@
     mcp.loaded.add("dispatch");
     const { addFileChunk, clickElement, discardFiles, dragElement, dropFile, elementRect, findElements, formInput, getConsoleMessages, getNetworkRequests, getPageText, handleDialog, hoverElement, nativePointerPoints, prepareNativeInput, prepareNativeKey, pressKey, readPage, scrollPage, selectOption, setFrameId, stageFiles, startTrace, stopTrace, takeSnapshot, typeText, uploadFile, waitFor } = mcp;
 
-    // ─── Message Handler ─────────────────────────────────────────────
+    // --- Message Handler ---------------------------------------------
 
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Only handle messages meant for content scripts

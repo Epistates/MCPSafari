@@ -9,7 +9,7 @@
     mcp.loaded.add("target");
     const { clipText, deepQueryAll, deepQueryFirst, getAccessibleName, getElementByUid, getRole, getUid, renderedElements, toolError, truncateText } = mcp;
 
-    // ─── Element Finding ─────────────────────────────────────────────
+    // --- Element Finding ---------------------------------------------
 
     // One cap for every match strategy, so a broad selector cannot return an
     // unbounded result set and swamp the caller's context.
@@ -93,10 +93,10 @@
         return desc;
     }
 
-    // ─── Element Resolution ──────────────────────────────────────────
+    // --- Element Resolution ------------------------------------------
 
     function resolveElement(params) {
-        // By UID (preferred — most precise, from snapshot)
+        // By UID (preferred: most precise, from snapshot)
         if (params.uid) {
             const el = getElementByUid(params.uid);
             // An element the page removed is still alive as long as something

@@ -2,7 +2,7 @@
 
 // handleRequest: one bridge request in, one response out.
 
-// ─── Request Router ──────────────────────────────────────────────────
+// --- Request Router --------------------------------------------------
 
 // An action is served one of three ways, and each is a lookup rather than a
 // switch arm. Nineteen of them differed only in their `case` label, which hid
@@ -154,7 +154,7 @@ async function routeAction(action, params, serverPort) {
     throw new Error(`Unknown action: ${action}`);
 }
 
-// ─── Network reads ──────────────────────────────────────────────────
+// --- Network reads --------------------------------------------------
 
 // `urlPattern` is applied here, to the URLs as they will be reported, and not in
 // the page. The page holds each URL as it was requested, credentials included,

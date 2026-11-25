@@ -9,7 +9,7 @@
     mcp.loaded.add("io");
     const { currentFrameId, deepQueryFirst, dragEvent, eventInit, nextRequestId, requestMainWorld, resolveElement, toolError } = mcp;
 
-    // ─── File Attachment ─────────────────────────────────────────────
+    // --- File Attachment ---------------------------------------------
 
     // Files arrive a chunk per message and wait here for the action that hands
     // them to the page. A whole file in one message capped a call at 10 MB, and
@@ -215,7 +215,7 @@
         }
     }
 
-    // ─── Element rect (screenshot region) ────────────────────────────
+    // --- Element rect (screenshot region) ----------------------------
 
     // captureVisibleTab only sees the viewport, so the target is scrolled
     // into view first. Scroll handlers (collapsing headers, virtualized
@@ -240,7 +240,7 @@
         return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
     }
 
-    // ─── Wait ────────────────────────────────────────────────────────
+    // --- Wait --------------------------------------------------------
 
     async function waitFor(params) {
         const timeout = (params.timeout || 10) * 1000;
@@ -296,7 +296,7 @@
         );
     }
 
-    // ─── Dialog Handling (delegate to interceptor) ────────────────────
+    // --- Dialog Handling (delegate to interceptor) --------------------
 
     async function handleDialog(params) {
         const result = await requestMainWorld("handle_dialog", params);
@@ -333,13 +333,13 @@
         return await requestMainWorld("stop_trace", params, 5000);
     }
 
-    // ─── Console Messages (delegate to interceptor) ──────────────────
+    // --- Console Messages (delegate to interceptor) ------------------
 
     async function getConsoleMessages(params) {
         return await requestMainWorld("get_console_messages", params);
     }
 
-    // ─── Network Requests (delegate to interceptor) ──────────────────
+    // --- Network Requests (delegate to interceptor) ------------------
 
     async function getNetworkRequests(params) {
         return await requestMainWorld("get_network_requests", params);

@@ -2,7 +2,7 @@
 
 // navigate, and waiting for the load it starts.
 
-// ─── Navigation Handler ─────────────────────────────────────────────
+// --- Navigation Handler ---------------------------------------------
 
 async function handleNavigate(params) {
     const tabId = params.tabId;
@@ -95,7 +95,7 @@ const LOAD_TIMEOUT_MS = 15_000;
 // that is pending when it begins survives it instead (`waitAcrossNavigations`).
 const NAVIGATION_START_WINDOW_MS = 400;
 
-// ─── Interactions that start a load ─────────────────────────────────
+// --- Interactions that start a load ---------------------------------
 
 // Runs an interaction and, if it starts a navigation in this tab, answers only
 // once that navigation has finished. Without this the interaction answered the
@@ -186,7 +186,7 @@ function withNavigationNote(result, beforeTab, afterTab) {
     return result;
 }
 
-// ─── Waiting through a navigation ───────────────────────────────────
+// --- Waiting through a navigation -----------------------------------
 
 // The content script's `wait` polls inside one document. When that document is
 // replaced, the poll and the reply to the request go with it, so nothing ever

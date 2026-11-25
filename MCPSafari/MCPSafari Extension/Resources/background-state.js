@@ -2,7 +2,7 @@
 
 // Connection, profile and tab state, and the website-access checks that read it.
 
-// ─── Multi-Connection State ──────────────────────────────────────────
+// --- Multi-Connection State ------------------------------------------
 // Ports are discovered from the token files the servers write, one per port they
 // bound, so there is no range to scan and none to keep in step with the server's
 // `--port-range`. A port that has a token gets a connection; one whose token is
@@ -558,7 +558,7 @@ function discoveredPortCount() {
     return count;
 }
 
-// ─── Who a connection is ─────────────────────────────────────────────
+// --- Who a connection is ---------------------------------------------
 //
 // Several MCP clients can share one Safari, each through a server of its own,
 // and a port number says nothing about which session is behind it. So once the
@@ -638,7 +638,7 @@ async function handleIdentify(params, serverPort) {
 }
 
 
-// ─── Access the user hasn't given yet ───────────────────────────────
+// --- Access the user hasn't given yet -------------------------------
 //
 // Safari 27.2 refuses a site the user hasn't decided on without asking: no
 // dialog appears, and the only place to allow it is the MCPSafari button in the

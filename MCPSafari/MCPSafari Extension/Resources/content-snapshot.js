@@ -9,7 +9,7 @@
     mcp.loaded.add("snapshot");
     const { clipText, escapeCssString, getUid } = mcp;
 
-    // ─── Page Reading ────────────────────────────────────────────────
+    // --- Page Reading ------------------------------------------------
 
     // A big application page runs to hundreds of kilobytes, which either
     // overruns the client's output limit or spends the model's context on one
@@ -51,7 +51,7 @@
         return readPage({ format: "text", maxChars: params.maxChars });
     }
 
-    // ─── Shadow DOM Traversal ────────────────────────────────────────
+    // --- Shadow DOM Traversal ----------------------------------------
 
     // querySelector and TreeWalker each see a single tree, so anything inside
     // a shadow root is invisible to them and a page built on web components
@@ -117,7 +117,7 @@
         return rect.width > 0 && rect.height > 0;
     }
 
-    // ─── Accessibility Snapshot ──────────────────────────────────────
+    // --- Accessibility Snapshot --------------------------------------
 
     const MAX_TREE_DEPTH = 30;
     const MAX_SNAPSHOT_NODES = 2000;
@@ -635,7 +635,7 @@
         return truncateText(parts.join("").replace(/\s+/g, " ").trim());
     }
 
-    // ─── Rendered Text ───────────────────────────────────────────────
+    // --- Rendered Text -----------------------------------------------
 
     // Past this the walk below gives up on a subtree rather than risk the call
     // stack on a pathologically deep page. Well beyond MAX_TREE_DEPTH, because

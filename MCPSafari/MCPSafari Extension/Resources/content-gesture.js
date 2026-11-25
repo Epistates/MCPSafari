@@ -9,7 +9,7 @@
     mcp.loaded.add("gesture");
     const { aimPoint, assertPageFocused, assertReachable, dragEvent, elementAtPoint, firesKeypress, keyboardEvent, keyCode, mouseEvent, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
-    // ─── Scroll ──────────────────────────────────────────────────────
+    // --- Scroll ------------------------------------------------------
 
     function scrollPage(params) {
         let target = window;
@@ -45,7 +45,7 @@
         return `Scrolled ${params.direction} by ${amount}px`;
     }
 
-    // ─── Press Key ───────────────────────────────────────────────────
+    // --- Press Key ---------------------------------------------------
 
 
     function pressKey(params) {
@@ -81,7 +81,7 @@
         return `Pressed ${keyString}`;
     }
 
-    // ─── Hover ───────────────────────────────────────────────────────
+    // --- Hover -------------------------------------------------------
 
     function hoverElement(params) {
         let el = null;
@@ -138,7 +138,7 @@
         return `Hovered over <${el.tagName.toLowerCase()}> (synthetic events; CSS :hover is not applied)`;
     }
 
-    // ─── Drag ────────────────────────────────────────────────────────
+    // --- Drag --------------------------------------------------------
 
     async function dragElement(params) {
         const fromEl = resolveElement({
@@ -237,7 +237,7 @@
         return `Dragged <${fromEl.tagName.toLowerCase()}> to <${toEl.tagName.toLowerCase()}>`;
     }
 
-    // ─── Native Pointer ──────────────────────────────────────────────
+    // --- Native Pointer ----------------------------------------------
 
     // CGEvent posts in global screen points, and x/y below are the old guess at
     // them: Safari's only side chrome is the left sidebar, so the full

@@ -155,7 +155,7 @@
 
         if (params.pattern) {
             // Bounded regex subset: no repetitions, groups, or backreferences.
-            // Without these constructs, matching work is bounded by pattern × input.
+            // Without these constructs, matching work is bounded by pattern times input.
             const pattern = String(params.pattern);
             const unescaped = pattern.replace(/\\./g, "");
             if (pattern.length > 200 || /[()*+?{}]/.test(unescaped) || /\\[1-9k]/.test(pattern)) {

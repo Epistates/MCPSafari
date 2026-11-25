@@ -2,7 +2,7 @@
 
 // Tab and window tools, plus the native-input handlers that foreground a tab.
 
-// ─── Tab Handlers ────────────────────────────────────────────────────
+// --- Tab Handlers ----------------------------------------------------
 
 // Credentials are redacted from a URL before it leaves the extension, wherever
 // the URL turns up: tab listings, captured requests, trace events, link hrefs.
@@ -121,7 +121,7 @@ function redactQueryParameters(tail) {
     return redacted + tail.slice(copied);
 }
 
-// ─── What a tab may say about itself ─────────────────────────────────
+// --- What a tab may say about itself ---------------------------------
 
 // Safari hands the tabs API a URL and title for every tab, including those on
 // sites the user never granted, which reads as browsing history. A tab whose
@@ -606,7 +606,7 @@ async function restoreSessionState() {
         }
     } catch (_) { /* ignore */ }
 
-    // Restore pinned tabs (session-only — lost on Safari restart). A pin whose
+    // Restore pinned tabs (session-only, lost on Safari restart). A pin whose
     // tab has gone is dropped, and the stored copy is rewritten without it. Which
     // server run a pin belongs to is not checked here: this runs beside the read
     // of the tokens, so the port's token may not be in yet. It is checked when a

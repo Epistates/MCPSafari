@@ -2,7 +2,7 @@
 
 // `clear_cookies`: removing a site's cookies in the profile this instance runs in.
 
-// ─── Cookies ─────────────────────────────────────────────────────────
+// --- Cookies ---------------------------------------------------------
 
 // Page JavaScript cannot delete an HttpOnly cookie, so an identity provider that
 // remembers the last account in one keeps offering it after the app's own

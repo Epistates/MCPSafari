@@ -2,7 +2,7 @@
 
 // Event listeners, the keepalive, token loading, and startup. Loaded last because this is the file that runs things.
 
-// ─── Utilities ───────────────────────────────────────────────────────
+// --- Utilities -------------------------------------------------------
 
 // Every call that names no tab resolves its target here, so an unbounded wait
 // on either line below puts the whole tool surface back on the 30-second bridge
@@ -87,7 +87,7 @@ function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ─── Message Listener (from popup or content scripts) ────────────────
+// --- Message Listener (from popup or content scripts) ----------------
 
 // Entries expire on their own, but a long-lived background page would otherwise
 // accumulate one per tab ever touched.
@@ -219,7 +219,7 @@ function persistManualPorts() {
     writeStorage("local", { manualPorts: [...manualPorts] });
 }
 
-// ─── Service Worker Keepalive ─────────────────────────────────────────
+// --- Service Worker Keepalive -----------------------------------------
 
 // Service workers get suspended after ~30s of inactivity.
 // Use alarms to periodically wake and ensure WebSocket stays connected.
@@ -251,7 +251,7 @@ if (typeof browser.alarms !== "undefined") {
                     if (conn.manual) continue;
                     if (conn.state === "connected") continue;
                     if (conn.lastConnected === 0 && conn.attempts >= AUTO_GIVE_UP_ATTEMPTS) {
-                        // Never connected — remove after a few failed attempts
+                        // Never connected: remove after a few failed attempts
                         suppressStaleTokenPort(port);
                     } else if (conn.disconnectedAt > 0 && (now - conn.disconnectedAt) > AUTO_CLEANUP_MS) {
                         // Gone for 2+ minutes. Measured from when the socket went
@@ -270,7 +270,7 @@ if (typeof browser.alarms !== "undefined") {
     });
 }
 
-// ─── Token Loading ──────────────────────────────────────────────────
+// --- Token Loading --------------------------------------------------
 
 async function loadAuthTokens() {
     try {
@@ -309,7 +309,7 @@ async function loadAuthTokens() {
     }
 }
 
-// ─── Initialize ──────────────────────────────────────────────────────
+// --- Initialize ------------------------------------------------------
 
 // A badge from before this page was suspended describes waits it no longer knows.
 setAccessBadge("", "MCPSafari");

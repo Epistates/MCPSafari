@@ -81,7 +81,7 @@
         resourceObserver = null;
     }
 
-    // ─── XMLHttpRequest Interception ─────────────────────────────────
+    // --- XMLHttpRequest Interception ---------------------------------
 
     const XHROpen = XMLHttpRequest.prototype.open;
     const XHRSend = XMLHttpRequest.prototype.send;
@@ -133,7 +133,7 @@
         return XHRSend.call(this, body);
     };
 
-    // ─── Fetch Interception ──────────────────────────────────────────
+    // --- Fetch Interception ------------------------------------------
 
     const originalFetch = window.fetch;
 
@@ -196,7 +196,7 @@
         }
     };
 
-    // ─── API for content script ──────────────────────────────────────
+    // --- API for content script --------------------------------------
 
     // Numbers handed out on request, so the extension can name entries it was
     // shown and later clear exactly those. Assigned when an entry is first

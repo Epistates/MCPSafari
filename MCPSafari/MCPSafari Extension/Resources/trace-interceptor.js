@@ -59,7 +59,7 @@
         return parts.join(" > ");
     }
 
-    // ─── Attribute values ────────────────────────────────────────────
+    // --- Attribute values --------------------------------------------
 
     // Frameworks mirror what a user types into the `value` attribute, so
     // recording old and new values of every attribute change wrote a typed

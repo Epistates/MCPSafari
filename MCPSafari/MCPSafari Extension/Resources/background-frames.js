@@ -2,9 +2,9 @@
 
 // Talking to content scripts, and routing across a page's frames.
 
-// ─── Content Script Communication ────────────────────────────────────
+// --- Content Script Communication ------------------------------------
 
-// ─── Frame Routing ───────────────────────────────────────────────────
+// --- Frame Routing ---------------------------------------------------
 
 // content.js runs in every frame, each with its own uid counter, so a uid
 // names the frame that minted it. That keeps frames out of the tool contract:

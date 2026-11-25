@@ -3,7 +3,7 @@ function renderConnections(ports) {
     container.innerHTML = "";
 
     if (!ports || ports.length === 0) {
-        container.innerHTML = '<div class="empty">Scanning for servers…</div>';
+        container.innerHTML = '<div class="empty">Scanning for servers\u2026</div>';
         return;
     }
 
@@ -73,7 +73,7 @@ function connectionTooltip({ port, state, label, folder, client }) {
     return [
         named ? label : null,
         named && folder ? shortFolder(folder) : null,
-        [state, who].filter(Boolean).join(" · "),
+        [state, who].filter(Boolean).join(" \u00b7 "),
     ].filter(Boolean).join("\n");
 }
 
@@ -99,7 +99,7 @@ function siteAccessMarkup(access) {
     const state = access.allowed
         ? '<span class="site-state allowed">Allowed</span>'
         : access.pending
-            ? '<span class="site-state">Asking…</span>'
+            ? '<span class="site-state">Asking\u2026</span>'
             : access.unresponsive
                 ? '<span class="site-state">Not answering</span>'
                 : '<span class="site-state blocked">No access</span>';

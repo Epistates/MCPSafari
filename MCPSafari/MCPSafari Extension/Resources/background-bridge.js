@@ -2,7 +2,7 @@
 
 // The WebSocket client: connecting, reconnecting and reporting each port.
 
-// ─── Handshake primitives ────────────────────────────────────────────
+// --- Handshake primitives --------------------------------------------
 //
 // The token proves itself without being sent. Each side returns an HMAC of both
 // sides' fresh nonces under it, and the extension checks the server's proof before
@@ -54,7 +54,7 @@ function handshakeMessage(role, port, first, second) {
     return utf8(`mcpsafari-v${BRIDGE_PROTOCOL_VERSION}-${role}|${port}|${first}|${second}`);
 }
 
-// ─── Limits shared with the server ───────────────────────────────────
+// --- Limits shared with the server -----------------------------------
 //
 // Each of these has a twin in the Swift sources, and `Tests/bridge-constants.test.mjs`
 // reads them from there and fails when the two drift apart.
@@ -72,7 +72,7 @@ const MAX_REPLY_BYTES = 31 * 1024 * 1024;
 // says nothing, which would otherwise leave the connection looking busy for good.
 const HANDSHAKE_TIMEOUT_MS = 5000;
 
-// ─── Replies ─────────────────────────────────────────────────────────
+// --- Replies ---------------------------------------------------------
 
 /**
  * `response` as JSON the server's decoder accepts.
@@ -135,7 +135,7 @@ function sendReply(socket, port, response) {
     }
 }
 
-// ─── WebSocket Connection ────────────────────────────────────────────
+// --- WebSocket Connection --------------------------------------------
 
 function connectToPort(port) {
     const conn = connections.get(port);
@@ -150,7 +150,7 @@ function connectToPort(port) {
     const authToken = authTokensByPort.get(port);
     if (!authToken) {
         conn.state = "disconnected";
-        return; // Skip — can't verify server identity without auth
+        return; // Skip: can't verify server identity without auth
     }
 
     conn.state = "connecting";

@@ -29,7 +29,7 @@ const AUTO_CLEANUP_MS = 120_000;
 const AUTO_GIVE_UP_ATTEMPTS = 3;
 const DEFAULT_PROFILE_ID = "default";
 
-// ─── Website permission gating ───────────────────────────────────────
+// --- Website permission gating ---------------------------------------
 //
 // Safari asks for website access with a modal dialog the first time the
 // extension touches an origin, and blocks every extension API for that tab
