@@ -80,6 +80,69 @@ struct NativePageFocusTests {
         #expect(!Server.windowIsTarget(unread, Self.target))
     }
 
+    // MARK: Where a pointer point is on screen
+
+    /// The agent's window on the sitting's second display, which sits 974 points
+    /// above the main one: Safari's screenY put the click 974 points low.
+    private static let lgWindow = Server.NativeWindowSummary(
+        frame: CGRect(x: -2497, y: -872, width: 1200, height: 900),
+        title: "Nominations",
+        url: address,
+        page: CGRect(x: -2497, y: -820, width: 1185, height: 7711)
+    )
+
+    private func pointerTargets(page from: CGPoint, guess: CGPoint = CGPoint(x: -2317, y: 214)) -> Server.NativePointerTargets {
+        Server.NativePointerTargets(from: guess, to: nil, pageFrom: from, pageTo: nil, target: Self.target)
+    }
+
+    @Test func aPointerPointIsPlacedFromWhereAccessibilityShowsThePage() throws {
+        let placed = try Server.placedPointerTargets(pointerTargets(page: CGPoint(x: 180, y: 60)), windows: [Self.lgWindow])
+        #expect(placed.from == CGPoint(x: -2317, y: -760))
+        #expect(placed.window == Self.lgWindow.frame)
+    }
+
+    @Test func aScrolledPageIsPlacedFromItsMovedOrigin() throws {
+        // Scrolled 500: the web area's origin moves up 500, the page point down 500.
+        var scrolled = Self.lgWindow
+        scrolled.page = CGRect(x: -2497, y: -1320, width: 1185, height: 7711)
+        let placed = try Server.placedPointerTargets(pointerTargets(page: CGPoint(x: 180, y: 560)), windows: [scrolled])
+        #expect(placed.from == CGPoint(x: -2317, y: -760))
+    }
+
+    @Test func aDragsBothEndsArePlaced() throws {
+        let targets = Server.NativePointerTargets(
+            from: .zero, to: .zero, pageFrom: CGPoint(x: 10, y: 20), pageTo: CGPoint(x: 110, y: 220), target: Self.target
+        )
+        let placed = try Server.placedPointerTargets(targets, windows: [Self.lgWindow])
+        #expect(placed.from == CGPoint(x: -2487, y: -800))
+        #expect(placed.to == CGPoint(x: -2387, y: -600))
+    }
+
+    @Test func anOlderExtensionsPointsAreUsedAsTheyCame() throws {
+        let old = Server.NativePointerTargets(from: CGPoint(x: 160, y: 290), to: nil)
+        let placed = try Server.placedPointerTargets(old, windows: [Self.lgWindow])
+        #expect(placed.from == CGPoint(x: 160, y: 290))
+        #expect(placed.window == nil)
+    }
+
+    @Test func aPointerPointWithNoWindowOrTwoWindowsToPlaceItInIsRefused() {
+        let failure = { (windows: [Server.NativeWindowSummary]) -> ToolFailure? in
+            do {
+                _ = try Server.placedPointerTargets(self.pointerTargets(page: CGPoint(x: 180, y: 60)), windows: windows)
+                return nil
+            } catch let error as Server.NativeInputError {
+                return error.failure
+            } catch {
+                return nil
+            }
+        }
+        #expect(failure([])?.code == "native_input_focus_failed")
+        var pageless = Self.lgWindow
+        pageless.page = nil
+        #expect(failure([pageless])?.code == "native_input_focus_failed")
+        #expect(failure([Self.lgWindow, Self.lgWindow])?.message.contains("same") == true)
+    }
+
     @Test func theAddressDigestMatchesTheExtensionsAndIgnoresTheFragment() {
         #expect(Server.urlDigest(Self.address) == Self.addressDigest)
         #expect(Server.urlDigest(Self.address + "#section") == Self.addressDigest)

@@ -40,6 +40,9 @@ extension SafariMCPServer {
         let title: String?
         /// The address its page shows, from the page's own web area.
         var url: String? = nil
+        /// Where its page is on screen: the web area's frame, which covers the
+        /// whole document, so its origin moves up as the page scrolls.
+        var page: CGRect? = nil
     }
 
     /// Who has the keyboard when it isn't the page.
@@ -119,6 +122,50 @@ extension SafariMCPServer {
             guard let url = window.url, urlDigest(url) == digest else { return false }
         }
         return true
+    }
+
+    /// Native pointer points placed on screen, and the window they're in.
+    struct PlacedPointerTargets: Equatable, Sendable {
+        let from: CGPoint
+        let to: CGPoint?
+        /// The agent's window, which must be the one on top at each point. Nil
+        /// for an older extension, whose points are placed by its own guess and
+        /// checked only against Safari's windows as a whole.
+        let window: CGRect?
+    }
+
+    /// Places the extension's page points on screen from where Accessibility
+    /// shows the agent's page. Safari measures a window's top from the top of
+    /// its own display, so the extension's own screen guess is off on a second
+    /// display that isn't level with the main one, by as much as that display
+    /// sits above or below it; a click there landed in another window.
+    /// Accessibility gives the page's frame in the same global space the events
+    /// are posted in, so the page point plus its origin is right on every display.
+    nonisolated static func placedPointerTargets(
+        _ targets: NativePointerTargets,
+        windows: [NativeWindowSummary]
+    ) throws -> PlacedPointerTargets {
+        guard let target = targets.target, let pageFrom = targets.pageFrom,
+              targets.to == nil || targets.pageTo != nil
+        else {
+            return PlacedPointerTargets(from: targets.from, to: targets.to, window: nil)
+        }
+        let matches = windows.filter { windowIsTarget($0, target) }
+        guard matches.count <= 1 else { throw NativeInputError(failure: ambiguousWindowFailure()) }
+        guard let window = matches.first, let page = window.page else {
+            throw NativeInputError(failure: pointerWindowFailure())
+        }
+        let place = { (point: CGPoint) in CGPoint(x: page.minX + point.x, y: page.minY + point.y) }
+        return PlacedPointerTargets(from: place(pageFrom), to: targets.pageTo.map(place), window: window.frame)
+    }
+
+    nonisolated static func pointerWindowFailure() -> ToolFailure {
+        ToolFailure(
+            code: "native_input_focus_failed",
+            message: "MCPSafari couldn't find the window holding the agent's tab, or its page, through Accessibility, so it can't tell where the point is on screen and nothing was sent. Bring the agent's tab forward with select_tab and bringToFront, then retry.",
+            retryable: true,
+            recoveryAction: "ask_user"
+        )
     }
 
     /// Whether a window's title is its tab's. A window of a Safari profile other
@@ -201,7 +248,7 @@ extension SafariMCPServer {
     nonisolated static func ambiguousWindowFailure() -> ToolFailure {
         ToolFailure(
             code: "native_input_focus_failed",
-            message: "More than one Safari window shows the agent's page at the same size and position, so MCPSafari can't tell which one is the agent's. It didn't move the keyboard and nothing was sent. Ask the user to close or move the other window, or to click in the agent's page, then retry.",
+            message: "More than one Safari window shows the agent's page at the same size, so MCPSafari can't tell which one is the agent's. Nothing was moved or sent. Ask the user to close or resize the other window, then retry. For typing, the user clicking in the agent's page also works.",
             retryable: true,
             recoveryAction: "ask_user"
         )
@@ -335,7 +382,8 @@ extension SafariMCPServer {
         return NativeWindowSummary(
             frame: frame(of: window) ?? .null,
             title: string(window, kAXTitleAttribute),
-            url: url?.absoluteString
+            url: url?.absoluteString,
+            page: page.flatMap(frame(of:))
         )
     }
 

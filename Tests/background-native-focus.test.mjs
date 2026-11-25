@@ -118,3 +118,21 @@ test("a native refusal for any other reason carries nothing for the server", asy
     assert.equal(response.errorCode, "unsupported_native_target");
     assert.equal(response.data, null);
 });
+
+// Safari measures screenY from the top of the window's own display, so the
+// points' own screen guess is off on a second display. The server places them
+// from where Accessibility shows this window's page, and checks that the window
+// under them is this one, so every pointer result names the window as well.
+test("native pointer points come with the tab's window for the server to place them in", async () => {
+    const request = loadBackground({
+        contentReply: () => ({ data: { from: { x: 160, y: 290, pageX: 60, pageY: 65 } }, error: null }),
+    });
+
+    const response = await request("native_pointer", { selector: "#q" });
+
+    assert.equal(response.success, true);
+    assert.deepEqual(JSON.parse(response.data), {
+        from: { x: 160, y: 290, pageX: 60, pageY: 65 },
+        nativeTarget: { left: 40, top: 60, width: 1200, height: 900, title: "Nominations", urlDigest: digest("https://forms.example/apply") },
+    });
+});

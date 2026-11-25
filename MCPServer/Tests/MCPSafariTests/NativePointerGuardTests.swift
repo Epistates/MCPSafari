@@ -33,6 +33,40 @@ struct NativePointerGuardTests {
 
     private let safariWindow = CGRect(x: 0, y: 0, width: 1000, height: 800)
 
+    private func refusal(
+        _ point: CGPoint,
+        _ windows: [SafariMCPServer.NativeWindowInfo],
+        agentWindow: CGRect
+    ) -> ToolFailure? {
+        do {
+            try SafariMCPServer.ensurePointerIsOverSafari(
+                at: point, windows: windows, safariProcessIDs: [Self.safari], agentWindow: agentWindow
+            )
+            return nil
+        } catch let error as SafariMCPServer.NativeInputError {
+            return error.failure
+        } catch {
+            return nil
+        }
+    }
+
+    /// At the 0.4.1 sitting, clicks aimed at the agent's window landed in the
+    /// user's window under the same spot, and passed because it was Safari's.
+    @Test func anotherSafariWindowOnTopOfThePointIsRefusedWhenTheAgentsWindowIsKnown() throws {
+        let agents = CGRect(x: -2497, y: -872, width: 1512, height: 949)
+        let users = CGRect(x: -2507, y: -942, width: 2367, height: 1325)
+        let desktop = [window(Self.safari, "Safari", users), window(Self.safari, "Safari", agents)]
+
+        let refused = try #require(refusal(CGPoint(x: -2317, y: 214), desktop, agentWindow: agents))
+
+        #expect(refused.code == "native_input_focus_lost")
+        #expect(refused.message.contains("another Safari window"))
+        #expect(refused.message.contains("nothing was sent"))
+        // The agent's own window on top is fine, give or take rounding.
+        let front = [window(Self.safari, "Safari", agents.offsetBy(dx: 1, dy: -1)), window(Self.safari, "Safari", users)]
+        #expect(refusal(CGPoint(x: -2317, y: -760), front, agentWindow: agents) == nil)
+    }
+
     @Test func aPointInsideTheTopmostSafariWindowPasses() {
         let desktop = [window(Self.safari, "Safari", safariWindow), window(Self.finder, "Finder", safariWindow)]
         #expect(refusal(CGPoint(x: 500, y: 400), desktop) == nil)

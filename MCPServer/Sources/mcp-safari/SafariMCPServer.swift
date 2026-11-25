@@ -872,11 +872,17 @@ actor SafariMCPServer {
         }
         let clickCount = args["doubleClick"]?.boolValue == true ? 2 : 1
         return try await runNativeAction("native_pointer", args) { preparation in
-            let targets = try Self.nativePointerTargets(from: preparation.data)
+            let targets = try Self.placedPointerTargets(preparation)
             return try await Self.clickNativePointer(
-                at: targets.from, clickCount: clickCount, deadline: Self.numberValue(args["_batchDeadline"])
+                at: targets.from, clickCount: clickCount, deadline: Self.numberValue(args["_batchDeadline"]),
+                agentWindow: targets.window
             )
         }
+    }
+
+    /// The extension's pointer points placed on screen through Accessibility.
+    private static func placedPointerTargets(_ preparation: BridgeResponse) throws -> PlacedPointerTargets {
+        try placedPointerTargets(nativePointerTargets(from: preparation.data), windows: NativePageFocus.live.windows())
     }
 
     private func handleHover(_ args: [String: Value]) async throws -> CallTool.Result {
@@ -884,8 +890,10 @@ actor SafariMCPServer {
             return try await handleInteraction("hover", args)
         }
         return try await runNativeAction("native_pointer", args) { preparation in
-            let targets = try Self.nativePointerTargets(from: preparation.data)
-            _ = try await Self.moveNativePointer(to: targets.from, deadline: Self.numberValue(args["_batchDeadline"]))
+            let targets = try Self.placedPointerTargets(preparation)
+            _ = try await Self.moveNativePointer(
+                to: targets.from, deadline: Self.numberValue(args["_batchDeadline"]), agentWindow: targets.window
+            )
             return "Hovered with native input; pointer at (\(Int(targets.from.x)), \(Int(targets.from.y)))"
         }
     }
@@ -895,11 +903,13 @@ actor SafariMCPServer {
             return try await handleInteraction("drag", args)
         }
         return try await runNativeAction("native_pointer", args) { preparation in
-            let targets = try Self.nativePointerTargets(from: preparation.data)
+            let targets = try Self.placedPointerTargets(preparation)
             guard let to = targets.to else {
                 throw ToolInputError("drag requires toUid or toSelector")
             }
-            return try await Self.dragNativePointer(from: targets.from, to: to, deadline: Self.numberValue(args["_batchDeadline"]))
+            return try await Self.dragNativePointer(
+                from: targets.from, to: to, deadline: Self.numberValue(args["_batchDeadline"]), agentWindow: targets.window
+            )
         }
     }
 

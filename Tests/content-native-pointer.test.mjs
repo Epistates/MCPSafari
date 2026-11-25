@@ -16,7 +16,17 @@ const WINDOW = {
     innerWidth: 1000,
     outerHeight: 900,
     innerHeight: 800,
+    scrollX: 0,
+    scrollY: 0,
 };
+
+// The screen guess each point carries, which the tests below were written for.
+// Where the point is on the page is checked on its own further down.
+function screenPoints(data) {
+    const plain = JSON.parse(JSON.stringify(data));
+    const screen = (p) => p && { x: p.x, y: p.y };
+    return plain.to ? { from: screen(plain.from), to: screen(plain.to) } : { from: screen(plain.from) };
+}
 
 // `covering` stands in for what the hit test lands on: the element itself
 // unless something is on top of it.
@@ -72,7 +82,21 @@ test("native_pointer_points converts an element center to screen points", async 
     const { data, error } = await call("native_pointer_points", { selector: "#target" });
 
     assert.equal(error, null);
-    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 160, y: 290 } });
+    assert.deepEqual(screenPoints(data), { from: { x: 160, y: 290 } });
+});
+
+// Safari measures screenY from the top of the window's own display, so the
+// server places a point from where the page is, and needs the point on the page.
+test("native_pointer_points says where each point is on the page, scroll included", async () => {
+    const target = el({ left: 50, top: 60, width: 20, height: 10 });
+    const toTarget = el({ left: 200, top: 300, width: 40, height: 20 });
+    const call = loadContent({ target, toTarget, window: { scrollX: 30, scrollY: 500 } });
+
+    const { data } = await call("native_pointer_points", { fromSelector: "#from", toSelector: "#to" });
+
+    const plain = JSON.parse(JSON.stringify(data));
+    assert.deepEqual([plain.from.pageX, plain.from.pageY], [60 + 30, 65 + 500]);
+    assert.deepEqual([plain.to.pageX, plain.to.pageY], [220 + 30, 310 + 500]);
 });
 
 test("native_pointer_points passes x/y through the same conversion", async () => {
@@ -80,7 +104,7 @@ test("native_pointer_points passes x/y through the same conversion", async () =>
 
     const { data } = await call("native_pointer_points", { x: 10, y: 20 });
 
-    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 110, y: 245 } });
+    assert.deepEqual(screenPoints(data), { from: { x: 110, y: 245 } });
 });
 
 test("native_pointer_points resolves drag endpoints", async () => {
@@ -93,7 +117,7 @@ test("native_pointer_points resolves drag endpoints", async () => {
         toSelector: "#to",
     });
 
-    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 105, y: 230 }, to: { x: 320, y: 535 } });
+    assert.deepEqual(screenPoints(data), { from: { x: 105, y: 230 }, to: { x: 320, y: 535 } });
 });
 
 test("native_pointer_points rejects calls without a target", async () => {
@@ -145,7 +169,7 @@ test("native_pointer_points puts the full side-chrome width on the left", async 
 
     const { data } = await call("native_pointer_points", { selector: "#target" });
 
-    assert.deepEqual(JSON.parse(JSON.stringify(data)), {
+    assert.deepEqual(screenPoints(data), {
         from: { x: 100 + 320 + 60, y: 290 },
     });
 });
@@ -168,7 +192,7 @@ test("x/y overrides a resolvable selector, matching the synthetic path", async (
 
     const { data } = await call("native_pointer_points", { selector: "#target", x: 400, y: 300 });
 
-    assert.deepEqual(JSON.parse(JSON.stringify(data)), {
+    assert.deepEqual(screenPoints(data), {
         from: { x: 100 + 400, y: 125 + 100 + 300 },
     });
 });
@@ -200,7 +224,7 @@ test("force waives the cover for native points", async () => {
     const { data, error } = await call("native_pointer_points", { selector: "#target", force: true });
 
     assert.equal(error, null);
-    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 160, y: 290 } });
+    assert.deepEqual(screenPoints(data), { from: { x: 160, y: 290 } });
 });
 
 test("native_pointer_points checks both ends of a drag", async () => {
@@ -236,7 +260,7 @@ test("native_pointer_points aims at the visible part of an element larger than t
     const { data, error } = await call("native_pointer_points", { selector: "#target" });
 
     assert.equal(error, null);
-    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 100 + 500, y: 125 + 100 + 120 } });
+    assert.deepEqual(screenPoints(data), { from: { x: 100 + 500, y: 125 + 100 + 120 } });
 });
 
 // The points are screen coordinates. If Safari is not the window in front, they
@@ -265,7 +289,7 @@ test("native_pointer_points goes on without page focus once the server has verif
     const { data, error } = await call("native_pointer_points", { selector: "#target", windowVerified: true });
 
     assert.equal(error, null);
-    assert.deepEqual(JSON.parse(JSON.stringify(data)), { from: { x: 160, y: 290 } });
+    assert.deepEqual(screenPoints(data), { from: { x: 160, y: 290 } });
 });
 
 // Anything but an explicit true from the server leaves the check in place.

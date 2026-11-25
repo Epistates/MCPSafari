@@ -475,24 +475,28 @@ async function sha256Hex(text) {
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+// What the server needs to find the tab's window through Accessibility: its
+// size, and the title and address of the tab showing in it.
+async function nativeTargetFor(tabId) {
+    const tab = await browser.tabs.get(tabId);
+    const win = await browser.windows.get(tab.windowId);
+    return {
+        left: win.left,
+        top: win.top,
+        width: win.width,
+        height: win.height,
+        title: tab.title || "",
+        urlDigest: tab.url ? await sha256Hex(tab.url.split("#")[0]) : "",
+    };
+}
+
 async function withNativeTarget(tabId, prepare) {
     try {
         return await prepare();
     } catch (err) {
         if (err && err.code === "native_input_focus_failed") {
             try {
-                const tab = await browser.tabs.get(tabId);
-                const win = await browser.windows.get(tab.windowId);
-                err.details = {
-                    nativeTarget: {
-                        left: win.left,
-                        top: win.top,
-                        width: win.width,
-                        height: win.height,
-                        title: tab.title || "",
-                        urlDigest: tab.url ? await sha256Hex(tab.url.split("#")[0]) : "",
-                    },
-                };
+                err.details = { nativeTarget: await nativeTargetFor(tabId) };
             } catch (_) { /* the refusal stands as it was */ }
         }
         throw err;
@@ -519,13 +523,21 @@ async function handleNativePressKey(params) {
     return "Safari is ready for native input";
 }
 
+// The points come with the window they're in, which the server finds through
+// Accessibility to place them on screen and to check that nothing else is on
+// top of them. Without it the server can only use the points' own guess.
 async function handleNativePointer(params) {
     requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
-    return withNativeTarget(tabId, () => sendToContentScript(tabId, {
+    const points = await withNativeTarget(tabId, () => sendToContentScript(tabId, {
         action: "native_pointer_points",
         params,
     }));
+    let nativeTarget = null;
+    try {
+        nativeTarget = await nativeTargetFor(tabId);
+    } catch (_) { /* the server falls back to the points' own guess */ }
+    return { ...points, nativeTarget };
 }
 
 // Object keys are strings, so ports come back as text and are turned into

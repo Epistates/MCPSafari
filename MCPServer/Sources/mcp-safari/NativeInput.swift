@@ -788,20 +788,31 @@ extension SafariMCPServer {
 
     // Bridge payloads cross as JSON strings (background.js stringifies
     // non-string data), so decode from the raw string.
-    private struct NativePointerPayload: Codable {
-        struct Point: Codable {
+    private struct NativePointerPayload: Decodable {
+        struct Point: Decodable {
             let x: Double
             let y: Double
+            /// Where the point is on the page, scroll included. An extension
+            /// older than 0.4.1 (44) sends none.
+            let pageX: Double?
+            let pageY: Double?
+            var page: CGPoint? { pageX.flatMap { x in pageY.map { CGPoint(x: x, y: $0) } } }
         }
         let from: Point
         let to: Point?
+        let nativeTarget: NativeTarget?
     }
 
     /// Internal, not private: `click`, `hover` and `drag` build one of these to hand back
-    /// to the pointer code below.
+    /// to the pointer code below. `from` and `to` are the extension's own guess
+    /// at screen points, which is off on a second display (see
+    /// `placedPointerTargets`); the page points and the window are what place them.
     struct NativePointerTargets: Sendable {
         let from: CGPoint
         let to: CGPoint?
+        var pageFrom: CGPoint? = nil
+        var pageTo: CGPoint? = nil
+        var target: NativeTarget? = nil
     }
 
     nonisolated static func nativePointerTargets(from data: AnyCodable?) throws -> NativePointerTargets {
@@ -812,7 +823,10 @@ extension SafariMCPServer {
         }
         return NativePointerTargets(
             from: CGPoint(x: payload.from.x, y: payload.from.y),
-            to: payload.to.map { CGPoint(x: $0.x, y: $0.y) }
+            to: payload.to.map { CGPoint(x: $0.x, y: $0.y) },
+            pageFrom: payload.from.page,
+            pageTo: payload.to?.page,
+            target: payload.nativeTarget
         )
     }
 
@@ -892,10 +906,15 @@ extension SafariMCPServer {
     /// as an ordinary window does. The two exceptions are fully transparent
     /// windows, which take none, and the window server's own cursor window,
     /// which follows the pointer and so is always under it.
+    ///
+    /// With `agentWindow`, the frame of the window holding the agent's tab, the
+    /// window on top must be that one: another Safari window there, such as the
+    /// user's own, would take the click just as another app's would.
     nonisolated static func ensurePointerIsOverSafari(
         at point: CGPoint,
         windows: [NativeWindowInfo],
-        safariProcessIDs: Set<pid_t>
+        safariProcessIDs: Set<pid_t>,
+        agentWindow: CGRect? = nil
     ) throws {
         let cursorLayer = Int(CGWindowLevelForKey(.cursorWindow))
         let topmost = windows.first { window in
@@ -904,14 +923,29 @@ extension SafariMCPServer {
         guard let topmost, safariProcessIDs.contains(topmost.ownerProcessID) else {
             throw NativeInputError(failure: nativePointerObscuredFailure(at: point, by: topmost?.ownerName))
         }
+        if let agentWindow, !sameFrame(topmost.bounds, agentWindow) {
+            throw NativeInputError(failure: nativePointerObscuredFailure(at: point, by: nil, anotherSafariWindow: true))
+        }
+    }
+
+    private nonisolated static func sameFrame(_ a: CGRect, _ b: CGRect) -> Bool {
+        let tolerance = windowFrameTolerance
+        return abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance
+            && abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
     }
 
     /// The refusal for a pointer target that Safari is not showing. The same
     /// family as losing focus before anything was sent: nothing went out, so the
     /// call can be retried once the window is out of the way.
-    nonisolated static func nativePointerObscuredFailure(at point: CGPoint, by owner: String?) -> ToolFailure {
+    nonisolated static func nativePointerObscuredFailure(
+        at point: CGPoint,
+        by owner: String?,
+        anotherSafariWindow: Bool = false
+    ) -> ToolFailure {
         let spot = "(\(Int(point.x)), \(Int(point.y)))"
-        let cause = owner.map { "a window of \($0) is on top of" } ?? "no window is at"
+        let cause = anotherSafariWindow
+            ? "another Safari window, not the one holding the agent's tab, is on top of"
+            : owner.map { "a window of \($0) is on top of" } ?? "no window is at"
         return ToolFailure(
             code: "native_input_focus_lost",
             message: "Safari is not showing the point \(spot) because \(cause) it, so nothing was sent. Native input posts a real pointer event at that spot, which would go to whatever is there instead. Ask the user to bring the Safari window to the front or move the other window, or omit native to use synthetic input, which does not depend on what is on screen.",
@@ -923,12 +957,15 @@ extension SafariMCPServer {
     private nonisolated static func ensurePointersAreOverSafari(
         _ points: [CGPoint],
         windows: NativeWindowLister,
-        pointer: NativePointer
+        pointer: NativePointer,
+        agentWindow: CGRect?
     ) throws {
         let windows = windows()
         let safariProcessIDs = pointer.safariProcessIDs()
         for point in points {
-            try ensurePointerIsOverSafari(at: point, windows: windows, safariProcessIDs: safariProcessIDs)
+            try ensurePointerIsOverSafari(
+                at: point, windows: windows, safariProcessIDs: safariProcessIDs, agentWindow: agentWindow
+            )
         }
     }
 
@@ -953,10 +990,11 @@ extension SafariMCPServer {
         to target: CGPoint,
         deadline: Double? = nil,
         windows: NativeWindowLister = liveNativeWindows,
+        agentWindow: CGRect? = nil,
         pointer: NativePointer? = nil
     ) async throws -> String {
         let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
-        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer)
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer, agentWindow: agentWindow)
         let start = pointer.location() ?? target
         try await postPointerPath(from: start, to: target, mouseType: .mouseMoved, pointer: pointer)
         guard pointer.safariIsFrontmost() else {
@@ -970,12 +1008,13 @@ extension SafariMCPServer {
         to target: CGPoint,
         deadline: Double? = nil,
         windows: NativeWindowLister = liveNativeWindows,
+        agentWindow: CGRect? = nil,
         pointer: NativePointer? = nil
     ) async throws -> String {
         let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
         // Both ends up front: a drag refused at its destination would otherwise
         // already have the button down at its source.
-        try ensurePointersAreOverSafari([start, target], windows: windows, pointer: pointer)
+        try ensurePointersAreOverSafari([start, target], windows: windows, pointer: pointer, agentWindow: agentWindow)
         try pointer.post(.mouseMoved, start)
         try await nativePointerPause(0.05)
         try pointer.post(.leftMouseDown, start)
@@ -1010,10 +1049,11 @@ extension SafariMCPServer {
         clickCount: Int = 1,
         deadline: Double? = nil,
         windows: NativeWindowLister = liveNativeWindows,
+        agentWindow: CGRect? = nil,
         pointer: NativePointer? = nil
     ) async throws -> String {
         let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
-        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer)
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer, agentWindow: agentWindow)
         let start = pointer.location() ?? target
         try await postPointerPath(from: start, to: target, mouseType: .mouseMoved, pointer: pointer)
         try await nativePointerPause(0.05)
@@ -1021,7 +1061,7 @@ extension SafariMCPServer {
         guard pointer.safariIsFrontmost() else {
             throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
         }
-        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer)
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer, agentWindow: agentWindow)
         for click in 1...max(1, clickCount) {
             if click > 1 { try await nativePointerPause(0.08) }
             try pointer.press(.leftMouseDown, target, Int64(click))
