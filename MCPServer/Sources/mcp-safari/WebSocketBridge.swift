@@ -660,7 +660,9 @@ actor WebSocketBridge {
     /// Waits briefly for the Safari extension (or a specific profile) to finish
     /// connecting/reconnecting before failing a tool call. Returns immediately
     /// when already connected, when the listener has permanently failed/stopped,
-    /// or when `connectGraceTimeout` is zero.
+    /// or when `connectGraceTimeout` is zero. `timeout` is the call's own time,
+    /// which caps the wait: a `run_steps` step with two seconds left must not
+    /// wait twelve.
     func waitForConnection(profileIndex: Int? = nil, timeout: Duration? = nil) async throws {
         if hasConnection(forProfileIndex: profileIndex) { return }
         if stopped || listenerStatus == .failed {
@@ -672,7 +674,7 @@ actor WebSocketBridge {
         if let profileIndex, !connections.isEmpty, self.profileID(atIndex: profileIndex) == nil {
             throw noConnectionError(profileIndex: profileIndex)
         }
-        let grace = timeout ?? connectGraceTimeout
+        let grace = timeout.map { min($0, connectGraceTimeout) } ?? connectGraceTimeout
         guard grace > .zero else {
             throw noConnectionError(profileIndex: profileIndex)
         }
@@ -745,7 +747,7 @@ actor WebSocketBridge {
         guard pendingRequests.count < Self.maxPendingRequests else {
             throw BridgeError.extensionError("Too many in-flight requests (maximum \(Self.maxPendingRequests)). Wait for pending operations to finish.")
         }
-        try await waitForConnection(profileIndex: profileIndex)
+        try await waitForConnection(profileIndex: profileIndex, timeout: .seconds(timeout))
         let connection = try connection(forProfileIndex: profileIndex)
         return try await send(action: action, params: params, timeout: timeout, on: connection)
     }
@@ -823,7 +825,7 @@ actor WebSocketBridge {
         waitForConnection shouldWait: Bool = true
     ) async throws -> [ProfileOutcome] {
         if shouldWait && profileStatuses().isEmpty {
-            try await waitForConnection()
+            try await waitForConnection(timeout: .seconds(timeout))
         }
         let targets = profileStatuses().map { (index: $0.index, id: $0.id) }
         guard !targets.isEmpty else { throw noConnectionError() }

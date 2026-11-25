@@ -250,6 +250,31 @@ struct BridgeLifecycleTests {
         #expect(failure?.retryable == true)
     }
 
+    /// The grace window is the most a call waits, never more than the call's own
+    /// time: a `run_steps` step with little time left must not wait it out.
+    @Test func theWaitForSafariEndsWithTheCallsOwnTime() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let bridge = try WebSocketBridge(
+            port: 0,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoot: tokenRoot,
+            connectGraceTimeout: .seconds(10)
+        )
+        await bridge.start()
+        defer { Task { await bridge.stop() } }
+
+        let start = ContinuousClock.now
+        let sent = await bridgeFailure { _ = try await bridge.send(action: "tabs_query", timeout: 0.2) }
+        let broadcast = await bridgeFailure { _ = try await bridge.broadcast(action: "tabs_query", timeout: 0.2) }
+        let elapsed = ContinuousClock.now - start
+
+        #expect(sent?.code == "bridge_disconnected")
+        #expect(broadcast?.code == "bridge_disconnected")
+        #expect(elapsed < .seconds(3))
+    }
+
     @Test func sendFailsFastWhenBridgeBindFailedDespiteGraceWindow() async throws {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }

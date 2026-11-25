@@ -171,6 +171,7 @@ actor SafariMCPServer {
         let report = PageVisibilityReport()
         let result = await Self.$pageVisibility.withValue(report) {
             do {
+                if Self.focusMovingTools.contains(tool) { try await waitForSafari(args) }
                 return try await Self.whileNoServerTypes(tool, timeout: Self.bridgeTimeout(args)) {
                     await dispatchUnreported(tool: tool, arguments: args)
                 }
@@ -182,6 +183,15 @@ actor SafariMCPServer {
         // A screenshot reads visibility itself and says so in its own words.
         guard report.sawHidden, tool != "screenshot" else { return result }
         return Self.notingHiddenPage(result)
+    }
+
+    /// Waits, within the call's own time, for Safari to connect the profile the
+    /// call is for. A call takes this wait before the native input lock, never
+    /// while holding it, so a server whose Safari is reconnecting doesn't keep
+    /// every other server's typing waiting too.
+    private func waitForSafari(_ args: [String: Value]) async throws {
+        let profileIndex = try TabHandle.resolve(args["tabId"])?.profileIndex
+        try await bridge.waitForConnection(profileIndex: profileIndex, timeout: .seconds(Self.bridgeTimeout(args)))
     }
 
     /// Runs a call that can move Safari's keyboard once no server is typing,
@@ -425,7 +435,7 @@ actor SafariMCPServer {
     private func resolveProfileIndex(_ args: [String: Value]) async throws -> Int {
         if let handle = try TabHandle.resolve(args["tabId"]) { return handle.profileIndex }
         if await bridge.connectedProfiles().isEmpty {
-            try await bridge.waitForConnection()
+            try await bridge.waitForConnection(timeout: .seconds(Self.bridgeTimeout(args)))
         }
         guard let selected = await bridge.connectedProfiles().first(where: \.selected) else {
             throw await bridge.noConnectionError()
@@ -800,6 +810,7 @@ actor SafariMCPServer {
         let traceSession = try await startTraceIfNeeded(args)
         let args = traceSession?.pinning(args) ?? args
         do {
+            try await waitForSafari(args)
             let (preparation, delivered) = try await NativeInputLock.withLock(
                 timeout: Self.bridgeTimeout(args)
             ) { () -> (BridgeResponse, String?) in
