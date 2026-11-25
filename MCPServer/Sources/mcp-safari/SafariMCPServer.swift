@@ -584,13 +584,107 @@ actor SafariMCPServer {
         // The named tab's window is where the new tab opens, so the extension
         // needs the tab as well as the profile it picks.
         if let handle = try TabHandle.resolve(args["tabId"]) { params["tabId"] = AnyCodable(handle.tabID) }
-        let response = try await bridge.send(
+        let timeout = Self.bridgeTimeout(args)
+        var response = try await bridge.send(
             action: "tabs_create",
             params: params,
-            timeout: Self.bridgeTimeout(args),
+            timeout: timeout,
             profileIndex: profileIndex
         )
+        if params["url"] != nil {
+            response = await confirmCreatedTabAccessIfNeeded(
+                response,
+                profileIndex: profileIndex,
+                timeout: timeout
+            )
+        }
         return tabResult(response, profileIndex: profileIndex, newWindowRequested: params["newWindow"] != nil)
+    }
+
+    /// A newly opened origin is reported as `not_granted` until any extension call
+    /// touches it (because `grantedOrigins` is populated lazily on first probe).
+    /// When the caller explicitly created a tab for a URL, verify access once so
+    /// already-granted sites are reported accurately instead of failing falsely.
+    private func confirmCreatedTabAccessIfNeeded(
+        _ response: BridgeResponse,
+        profileIndex: Int,
+        timeout: Double
+    ) async -> BridgeResponse {
+        guard response.success,
+              let raw = response.data?.stringValue,
+              let data = raw.data(using: .utf8),
+              let tab = try? JSONDecoder().decode([String: AnyCodable].self, from: data),
+              tab["access"]?.stringValue == "not_granted",
+              let tabID = tab["id"]?.intValue
+        else {
+            return response
+        }
+
+        let probeTimeout = min(timeout, 5.0)
+        for attempt in 0..<2 {
+            do {
+                let probe = try await bridge.send(
+                    action: "javascript_tool",
+                    params: [
+                        "tabId": AnyCodable(tabID),
+                        "code": AnyCodable("document.title || ''"),
+                    ],
+                    timeout: probeTimeout,
+                    profileIndex: profileIndex
+                )
+                if probe.success {
+                    let title = Self.extractProbeTitle(probe.data?.stringValue)
+                    return Self.upgradingTabAccess(in: response, title: title)
+                }
+                if probe.errorCode == "tab_not_loaded", attempt == 0 {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    continue
+                }
+                return response
+            } catch {
+                return response
+            }
+        }
+        return response
+    }
+
+    static func extractProbeTitle(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let data = trimmed.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(String.self, from: data) {
+            let clean = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+            return clean.isEmpty ? nil : clean
+        }
+        return trimmed
+    }
+
+    static func upgradingTabAccess(in response: BridgeResponse, title: String?) -> BridgeResponse {
+        guard response.success,
+              let raw = response.data?.stringValue,
+              let data = raw.data(using: .utf8),
+              var tab = try? JSONDecoder().decode([String: AnyCodable].self, from: data)
+        else {
+            return response
+        }
+        tab["access"] = AnyCodable("granted")
+        tab.removeValue(forKey: "accessHint")
+        if let title, !title.isEmpty, (tab["title"]?.stringValue ?? "").isEmpty {
+            tab["title"] = AnyCodable(title)
+        }
+        guard let updatedJSON = Self.jsonText(tab) else { return response }
+        return BridgeResponse(
+            id: response.id,
+            success: response.success,
+            data: AnyCodable(updatedJSON),
+            error: response.error,
+            errorCode: response.errorCode,
+            retryable: response.retryable,
+            recoveryAction: response.recoveryAction,
+            resolvedTabId: response.resolvedTabId,
+            profileIndex: response.profileIndex
+        )
     }
 
     private func handleCloseTab(_ args: [String: Value]) async throws -> CallTool.Result {
