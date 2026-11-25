@@ -814,6 +814,9 @@ actor SafariMCPServer {
             let (preparation, delivered) = try await NativeInputLock.withLock(
                 timeout: Self.bridgeTimeout(args)
             ) { () -> (BridgeResponse, String?) in
+                // Inside the lock, so another server's typing has finished and
+                // been recorded, and before anything is focused or raised.
+                try UserActivity.ensureIdle()
                 let preparation = try await Self.prepareNativeInput(
                     pointer: action == "native_pointer",
                     pageFocus: .live
@@ -823,6 +826,8 @@ actor SafariMCPServer {
                     return try await send(action, args, params: params)
                 }
                 guard preparation.success else { return (preparation, nil) }
+                // Recorded however the posting ends, since some events may be out.
+                defer { UserActivity.recordOwnInput() }
                 return (preparation, try await perform(preparation))
             }
             guard let message = delivered else {
