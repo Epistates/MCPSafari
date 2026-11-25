@@ -24,7 +24,13 @@ node --test Tests/*.mjs
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
 ```
 
-The extension build above matches CI and checks compilation. To install a development build, open `MCPSafari/MCPSafari.xcodeproj` in Xcode, configure signing for your team, and build and run the app. Enable its extension in Safari settings.
+The extension build above matches CI and checks compilation. Xcode registers every app it builds with Launch Services, and with MCPSafari also installed, Safari can then run both copies of the extension. Each numbers tabs its own way and both connect as the same profile, so tab handles change between calls. `.github/scripts/build_app.sh <derived-data-path> [Debug|Release] [xcodebuild arguments...]` builds the app and unregisters it again, even when the build fails. After any other build, unregister it yourself:
+
+```sh
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u <path to the built MCPSafari.app>
+```
+
+`mcp-safari doctor` warns when more than one copy is registered. To install a development build, open `MCPSafari/MCPSafari.xcodeproj` in Xcode, configure signing for your team, and build and run the app. Enable its extension in Safari settings.
 
 Point your MCP client at `MCPServer/.build/debug/MCPSafari` using an absolute path. Add `--verbose` to its arguments for debug logs. For a release server binary:
 
