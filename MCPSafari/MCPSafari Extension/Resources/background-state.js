@@ -149,9 +149,9 @@ function tabNotLoadedError() {
 function pageNeedsReloadError() {
     const error = new Error(
         "This tab was open when MCPSafari was last updated or restarted, and Safari won't let "
-        + "MCPSafari reach the page until it loads again. Nothing was done. Reload it with navigate "
-        + "and action reload, then retry. Reloading discards anything typed into the page and not "
-        + "yet saved, so ask the user first if that might matter."
+        + "MCPSafari reach the page until it loads again. Nothing was done. If this session opened "
+        + "the tab, reload it with navigate and action reload, then retry. Otherwise ask the user to "
+        + "reload it: it may hold something they typed and haven't saved, which a reload discards."
     );
     error.code = "page_needs_reload";
     error.retryable = true;

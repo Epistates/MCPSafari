@@ -24,6 +24,8 @@ brew upgrade epistates/tap/mcp-safari-server
 brew upgrade --cask epistates/tap/mcp-safari
 ```
 
+After upgrading, reload the Safari tabs you want agents to use. Safari keeps the previous version attached to pages that were open, and calls on them fail with `page_needs_reload` until they load again.
+
 Upgrading only the cask leaves the server behind, because a cask depends on a formula being present rather than being any particular version. That gives you a new app and extension against an old server, which the versioned handshake rejects. `mcp-safari doctor` reports it as a version mismatch and names the fix, so it fails loudly rather than misbehaving.
 
 Open MCPSafari.app once so Safari picks up the extension, then enable it in **Safari > Settings > Extensions > MCPSafari Extension**.

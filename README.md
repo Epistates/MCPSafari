@@ -35,6 +35,8 @@ brew upgrade epistates/tap/mcp-safari-server
 brew upgrade --cask epistates/tap/mcp-safari
 ```
 
+After upgrading, reload the Safari tabs you want agents to use. Safari keeps the previous version attached to pages that were open, and calls on them fail with `page_needs_reload` until they load again.
+
 Open MCPSafari.app once so Safari picks up the extension, then enable **MCPSafari Extension** in Safari → Settings → Extensions. Grant access to the sites you want your agent to use.
 
 Homebrew installs the published release. This README and the [tool reference](docs/tools.md) describe `main`, which may include unreleased features. Check [Releases](https://github.com/Epistates/MCPSafari/releases) for your version.

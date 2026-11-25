@@ -227,7 +227,7 @@ A call on a tab that has closed fails with `tab_closed`, not with `permission_re
 
 A call on a tab Safari has not loaded fails with `tab_not_loaded`. Safari reopens a window's tabs at launch without loading them, can unload a background tab to save memory, and loads a tab only when it is shown. `select_tab` brings the tab to the front, which loads it, and the same call then works. `navigate` with `reload` reports success on such a tab but leaves it unloaded.
 
-A tab that was open when MCPSafari was updated, restarted, or switched off and on fails with `page_needs_reload` until the page loads again. Safari keeps the earlier MCPSafari's script attached to such a page and lets nothing reach it, and a script injected now can't replace it. Nothing is done to the page. `navigate` with `reload` reloads it, and the same call then works; reloading discards anything typed into the page and not yet saved, so ask the user first if that might matter. The call is `retryable`, with `reload_page`.
+A tab that was open when MCPSafari was updated, restarted, or switched off and on fails with `page_needs_reload` until the page loads again. Safari keeps the earlier MCPSafari's script attached to such a page and lets nothing reach it, and a script injected now can't replace it. Nothing is done to the page, and once it has loaded again the same call works. Reload only a tab your session opened, with `navigate` and `reload`; a tab the user had open may hold something they typed and haven't saved, which a reload discards, so ask them to reload it. The call is `retryable`, with `reload_page`.
 
 A tab that doesn't answer isn't always waiting on a permission dialog. Safari slows or pauses a page it isn't showing (a background tab, or a tab whose window is minimized, completely covered or on another Space), and a busy page can miss the check's two seconds too. While its dialog is open, Safari also stops answering for the tab itself, so MCPSafari asks it once more before naming the reason:
 
@@ -280,7 +280,7 @@ Every tool failure carries a stable `code`, a human-readable `message`, a `retry
 | `call_status` | Check `status` for the bridge, the connected profiles, and token health. |
 | `call_tabs_context` | The tab is gone. List the open tabs and choose another. |
 | `call_select_tab` | Safari has not loaded the tab, or isn't showing it. `select_tab` on it brings it to the front and loads it; then call again. |
-| `reload_page` | The page still has an earlier MCPSafari attached. `navigate` with `reload` loads it again; then call again. Reloading discards anything typed into the page and not yet saved. |
+| `reload_page` | The page still has an earlier MCPSafari attached and has to load again. If your session opened the tab, `navigate` with `reload` does that; then call again. Otherwise ask the user to reload it, since a reload discards anything typed into the page and not yet saved. |
 | `list_tools` | The tool name is not one this server has. |
 | `inspect_error` | Nothing automatic to do; read the message. |
 | `inspect_batch_result` | A `run_steps` batch stopped partway; read the per-step results. |
