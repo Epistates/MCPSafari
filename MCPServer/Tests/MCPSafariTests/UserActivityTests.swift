@@ -34,8 +34,14 @@ struct UserActivityTests {
         // The latest input is the server's own, as an agent clicking a field and
         // then typing into it a second later sees.
         #expect(refusal(any: 1, own: 1) == nil)
-        // Posting returns a little before macOS stamps the last event.
-        #expect(refusal(any: 1, own: 1.4) == nil)
+        // macOS can stamp the last event a moment after posting returns.
+        #expect(refusal(any: 1, own: 1.05) == nil)
+    }
+
+    /// A person reaching for the mouse a moment after an agent's call is still a
+    /// person.
+    @Test func inputHalfASecondAfterAServersOwnIsAPersons() {
+        #expect(refusal(any: 0.3, own: 0.8)?.code == "native_input_user_active")
     }
 
     @Test func aKeyboardAndPointerLeftAloneLongEnoughAllowNativeInput() {

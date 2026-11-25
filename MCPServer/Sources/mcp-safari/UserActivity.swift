@@ -20,9 +20,11 @@ enum UserActivity {
     static let quietSeconds: Double = 5
 
     /// How much later than a server's own last event the latest input must be to
-    /// count as a person's. Posting returns a little before macOS stamps the
-    /// event, so a server's own last keystroke can look that much newer.
-    static let ownInputSlack: Double = 0.5
+    /// count as a person's. The record is written after posting returns, so a
+    /// server's own events are already older than it; this covers macOS stamping
+    /// the last of them a moment late. Half a second hid a person's mouse moved
+    /// right after an agent's call (seen at the 0.4.1 sitting).
+    static let ownInputSlack: Double = 0.1
 
     static var recordURL: URL {
         WebSocketBridge.applicationSupportDirectoryURL.appendingPathComponent("native-input.last")
