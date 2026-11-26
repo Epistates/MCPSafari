@@ -225,13 +225,32 @@ const keepaliveReadOffsetMs = Math.floor(Math.random() * KEEPALIVE_READ_SPREAD_M
 // Safari unloads this page 30 seconds after the last extension event, and an
 // open WebSocket doesn't count as one. An alarm does: each one fires an event,
 // which keeps the page loaded, and reads the token directory, which is how a
-// newly started server is found. 30 seconds is the shortest period Safari runs
-// an alarm at. The alarm also resets backoff so the extension quickly
-// reconnects when a new server starts (instead of waiting for a long backoff).
+// newly started server is found. The alarm also resets backoff so the extension
+// quickly reconnects when a new server starts (instead of waiting for a long
+// backoff).
+//
+// Safari runs an alarm no more often than every 30 seconds, the same as its
+// unload delay, so one alarm kept the page only by being due microseconds before
+// the unload. Two alarms half a period apart put an event every 15 seconds, a
+// 15-second margin that holds for any unload delay over 15, and find a new
+// server twice as fast.
+const KEEPALIVE_PERIOD_MINUTES = 0.5;
+const KEEPALIVE_ALARMS = Object.freeze([
+    { name: "mcp-keepalive", delayInMinutes: KEEPALIVE_PERIOD_MINUTES },
+    { name: "mcp-keepalive-midway", delayInMinutes: KEEPALIVE_PERIOD_MINUTES * 1.5 },
+]);
+
 if (typeof browser.alarms !== "undefined") {
-    browser.alarms.create("mcp-keepalive", { periodInMinutes: 0.5 });
+    // Created while the page loads, every time it loads, and not after asking
+    // whether they exist: that answer can come after the load finishes, and
+    // Safari sets the unload 30 seconds from then. Created here, the first alarm
+    // is due a period from now, ahead of that unload, and the two keep the page
+    // from there.
+    for (const { name, delayInMinutes } of KEEPALIVE_ALARMS) {
+        browser.alarms.create(name, { delayInMinutes, periodInMinutes: KEEPALIVE_PERIOD_MINUTES });
+    }
     browser.alarms.onAlarm.addListener((alarm) => {
-        if (alarm.name === "mcp-keepalive") {
+        if (KEEPALIVE_ALARMS.some(({ name }) => name === alarm.name)) {
             // A suppressed port is a pause, not a verdict. The only thing suppression
             // can know is that the dials since the last token read failed, and a
             // refusal says nothing about whether the server is coming back: anything

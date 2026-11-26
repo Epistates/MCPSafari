@@ -674,7 +674,7 @@ async function handleIdentify(params, serverPort) {
 /** tabId to the site a call on it was refused for, and when. @type {Map<number, {origin: string|null, at: number}>} */
 const tabsAwaitingAccess = new Map();
 // A request nobody has acted on in this long stops being news. Checked on the
-// keepalive alarm, about every 30 seconds, so it goes within a minute of that.
+// keepalive, about every 15 seconds, so it goes within a minute of that.
 const ACCESS_WAIT_SHOWN_MS = 15 * 60 * 1000;
 const ACCESS_BADGE_TEXT = "!";
 
