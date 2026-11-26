@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		9DC62F202F717081006535B1 /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DC62F212F717081006535B1 /* TokenStore.swift */; };
+		9DC62F302F717081006535B1 /* TokenReader in Frameworks */ = {isa = PBXBuildFile; productRef = 9DC62F312F717081006535B1 /* TokenReader */; };
 		9DC62EF82F717081006535B1 /* MCPSafari Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 9DC62EF72F717081006535B1 /* MCPSafari Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -36,9 +36,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		9DC62F212F717081006535B1 /* TokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TokenStore.swift; path = "MCPSafari Extension/TokenStore.swift"; sourceTree = "<group>"; };
 		9DC62EC72F717081006535B1 /* MCPSafari.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MCPSafari.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		9DC62EE12F717081006535B1 /* MCPSafariTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "MCPSafariTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9DC62EF72F717081006535B1 /* MCPSafari Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "MCPSafari Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -56,11 +54,6 @@
 		9DC62EC92F717081006535B1 /* MCPSafari */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "MCPSafari";
-			sourceTree = "<group>";
-		};
-		9DC62EE42F717081006535B1 /* MCPSafariTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "MCPSafariTests";
 			sourceTree = "<group>";
 		};
 		9DC62EFB2F717081006535B1 /* MCPSafari Extension */ = {
@@ -86,17 +79,11 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		9DC62EDE2F717081006535B1 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		9DC62EF42F717081006535B1 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9DC62F302F717081006535B1 /* TokenReader in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -107,9 +94,7 @@
 			isa = PBXGroup;
 			children = (
 				9DC62EC92F717081006535B1 /* MCPSafari */,
-				9DC62EE42F717081006535B1 /* MCPSafariTests */,
 				9DC62EFB2F717081006535B1 /* MCPSafari Extension */,
-				9DC62F212F717081006535B1 /* TokenStore.swift */,
 				9DC62EC82F717081006535B1 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -118,7 +103,6 @@
 			isa = PBXGroup;
 			children = (
 				9DC62EC72F717081006535B1 /* MCPSafari.app */,
-				9DC62EE12F717081006535B1 /* MCPSafariTests.xctest */,
 				9DC62EF72F717081006535B1 /* MCPSafari Extension.appex */,
 			);
 			name = Products;
@@ -151,28 +135,6 @@
 			productReference = 9DC62EC72F717081006535B1 /* MCPSafari.app */;
 			productType = "com.apple.product-type.application";
 		};
-		9DC62EE02F717081006535B1 /* MCPSafariTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 9DC62F1A2F717081006535B1 /* Build configuration list for PBXNativeTarget "MCPSafariTests" */;
-			buildPhases = (
-				9DC62EDD2F717081006535B1 /* Sources */,
-				9DC62EDE2F717081006535B1 /* Frameworks */,
-				9DC62EDF2F717081006535B1 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				9DC62EE42F717081006535B1 /* MCPSafariTests */,
-			);
-			name = "MCPSafariTests";
-			packageProductDependencies = (
-			);
-			productName = "MCPSafariTests";
-			productReference = 9DC62EE12F717081006535B1 /* MCPSafariTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
 		9DC62EF62F717081006535B1 /* MCPSafari Extension */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 9DC62F112F717081006535B1 /* Build configuration list for PBXNativeTarget "MCPSafari Extension" */;
@@ -190,6 +152,7 @@
 			);
 			name = "MCPSafari Extension";
 			packageProductDependencies = (
+				9DC62F312F717081006535B1 /* TokenReader */,
 			);
 			productName = "MCPSafari Extension";
 			productReference = 9DC62EF72F717081006535B1 /* MCPSafari Extension.appex */;
@@ -208,9 +171,6 @@
 					9DC62EC62F717081006535B1 = {
 						CreatedOnToolsVersion = 26.3;
 					};
-					9DC62EE02F717081006535B1 = {
-						CreatedOnToolsVersion = 26.3;
-					};
 					9DC62EF62F717081006535B1 = {
 						CreatedOnToolsVersion = 26.3;
 					};
@@ -225,13 +185,15 @@
 			);
 			mainGroup = 9DC62EBE2F717081006535B1;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				9DC62F322F717081006535B1 /* XCLocalSwiftPackageReference "TokenReader" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9DC62EC82F717081006535B1 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				9DC62EC62F717081006535B1 /* MCPSafari */,
-				9DC62EE02F717081006535B1 /* MCPSafariTests */,
 				9DC62EF62F717081006535B1 /* MCPSafari Extension */,
 			);
 		};
@@ -239,13 +201,6 @@
 
 /* Begin PBXResourcesBuildPhase section */
 		9DC62EC52F717081006535B1 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		9DC62EDF2F717081006535B1 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -266,14 +221,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		9DC62EDD2F717081006535B1 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				9DC62F202F717081006535B1 /* TokenStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -567,44 +514,6 @@
 			};
 			name = Release;
 		};
-		9DC62F1B2F717081006535B1 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 47;
-				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.1;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariTests";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Debug;
-		};
-		9DC62F1C2F717081006535B1 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 47;
-				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.1;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariTests";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -635,16 +544,22 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		9DC62F1A2F717081006535B1 /* Build configuration list for PBXNativeTarget "MCPSafariTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				9DC62F1B2F717081006535B1 /* Debug */,
-				9DC62F1C2F717081006535B1 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		9DC62F322F717081006535B1 /* XCLocalSwiftPackageReference "TokenReader" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = TokenReader;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		9DC62F312F717081006535B1 /* TokenReader */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9DC62F322F717081006535B1 /* XCLocalSwiftPackageReference "TokenReader" */;
+			productName = TokenReader;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 9DC62EBF2F717081006535B1 /* Project object */;
 }

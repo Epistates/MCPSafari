@@ -8,6 +8,7 @@
 import SafariServices
 import Darwin
 import os.log
+import TokenReader
 
 class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 

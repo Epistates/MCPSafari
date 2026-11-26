@@ -19,9 +19,7 @@ node --test Tests/*.mjs
   -scheme MCPSafari -configuration Debug build \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
 
-(cd MCPSafari && xcodebuild test -project MCPSafari.xcodeproj \
-  -scheme MCPSafari -destination 'platform=macOS' \
-  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
+swift test --package-path MCPSafari/TokenReader
 ```
 
 The extension build above matches CI and checks compilation. Xcode registers every app it builds with Launch Services, and with MCPSafari also installed, Safari can then run both copies of the extension. Each numbers tabs its own way and both connect as the same profile, so tab handles change between calls. `.github/scripts/build_app.sh <derived-data-path> [Debug|Release] [xcodebuild arguments...]` builds the app and unregisters it again, even when the build fails. After any other build, unregister it yourself:
@@ -124,7 +122,7 @@ A Manifest V3 Safari Web Extension with:
 
 ### macOS host app
 
-A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension, and the extension's native messaging handler (`SafariWebExtensionHandler.swift`) that serves the auth tokens. The token reading and the reply to the background script live in `TokenStore.swift`, which imports only Foundation so `MCPSafariTests` compiles the same file and tests it without hosting the app. The two `.entitlements` files are the only source of the sandbox grants; keep build settings from adding to them.
+A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension, and the extension's native messaging handler (`SafariWebExtensionHandler.swift`) that serves the auth tokens. The token reading and the reply to the background script live in `TokenStore.swift`, in the `MCPSafari/TokenReader` package that the extension links. It imports only Foundation, so `swift test` covers it without building the app: Xcode registers every app it builds, and a registered build beside the installed app lets Safari run a second copy of the extension. The two `.entitlements` files are the only source of the sandbox grants; keep build settings from adding to them.
 
 ## Release qualification
 

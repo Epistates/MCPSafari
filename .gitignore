@@ -3,6 +3,8 @@
 
 # Build artifacts
 MCPServer/.build/
+MCPSafari/TokenReader/.build/
+MCPSafari/TokenReader/.swiftpm/
 *.o
 *.d
 *.swp

@@ -1,13 +1,13 @@
 //
 //  TokenStoreTests.swift
-//  MCPSafariTests
+//  TokenReaderTests
 //
-//  TokenStore.swift is compiled into this bundle directly, not reached through the
-//  host app, so these run without launching anything.
+//  Run with `swift test --package-path MCPSafari/TokenReader`, which builds no app.
 //
 
 import Foundation
 import Testing
+@testable import TokenReader
 
 @Suite struct TokenStoreTests {
     let sandbox: URL

@@ -1,15 +1,15 @@
 //
 //  TokenStore.swift
-//  MCPSafari Extension
+//  TokenReader
 //
 //  The part of the native messaging handler that needs no Safari: reading the
 //  bridge's token files and building the reply to the background script. It
-//  imports only Foundation so the unit tests can compile this same file.
+//  imports only Foundation, so `swift test` covers it without building the app.
 //
 
 import Foundation
 
-enum TokenStore {
+public enum TokenStore {
 
     /// Reported when Safari supplies no `SFExtensionProfileKey`. Must match
     /// `WebSocketBridge.defaultProfileID`.
@@ -42,7 +42,7 @@ enum TokenStore {
     ///
     /// A sandboxed process has two homes: its container, and the real one from the
     /// password database. The bridge runs unsandboxed and writes under the real one.
-    static func roots(homes: [URL]) -> [URL] {
+    public static func roots(homes: [URL]) -> [URL] {
         var roots: [URL] = []
         for home in homes {
             let root = home.appendingPathComponent(tokenRootRelativePath)
@@ -59,7 +59,7 @@ enum TokenStore {
     /// message back, which is Xcode's template and gives a caller nothing it
     /// did not already have. The no-token error carries a code and no paths, so
     /// the home directory never reaches a page-visible log.
-    static func response(to message: Any?, profile: UUID?, roots: [URL]) -> [String: Any] {
+    public static func response(to message: Any?, profile: UUID?, roots: [URL]) -> [String: Any] {
         guard isTokenRequest(message) else { return ["error": "unsupported_message"] }
 
         var body: [String: Any] = [:]
@@ -85,7 +85,7 @@ enum TokenStore {
         return body
     }
 
-    static func isTokenRequest(_ message: Any?) -> Bool {
+    public static func isTokenRequest(_ message: Any?) -> Bool {
         (message as? [String: Any])?["type"] as? String == "getTokens"
     }
 
