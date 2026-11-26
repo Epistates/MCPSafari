@@ -25,6 +25,7 @@ function loadBackground(initialTokens = {}, { manualPorts = [] } = {}) {
     const sockets = [];
     const warnings = [];
     const runtimeListeners = [];
+    const timers = [];
     let alarmListener = null;
 
     class FakeWebSocket {
@@ -77,8 +78,9 @@ function loadBackground(initialTokens = {}, { manualPorts = [] } = {}) {
         console: { error() {}, log() {}, warn: (...args) => warnings.push(args.join(" ")) },
         Date,
         Promise,
-        // Queued, never run: a backoff reconnect is not what is under test.
-        setTimeout: () => 0,
+        // Queued, and run only by `keepalive`: a backoff reconnect is not what
+        // is under test.
+        setTimeout: (callback) => timers.push(callback),
         WebSocket: FakeWebSocket,
     });
     vm.runInContext(source, context);
@@ -95,8 +97,11 @@ function loadBackground(initialTokens = {}, { manualPorts = [] } = {}) {
             ({ port }) => port
         ),
         dialledPorts: () => sockets.map((socket) => Number(new URL(socket.url).port)),
+        /// The alarm, then the pause before its token read, which the listener queues.
         async keepalive() {
+            const queued = timers.length;
             alarmListener({ name: "mcp-keepalive" });
+            for (const callback of timers.slice(queued)) callback();
             await settle();
         },
         addPort(port) {

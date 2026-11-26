@@ -83,10 +83,6 @@ async function tabIsGone(tabId) {
     }
 }
 
-function delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // --- Message Listener (from popup or content scripts) ----------------
 
 // Entries expire on their own, but a long-lived background page would otherwise
@@ -219,14 +215,21 @@ function persistManualPorts() {
     writeStorage("local", { manualPorts: [...manualPorts] });
 }
 
-// --- Service Worker Keepalive -----------------------------------------
+// --- Keepalive -------------------------------------------------------
 
-// Service workers get suspended after ~30s of inactivity.
-// Use alarms to periodically wake and ensure WebSocket stays connected.
-// The alarm also resets backoff so the extension quickly reconnects when
-// a new server starts (instead of waiting for a long backoff to expire).
+// How far apart the profiles' keepalive reads are spread. Each page picks its
+// place once, so a profile keeps it, and two profiles' reads rarely overlap.
+const KEEPALIVE_READ_SPREAD_MS = 2000;
+const keepaliveReadOffsetMs = Math.floor(Math.random() * KEEPALIVE_READ_SPREAD_MS);
+
+// Safari unloads this page 30 seconds after the last extension event, and an
+// open WebSocket doesn't count as one. An alarm does: each one fires an event,
+// which keeps the page loaded, and reads the token directory, which is how a
+// newly started server is found. 30 seconds is the shortest period Safari runs
+// an alarm at. The alarm also resets backoff so the extension quickly
+// reconnects when a new server starts (instead of waiting for a long backoff).
 if (typeof browser.alarms !== "undefined") {
-    browser.alarms.create("mcp-keepalive", { periodInMinutes: 0.4 }); // ~24s
+    browser.alarms.create("mcp-keepalive", { periodInMinutes: 0.5 });
     browser.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === "mcp-keepalive") {
             // A suppressed port is a pause, not a verdict. The only thing suppression
@@ -239,7 +242,10 @@ if (typeof browser.alarms !== "undefined") {
             // it is there, and `pruneRemovedTokenPorts` drops it when it is gone.
             staleTokensByPort.clear();
             expireAccessWaits();
-            loadAuthTokens().finally(() => {
+            // Read a moment after the alarm rather than on it: Safari fires every
+            // profile's alarm in the same millisecond, and of two native messages
+            // in flight together it answers only one (see `loadAuthTokens`).
+            delay(keepaliveReadOffsetMs).then(loadAuthTokens).finally(() => {
                 // Was a second copy of this loop, which is how the give-up
                 // threshold below ended up disagreeing with `scheduleReconnect`.
                 reconnectKnownPorts();
@@ -272,12 +278,45 @@ if (typeof browser.alarms !== "undefined") {
 
 // --- Token Loading --------------------------------------------------
 
-async function loadAuthTokens() {
+/** The token read in progress, which every caller shares. */
+let tokenRead = null;
+
+/**
+ * Reads which servers are running, and dials any this page doesn't have yet.
+ *
+ * Safari loses a reply when two of MCPSafari's native messages are in flight at
+ * once, from one profile or from two. Its log shows both requests going through
+ * the same NSExtension object, and the earlier request's promise then never
+ * settles. Every profile's keepalive alarm fires in the same millisecond, so
+ * before this one profile missed each read at random, and found a new server a
+ * minute or more after the others (#168). Hence one read per page at a time,
+ * and each request sent under `NATIVE_REQUEST_POLICY`.
+ */
+function loadAuthTokens() {
+    tokenRead ??= readAuthTokens().finally(() => { tokenRead = null; });
+    return tokenRead;
+}
+
+/**
+ * One message to the native handler, sent again when its reply is lost.
+ *
+ * The handler echoes the nonce, so a reply that names another one answers some
+ * other request and is not taken for this one's. One with no nonce is from a
+ * handler older than the echo, which can only be this request's.
+ */
+function askNativeHandler(message) {
+    return withRetries(async (attempt) => {
+        if (attempt > 1) console.warn(`[MCPSafari] Native reply lost; sending attempt ${attempt}`);
+        const nonce = randomNonce();
+        const reply = await browser.runtime.sendNativeMessage("com.epistates.MCPSafari.Extension", { ...message, nonce });
+        if (reply?.nonce !== undefined && reply.nonce !== nonce) throw new ReplyLost("the reply answered another request");
+        return reply;
+    }, NATIVE_REQUEST_POLICY);
+}
+
+async function readAuthTokens() {
     try {
-        const response = await browser.runtime.sendNativeMessage(
-            "com.epistates.MCPSafari.Extension",
-            { type: "getTokens" }
-        );
+        const response = await askNativeHandler({ type: "getTokens" });
         if (response && typeof response.profile === "string" && response.profile) {
             profileId = response.profile;
         }

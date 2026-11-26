@@ -168,6 +168,32 @@ import Testing
         }
     }
 
+    @Test func tokensReplyEchoesTheRequestNonce() throws {
+        try withRoots { roots in
+            try writeToken(first, "9223", in: roots[0])
+            let nonce = String(repeating: "n", count: 43)
+
+            let reply = TokenStore.response(to: ["type": "getTokens", "nonce": nonce], profile: nil, roots: roots)
+
+            #expect(reply["nonce"] as? String == nonce)
+            #expect(reply["tokens"] as? [String: String] == ["9223": first])
+        }
+    }
+
+    @Test func anOversizedOrMissingNonceIsNotEchoed() throws {
+        try withRoots { roots in
+            let oversized = String(repeating: "n", count: TokenStore.maxNonceBytes + 1)
+            let messages: [[String: Any]] = [
+                ["type": "getTokens"],
+                ["type": "getTokens", "nonce": oversized],
+                ["type": "getTokens", "nonce": 7],
+            ]
+            for message in messages {
+                #expect(TokenStore.response(to: message, profile: nil, roots: roots)["nonce"] == nil)
+            }
+        }
+    }
+
     @Test func missingProfileKeyFallsBackToDefault() throws {
         try withRoots { roots in
             let reply = TokenStore.response(to: ["type": "getTokens"], profile: nil, roots: roots)

@@ -78,8 +78,11 @@ function loadBackground() {
                 await new Promise((resolve) => setImmediate(resolve));
             }
         },
+        /// The alarm, then the pause before its token read, which the listener queues.
         async fireKeepalive() {
+            const queued = timers.length;
             alarmListener({ name: "mcp-keepalive" });
+            for (const callback of timers.slice(queued)) callback();
             await harness.settle();
         },
         /// Takes the newest socket through the handshake, leaving the port in
