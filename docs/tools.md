@@ -252,7 +252,7 @@ Every successful tool result includes an object in `structuredContent`, alongsid
 | Tools | Structured fields |
 |-|-|
 | `status` | `status` with listener, authentication and profile details; `instance`, what this server tells Safari it is: its `name` and `folder` (each `null` when it has none) and, once the MCP client has introduced itself, `client` (`name` and `version`) |
-| `tabs_context` | `tabs` and `profileFailures`; an incomplete listing names the missing profiles |
+| `tabs_context` | `tabs` and `profileFailures`; an incomplete listing names the missing profiles, and `profileDiscoverySecondsLeft` appears while profiles may still be finding a server that just started |
 | `tabs_create`, `select_tab`, `close_tab` | `tab`, with the profile-qualified handle; close returns `id` and `closed` |
 | `read_page`, `snapshot`, `find` | `page`, `snapshot`, `matches` respectively; `find` adds `unreachableFrames` when it could not search every frame |
 | `read_console`, `read_network` | `messages`, `requests` respectively |
@@ -288,7 +288,7 @@ Every tool failure carries a stable `code`, a human-readable `message`, a `retry
 
 An optional argument given with the wrong type, such as `bringToFront: "false"`, `status: "500"`, or `pattern: 5`, is refused with `fix_input` before anything is sent. It is never read as absent, so a call does not run with a default the caller did not ask for. Whole-valued numbers such as `800.0` are accepted where an integer is wanted.
 
-A call made while Safari's extension isn't connected, such as just after the server starts or while the extension reconnects, waits for it: up to 12 seconds, or the call's own time if that ends first. If the extension still hasn't connected, the call fails with the retryable `bridge_disconnected`, and `status` shows whether Safari is connected at all. A server that couldn't open any of its ports fails at once with `bridge_unavailable`, and so does a tab handle for a profile that has never connected while another one is, with `profile_not_connected`.
+A call made while Safari's extension isn't connected, such as just after the server starts or while the extension reconnects, waits for it, and goes ahead the moment it connects. Each Safari profile finds a new server on its next check, about every 30 seconds, so for its first 40 seconds a server waits until then; after that it waits up to 12 seconds. Either way the wait ends with the call's own time if that comes first. While a new server is still within those 40 seconds, `tabs_context` adds a note that a profile may not be listed yet, with `profileDiscoverySecondsLeft` saying when to look again. If the extension still hasn't connected, the call fails with the retryable `bridge_disconnected`, and `status` shows whether Safari is connected at all. A server that couldn't open any of its ports fails at once with `bridge_unavailable`, and so does a tab handle for a profile that has never connected while another one is, with `profile_not_connected`.
 
 A `bridge_timeout` means no reply arrived before the deadline; the browser operation may already have completed. It is not automatically retryable. Inspect the target state before repeating a click, submission, upload, or JavaScript call. Canceling a request stops the server waiting, but cannot retract work already sent to Safari.
 

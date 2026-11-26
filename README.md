@@ -83,8 +83,6 @@ Console and network capture have limits. Pages can alter the captured data, and 
 
 `clear_cookies` removes only the cookies Safari lets the extension see, and Safari shows it a cookie only when the cookie's own domain is granted. With **Always Allow on Every Website** it works as expected. With per-site grants, a cookie set for a parent domain (`.example.com` from `login.example.com`) or for a domain you never stopped on is invisible: the call succeeds, reports what it did remove, and leaves that cookie in place. A sign-in that redirects through an identity provider is the usual case, since you never land on its domains long enough to grant them from the toolbar button. To switch accounts reliably, use a dedicated Safari profile and grant MCPSafari every website there; website access is per profile, so your own profile keeps its per-site grants. See [cookies](docs/tools.md#cookies).
 
-A second Safari profile can take a minute or more to connect to a server that just started, while the profile you're using connects within seconds. Until it does, calls that name that profile's tabs fail with `profile_not_connected`. `status` lists the connected profiles, so retry once it shows up. Tracked in [#168](https://github.com/Epistates/MCPSafari/issues/168).
-
 ## Documentation
 
 - [Setup and troubleshooting](docs/setup.md): manual installation, client configuration, ports, and diagnostics.
