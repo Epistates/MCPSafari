@@ -525,7 +525,7 @@ actor SafariMCPServer {
     /// What `tabs_context` says while Safari's profiles may still be finding this server.
     static func profileDiscoveryNote(timeLeft: Duration) -> String {
         "This server started moments ago, and each Safari profile finds a new server on its next "
-            + "check, which comes every 30 seconds, so a profile may not be listed yet. If one you "
+            + "check, which comes every 15 seconds, so a profile may not be listed yet. If one you "
             + "need is missing, call tabs_context again in \(wholeSeconds(timeLeft)) seconds."
     }
 

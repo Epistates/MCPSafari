@@ -364,10 +364,10 @@ actor WebSocketBridge {
     static let defaultConnectGraceTimeout: Duration = .seconds(12)
 
     /// How long Safari's profiles can take to find a server that just started. Each
-    /// reads the token directory on a keepalive alarm every 30 seconds, the shortest
-    /// period `browser.alarms` allows, up to 2 seconds after the alarm, and resends a
-    /// read whose reply Safari loses for up to about 5 seconds more (#168).
-    static let defaultDiscoveryWindow: Duration = .seconds(40)
+    /// reads the token directory on a keepalive every 15 seconds, up to 2 seconds
+    /// after it, and resends a read whose reply Safari loses for up to about 6
+    /// seconds more (#168).
+    static let defaultDiscoveryWindow: Duration = .seconds(25)
 
     init(
         port: UInt16 = 8089,
