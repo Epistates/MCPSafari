@@ -139,6 +139,13 @@ actor WebSocketBridge {
     /// before reporting `bridge_disconnected`. Zero preserves immediate failure
     /// (the default for direct unit-test bridge construction).
     private let connectGraceTimeout: Duration
+    /// How long after it starts listening a server waits for Safari's profiles to
+    /// find it. Zero, the default for direct unit-test construction, adds nothing
+    /// to `connectGraceTimeout`.
+    private let discoveryWindow: Duration
+    /// When the listener last came up and published its token, which is when
+    /// Safari's profiles could start finding it.
+    private var listeningSince: ContinuousClock.Instant?
     /// Runs once the listener is ready and before its token is written. The gap is
     /// real but a few milliseconds wide, so a test that wants to dial inside it has
     /// to be able to hold it open.
@@ -356,6 +363,12 @@ actor WebSocketBridge {
     /// without stalling for a full bridge timeout when Safari is actually closed.
     static let defaultConnectGraceTimeout: Duration = .seconds(12)
 
+    /// How long Safari's profiles can take to find a server that just started. Each
+    /// reads the token directory on a keepalive alarm every 30 seconds, the shortest
+    /// period `browser.alarms` allows, up to 2 seconds after the alarm, and resends a
+    /// read whose reply Safari loses for up to about 5 seconds more (#168).
+    static let defaultDiscoveryWindow: Duration = .seconds(40)
+
     init(
         port: UInt16 = 8089,
         portCount: UInt16 = WebSocketBridge.defaultPortCount,
@@ -365,6 +378,7 @@ actor WebSocketBridge {
         rebindDelay: Duration = .seconds(2),
         answeringCheckSeconds: TimeInterval = 3,
         connectGraceTimeout: Duration = .zero,
+        discoveryWindow: Duration = .zero,
         instance: InstanceIdentity = InstanceIdentity(),
         beforeTokenPublication: (@Sendable () async -> Void)? = nil
     ) throws {
@@ -379,6 +393,7 @@ actor WebSocketBridge {
         self.handshakeDeadline = handshakeDeadline
         self.answeringCheckSeconds = answeringCheckSeconds
         self.connectGraceTimeout = connectGraceTimeout
+        self.discoveryWindow = discoveryWindow
 
         // Generate a random auth token. It is written after the listener binds so
         // the token filename matches the actual fallback port.
@@ -494,6 +509,7 @@ actor WebSocketBridge {
                         return
                     }
                     listenerStatus = .listening
+                    listeningSince = .now
                     lastError = nil
                     rebindAttempts = 0
                     logger.info("WebSocket server listening on port \(boundPort)")
@@ -674,7 +690,7 @@ actor WebSocketBridge {
         if let profileIndex, !connections.isEmpty, self.profileID(atIndex: profileIndex) == nil {
             throw noConnectionError(profileIndex: profileIndex)
         }
-        let grace = timeout.map { min($0, connectGraceTimeout) } ?? connectGraceTimeout
+        let grace = timeout.map { min($0, connectionGrace) } ?? connectionGrace
         guard grace > .zero else {
             throw noConnectionError(profileIndex: profileIndex)
         }
@@ -707,6 +723,22 @@ actor WebSocketBridge {
         } onCancel: {
             Task { await self.finishConnectionWaiter(id: waiterID, outcome: .failed(CancellationError())) }
         }
+    }
+
+    /// The most a call waits for Safari to connect: the reconnect grace, or, while
+    /// Safari's profiles may still be finding a server that just started, the rest
+    /// of that time. A waiter wakes as soon as a profile connects, so this bounds
+    /// the wait and is not how long it takes.
+    private var connectionGrace: Duration {
+        max(connectGraceTimeout, profileDiscoveryTimeLeft() ?? .zero)
+    }
+
+    /// How much longer Safari's profiles may take to find this server, or nil once
+    /// they have had their chance, or while it is not listening.
+    func profileDiscoveryTimeLeft() -> Duration? {
+        guard listenerStatus == .listening, let listeningSince else { return nil }
+        let left = listeningSince + discoveryWindow - .now
+        return left > .zero ? left : nil
     }
 
     private func finishConnectionWaiter(id: UUID, outcome: WaiterOutcome) {

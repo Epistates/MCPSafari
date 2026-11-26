@@ -31,6 +31,7 @@ actor SafariMCPServer {
         portCount: UInt16 = WebSocketBridge.defaultPortCount,
         logger: Logger,
         connectGraceTimeout: Duration = WebSocketBridge.defaultConnectGraceTimeout,
+        discoveryWindow: Duration = WebSocketBridge.defaultDiscoveryWindow,
         instance: InstanceIdentity = InstanceIdentity()
     ) throws {
         self.logger = logger
@@ -39,6 +40,7 @@ actor SafariMCPServer {
             portCount: portCount,
             logger: logger,
             connectGraceTimeout: connectGraceTimeout,
+            discoveryWindow: discoveryWindow,
             instance: instance
         )
         self.server = Server(
@@ -507,10 +509,29 @@ actor SafariMCPServer {
                 + merged.failures.joined(separator: "; ")
             ))
         }
-        return CallTool.Result(content: content, structuredContent: .object([
+        var structured: [String: Value] = [
             "tabs": try Value(merged.tabs),
             "profileFailures": .array(merged.failures.map(Value.string)),
-        ]))
+        ]
+        // A profile that hasn't found this server yet is missing without a trace,
+        // and a short listing that looks complete sends the caller the wrong way.
+        if let timeLeft = await bridge.profileDiscoveryTimeLeft() {
+            content.append(Self.textContent(Self.profileDiscoveryNote(timeLeft: timeLeft)))
+            structured["profileDiscoverySecondsLeft"] = .int(Self.wholeSeconds(timeLeft))
+        }
+        return CallTool.Result(content: content, structuredContent: .object(structured))
+    }
+
+    /// What `tabs_context` says while Safari's profiles may still be finding this server.
+    static func profileDiscoveryNote(timeLeft: Duration) -> String {
+        "This server started moments ago, and each Safari profile finds a new server on its next "
+            + "check, which comes every 30 seconds, so a profile may not be listed yet. If one you "
+            + "need is missing, call tabs_context again in \(wholeSeconds(timeLeft)) seconds."
+    }
+
+    /// `duration` rounded up to whole seconds, so a wait it names is never too short.
+    private static func wholeSeconds(_ duration: Duration) -> Int {
+        Int((Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18).rounded(.up))
     }
 
     /// Flattens what each profile returned into one listing, naming every tab by

@@ -105,6 +105,8 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         return bounded(response, method).finally(() => pending.delete(id));
     };
     const exercised = new Set();
+    /// A listing's content without the note a newly started server adds.
+    const withoutDiscoveryNote = (result) => result.content.filter((item) => !/a profile may not be listed yet/.test(item.text));
     const tool = async (name, args = {}, success = true) => {
         const result = await call("tools/call", { name, arguments: args });
         assert.equal(result.isError === true, !success, `${name}: ${JSON.stringify(result)}`);
@@ -284,17 +286,21 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     const tabs = await tool("tabs_context");
     assert.equal(tabs.structuredContent.tabs[0].id, "p0t7");
     assert.deepEqual(tabs.structuredContent.profileFailures, []);
-    // A granted listing has nothing to add. An ungranted one says so once for
+    // This server started seconds ago, so another Safari profile may still be
+    // finding it (#168): the listing says so last, and when to look again.
+    assert.ok(tabs.structuredContent.profileDiscoverySecondsLeft > 0);
+    assert.match(tabs.content.at(-1).text, /a profile may not be listed yet/);
+    // A granted listing has nothing else to add. An ungranted one says so once for
     // the whole listing, in the server's own words. Each tab's JSON already
     // carries the extension's hint, and an older extension's hint says "not
     // granted" of sites the user may well have allowed.
-    assert.equal(tabs.content.length, 1);
+    assert.equal(withoutDiscoveryNote(tabs).length, 1);
     queryTabs = [tab, ungrantedTab(11), ungrantedTab(12)];
     const mixed = await tool("tabs_context");
     queryTabs = [tab];
     assert.equal(mixed.structuredContent.tabs.length, 3);
     assert.equal(mixed.structuredContent.tabs[1].access, "not_granted");
-    assert.equal(mixed.content.length, 2);
+    assert.equal(withoutDiscoveryNote(mixed).length, 2);
     assert.match(mixed.content[1].text, /^2 tabs are on sites MCPSafari hasn't confirmed access to/);
     assert.match(mixed.content[1].text, /works if the user has allowed its site/);
     assert.doesNotMatch(mixed.content[1].text, /Grant access from the MCPSafari button/);
