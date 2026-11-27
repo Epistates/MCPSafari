@@ -21,6 +21,12 @@ QA on real sites has shaped the tools, including fixes for [menus that ignored c
 
 Built with Swift and a Manifest V3 Safari extension. Requires macOS 14+ and Safari 17+. Xcode is only needed to build from source.
 
+## MCPSafari or Safari's built-in MCP server?
+
+Use MCPSafari when you want your agent to work in the Safari you already use. It runs as an extension in your own windows and profiles, on the sites you're signed in to, and only on sites you've allowed. Its native keystrokes and clicks wait while you're using the keyboard or mouse, and native typing stops if you touch the mouse partway through. Several agents can share Safari at once, taking turns with native input.
+
+Use Safari's built-in MCP server when you're building a website and want your agent to check how it renders. It ships with Safari 27 as `safaridriver --mcp`, and Apple describes it as giving your agent "the ability to know how your code actually renders in the browser." Its tools open and navigate tabs, interact with the page, run JavaScript, read console messages and network requests, take screenshots, and emulate viewport sizes and media. Setup is in Apple's [introduction](https://webkit.org/blog/18136/introducing-the-safari-mcp-server-for-web-developers/).
+
 ## Quick start
 
 ### 1. Install
