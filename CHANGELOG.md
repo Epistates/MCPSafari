@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.1] - 2026-11-27
 ### Added
 - Release downloads now carry a signed SLSA build provenance attestation, so `gh attestation verify <file> --repo Epistates/MCPSafari` ties a download to the commit and the workflow run that built it. It covers the three `mcp-safari` binaries and both extension archives, alongside `SHA256SUMS` and Apple's notarization.
 - Structured results now cover every tool's success path, including status, profile-qualified tab listings, interactions, screenshots, timed waits, and nested batch results. Text and HTML page reads preserve JSON-looking text verbatim, JavaScript results preserve JSON primitive types, and screenshot metadata avoids duplicating image bytes. Protocol-level tests exercise all 27 advertised tools against the actual server.
