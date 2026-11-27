@@ -142,6 +142,24 @@ jobs:
       # gracefully: it publishes a green release whose cask is broken for every
       # user. The lenient path exists for workflow_dispatch dry runs only, and
       # those never import the certificate at all.
+      #
+      # The job owns the signing keychain: it creates it here and removes it as
+      # soon as signing is done. The import action only imports into it, so its
+      # end-of-job cleanup, which deletes only a keychain the action created,
+      # has nothing to delete. When the action created it, that cleanup found it
+      # already gone and failed the job after every artifact had been uploaded.
+      - name: Create signing keychain
+        id: signing-keychain
+        if: env.REQUIRE_SIGNING == 'true'
+        run: |
+          set -euo pipefail
+          password="$(openssl rand -base64 32)"
+          echo "::add-mask::$password"
+          echo "password=$password" >> "$GITHUB_OUTPUT"
+          security create-keychain -p "$password" signing_temp.keychain
+          # The action's own default: lock after six hours, longer than any job.
+          security set-keychain-settings -lut 21600 signing_temp.keychain
+
       - name: Import Apple Code Signing Certificate
         if: env.REQUIRE_SIGNING == 'true'
         # Pinned by commit: this one is handed the signing certificate, so a moved
@@ -149,6 +167,9 @@ jobs:
         # what lets Dependabot propose the next version.
         uses: Apple-Actions/import-codesign-certs@288b8ec97b82c66b6f2a6baaf7acc8dfbcbe331c # v7.2.0
         with:
+          keychain: signing_temp
+          create-keychain: false
+          keychain-password: ${{ steps.signing-keychain.outputs.password }}
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
@@ -203,7 +224,9 @@ jobs:
 
       # Everything below signs with what is already in the keychain or talks to
       # Apple with an Apple ID, so the key has no further use on this runner.
-      # Runs on failure too: the action's own cleanup is not relied on alone.
+      # This is the only place the keychain is removed (see "Create signing
+      # keychain"), so it runs on failure too. If creating it failed, there is
+      # nothing to remove.
       - name: Remove signing keychain
         if: always() && env.REQUIRE_SIGNING == 'true'
         run: security delete-keychain signing_temp.keychain-db || true
