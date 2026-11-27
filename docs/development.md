@@ -181,7 +181,7 @@ tests, and workflow paths against `sourceCommit`; changes in these paths require
 new qualification. Documentation-only evidence commits are allowed. Check locally:
 
 ```sh
-python3 .github/scripts/prepare_release.py qualify v0.4.0
+python3 .github/scripts/prepare_release.py qualify v0.4.2
 ```
 
 Manual distribution validation remains available while browser qualification is
