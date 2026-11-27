@@ -96,13 +96,13 @@ struct HandshakeHygieneTests {
             let squatters = try (0..<8).map { _ in try #require(RawSocket.dial(port: port)) }
             // The upgrade answer means the bridge has admitted the socket, so all
             // eight are counted before the ninth arrives.
-            for socket in squatters { #expect(socket.reply() == .upgraded) }
+            for socket in squatters { #expect(await socket.reply() == .upgraded) }
 
             // The ninth used to evict the oldest, which is whichever connection
             // is furthest along and so most likely to be the real extension. It is
             // the newcomer that is turned away now.
             let ninth = try #require(RawSocket.dial(port: port))
-            #expect(ninth.reply() == .closed, "the ninth mid-handshake socket is refused")
+            #expect(await ninth.reply() == .closed, "the ninth mid-handshake socket is refused")
 
             let reply = try await authenticate(bridge, on: squatters[0])
             #expect(reply["auth"] as? String == "ok", "and the oldest is still there to finish")
@@ -172,12 +172,12 @@ struct HandshakeHygieneTests {
         // connection was itself dropped as too slow before it could authenticate.
         try await withStartedBridge(handshakeDeadline: .seconds(1)) { _, port in
             let squatters = try (0..<8).map { _ in try #require(RawSocket.dial(port: port)) }
-            for socket in squatters { #expect(socket.reply() == .upgraded) }
+            for socket in squatters { #expect(await socket.reply() == .upgraded) }
             // Each is hung up on once its deadline passes.
-            for socket in squatters { #expect(socket.reply() == .closed) }
+            for socket in squatters { #expect(await socket.reply() == .closed) }
 
             let arriving = try #require(RawSocket.dial(port: port))
-            #expect(arriving.reply() == .upgraded, "a ninth socket is admitted once the silent ones are gone")
+            #expect(await arriving.reply() == .upgraded, "a ninth socket is admitted once the silent ones are gone")
         }
     }
 
@@ -197,8 +197,8 @@ struct HandshakeHygieneTests {
         defer { Task { await bridge.stop() } }
 
         let socket = try #require(RawSocket.dial(port: await bridge.port))
-        #expect(socket.reply() == .upgraded, "it is admitted first")
-        #expect(socket.reply(within: 5) == .closed)
+        #expect(await socket.reply() == .upgraded, "it is admitted first")
+        #expect(await socket.reply(within: 5) == .closed)
     }
 
     @Test func aFirstFrameThatIsNotAHandshakeClosesTheSocket() async throws {

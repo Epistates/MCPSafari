@@ -367,16 +367,19 @@ struct ChallengeHandshakeTests {
     // MARK: - Slots and deadline
 
     /// The cap and the deadline cover the whole exchange, not just the first frame:
-    /// a peer that says hello and then stalls is still occupying a slot.
+    /// a peer that says hello and then stalls is still occupying a slot. The
+    /// deadline is as long as the shipped one. At 300 ms, the dial, upgrade and
+    /// hello sometimes took longer on a busy machine, and the deadline closed the
+    /// socket before the challenge, the step this test is about.
     @Test func aConnectionThatStallsAfterTheChallengeIsDroppedAtTheDeadline() async throws {
-        try await withStartedBridge(handshakeDeadline: .milliseconds(300)) { bridge, port in
+        try await withStartedBridge(handshakeDeadline: .seconds(2)) { bridge, port in
             let socket = try #require(RawSocket.dial(port: port))
-            #expect(socket.reply() == .upgraded)
+            #expect(await socket.reply() == .upgraded)
             try await socket.sendFrame(TestExtension(token: await bridge.authToken, port: port).helloFrame())
             #expect(try await socket.receiveFrame().contains("challenge"))
 
             // The challenge went unanswered, and the deadline closes it all the same.
-            #expect(socket.reply(within: 5) == .closed)
+            #expect(await socket.reply(within: 5) == .closed)
             #expect(await eventually { await bridge.status().bridge == .disconnected })
         }
     }
@@ -387,14 +390,14 @@ struct ChallengeHandshakeTests {
             var held: [(socket: RawSocket, extensionSide: TestExtension, challenge: [String: Any])] = []
             for _ in 0..<8 {
                 let socket = try #require(RawSocket.dial(port: port))
-                #expect(socket.reply() == .upgraded)
+                #expect(await socket.reply() == .upgraded)
                 let extensionSide = TestExtension(token: secret, port: port)
                 let challengeFrame = try await extensionSide.sayHello(over: socket)
                 held.append((socket, extensionSide, try #require(challengeFrame["challenge"] as? [String: Any])))
             }
 
             let ninth = try #require(RawSocket.dial(port: port))
-            #expect(ninth.reply() == .closed)
+            #expect(await ninth.reply() == .closed)
 
             // And the oldest of the eight can still finish.
             let oldest = held[0]

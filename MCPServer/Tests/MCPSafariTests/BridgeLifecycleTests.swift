@@ -130,22 +130,23 @@ struct BridgeLifecycleTests {
 
         // The listener accepts TCP as soon as it is ready, which is before the
         // hook above returns, so this connects inside the gap. The port is the one
-        // the system chose, known once the listener is up.
+        // the system chose, known once the listener is up. A loop with no pause
+        // between tries kept the thread the listener needed to come up.
         var dialled: RawSocket?
-        let deadline = Date().addingTimeInterval(10)
-        while dialled == nil, Date() < deadline {
+        _ = await eventually(timeout: .seconds(10)) {
             let port = await bridge.port
             if port != 0 { dialled = RawSocket.dial(port: port) }
+            return dialled != nil
         }
         let socket = try #require(dialled, "the listener never came up")
 
         // Held means silent. A cancelled socket instead reads end-of-file or is reset.
-        #expect(socket.reply(within: 0.3) == .silent, "the socket is neither served nor dropped yet")
+        #expect(await socket.reply(within: 0.3) == .silent, "the socket is neither served nor dropped yet")
 
         gate.yield()
         await starting.value
 
-        #expect(socket.reply() == .upgraded)
+        #expect(await socket.reply() == .upgraded)
     }
 
     /// `start()` is launched from an unstructured task, so it can be scheduled after
