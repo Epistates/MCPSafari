@@ -367,9 +367,12 @@ struct ChallengeHandshakeTests {
     // MARK: - Slots and deadline
 
     /// The cap and the deadline cover the whole exchange, not just the first frame:
-    /// a peer that says hello and then stalls is still occupying a slot.
+    /// a peer that says hello and then stalls is still occupying a slot. The
+    /// deadline is as long as the shipped one. At 300 ms, the dial, upgrade and
+    /// hello sometimes took longer on a busy machine, and the deadline closed the
+    /// socket before the challenge, the step this test is about.
     @Test func aConnectionThatStallsAfterTheChallengeIsDroppedAtTheDeadline() async throws {
-        try await withStartedBridge(handshakeDeadline: .milliseconds(300)) { bridge, port in
+        try await withStartedBridge(handshakeDeadline: .seconds(2)) { bridge, port in
             let socket = try #require(RawSocket.dial(port: port))
             #expect(await socket.reply() == .upgraded)
             try await socket.sendFrame(TestExtension(token: await bridge.authToken, port: port).helloFrame())
