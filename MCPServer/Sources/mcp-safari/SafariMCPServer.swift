@@ -30,10 +30,19 @@ actor SafariMCPServer {
         port: UInt16 = 8089,
         portCount: UInt16 = WebSocketBridge.defaultPortCount,
         logger: Logger,
+        connectGraceTimeout: Duration = WebSocketBridge.defaultConnectGraceTimeout,
+        discoveryWindow: Duration = WebSocketBridge.defaultDiscoveryWindow,
         instance: InstanceIdentity = InstanceIdentity()
     ) throws {
         self.logger = logger
-        self.bridge = try WebSocketBridge(port: port, portCount: portCount, logger: logger, instance: instance)
+        self.bridge = try WebSocketBridge(
+            port: port,
+            portCount: portCount,
+            logger: logger,
+            connectGraceTimeout: connectGraceTimeout,
+            discoveryWindow: discoveryWindow,
+            instance: instance
+        )
         self.server = Server(
             name: "mcp-safari",
             version: MCPSafariProduct.version,
@@ -41,7 +50,8 @@ actor SafariMCPServer {
                 Safari browser automation. Use tabs_context to list tabs, snapshot for element UIDs, \
                 then click/type_text/hover by UID. Use includeSnapshot on interactions to see updated state. \
                 Tab handles look like p0t5, where p0 names the Safari profile; read them from \
-                tabs_context rather than composing them.
+                tabs_context rather than composing them. If a call reports bridge_disconnected right after \
+                startup or a reconnect, call status or retry in a few seconds before assuming Safari is closed.
                 """,
             capabilities: Server.Capabilities(
                 logging: .init(),
@@ -82,7 +92,7 @@ actor SafariMCPServer {
         let client = ClientIdentity(name: String(info.name.prefix(100)), version: String(info.version.prefix(100)))
         await bridge.setClient(client)
         Task { [bridge] in
-            _ = try? await bridge.broadcast(action: "identify", params: client.parameters, timeout: 5)
+            _ = try? await bridge.broadcast(action: "identify", params: client.parameters, timeout: 5, waitForConnection: false)
         }
     }
 
@@ -157,8 +167,51 @@ actor SafariMCPServer {
 
     /// Runs a tool whose arguments are already checked. A `run_steps` batch checks
     /// every step while it plans and then calls here, adding the deadline and tab
-    /// it pins to the arguments after that check.
+    /// it pins to the arguments after that check, so each step reports its own
+    /// page's visibility.
     private func dispatch(tool: String, arguments args: [String: Value]) async -> CallTool.Result {
+        let report = PageVisibilityReport()
+        let result = await Self.$pageVisibility.withValue(report) {
+            do {
+                if Self.focusMovingTools.contains(tool) { try await waitForSafari(args) }
+                return try await Self.whileNoServerTypes(tool, timeout: Self.bridgeTimeout(args)) {
+                    await dispatchUnreported(tool: tool, arguments: args)
+                }
+            } catch {
+                // Refused while another server typed, so it never ran.
+                return Self.failureResult(toolFailure(for: error))
+            }
+        }
+        // A screenshot reads visibility itself and says so in its own words.
+        guard report.sawHidden, tool != "screenshot" else { return result }
+        return Self.notingHiddenPage(result)
+    }
+
+    /// Waits, within the call's own time, for Safari to connect the profile the
+    /// call is for. A call takes this wait before the native input lock, never
+    /// while holding it, so a server whose Safari is reconnecting doesn't keep
+    /// every other server's typing waiting too.
+    private func waitForSafari(_ args: [String: Value]) async throws {
+        let profileIndex = try TabHandle.resolve(args["tabId"])?.profileIndex
+        try await bridge.waitForConnection(profileIndex: profileIndex, timeout: .seconds(Self.bridgeTimeout(args)))
+    }
+
+    /// Runs a call that can move Safari's keyboard once no server is typing,
+    /// and any other call at once. A server sending native input holds the lock
+    /// alone for as long as it types, so a new window or tab switch from another
+    /// agent can't take the keyboard from under its text.
+    static func whileNoServerTypes<T>(
+        _ tool: String,
+        timeout: Double,
+        lockURL: URL = NativeInputLock.defaultURL,
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: () async throws -> T
+    ) async throws -> T {
+        guard focusMovingTools.contains(tool) else { return try await body() }
+        return try await NativeInputLock.withLock(at: lockURL, timeout: timeout, shared: true, body)
+    }
+
+    private func dispatchUnreported(tool: String, arguments args: [String: Value]) async -> CallTool.Result {
         let params = (name: tool, arguments: args)
         do {
             switch params.name {
@@ -171,7 +224,7 @@ actor SafariMCPServer {
             case "read_page":       return try await handleReadPage(args)
             case "snapshot":        return try await handleSnapshot(args)
             case "find":            return try await handleFind(args)
-            case "click":           return try await handleInteraction("click", args)
+            case "click":           return try await handleClick(args)
             case "type_text":       return try await handleTypeText(args)
             case "form_input":      return try await handleFormInput(args)
             case "select_option":   return try await handleInteraction("select_option", args)
@@ -187,6 +240,7 @@ actor SafariMCPServer {
             case "read_console":    return try await handleReadConsole(args)
             case "read_network":    return try await handleReadNetwork(args)
             case "resize_window":   return try await handleResizeWindow(args)
+            case "clear_cookies":   return try await handleClearCookies(args)
             case "run_steps":       return try await handleRunSteps(args)
             case "wait":            return try await handleWait(args)
             default:
@@ -231,6 +285,7 @@ actor SafariMCPServer {
         )
         response.profileIndex = profileIndex
         if let tab = Self.resolvedHandle(of: response) { Self.batchPin?.recordFirst(tab) }
+        Self.pageVisibility?.record(response)
         return response
     }
 
@@ -273,6 +328,50 @@ actor SafariMCPServer {
         }
     }
 
+    /// Whether a page this tool call read or acted on said it wasn't showing.
+    /// Set around each tool call by `dispatch`, and fed by `send`, where
+    /// responses arrive.
+    @TaskLocal static var pageVisibility: PageVisibilityReport?
+
+    final class PageVisibilityReport: Sendable {
+        private let hidden = OSAllocatedUnfairLock(initialState: false)
+
+        var sawHidden: Bool { hidden.withLock { $0 } }
+
+        /// A `page_hidden` or `page_not_responding` failure already says why,
+        /// in more detail than the note could.
+        func record(_ response: BridgeResponse) {
+            guard response.pageVisibility == "hidden",
+                  !["page_hidden", "page_not_responding"].contains(response.errorCode ?? "")
+            else { return }
+            hidden.withLock { $0 = true }
+        }
+    }
+
+    static let hiddenPageNote = "Page visibility: hidden. This tab's window is minimized, completely "
+        + "covered by other windows or on another Space, or another tab is showing in its window, and "
+        + "Safari pauses pages it isn't showing. Some web apps show stale or empty content until the page "
+        + "is visible again. If this result looks wrong, bring the tab to the front with select_tab, or "
+        + "ask the user to make its window at least partly visible."
+
+    /// `result` with the hidden-page note after its text, and `pageVisibility`
+    /// beside its payload. Most reads and writes work on a hidden page, so the
+    /// call stands; the note is there for a result that looks wrong.
+    static func notingHiddenPage(_ result: CallTool.Result) -> CallTool.Result {
+        var structured = result.structuredContent
+        if case var .object(fields) = structured {
+            fields["pageVisibility"] = .string("hidden")
+            structured = .object(fields)
+        }
+        var noted = CallTool.Result(
+            content: result.content + [textContent(hiddenPageNote)],
+            structuredContent: structured,
+            isError: result.isError
+        )
+        noted._meta = result._meta
+        return noted
+    }
+
     /// Rewrites the `id` of a tab object the extension returned into the handle
     /// that names it, so the only tab identifier a caller ever sees is one they
     /// can hand straight back.
@@ -307,25 +406,28 @@ actor SafariMCPServer {
             + "for a window of your own."
     }
 
-    /// Tabs on a site Safari has not granted are listed, selected and created
-    /// like any other and carry `access: "not_granted"` and an `accessHint`. The
-    /// JSON carries that for a program; this sentence is for the model reading
-    /// the result, which would otherwise find out only when its next read fails
-    /// with `permission_required`. One sentence for a whole listing, with each
-    /// distinct hint said once, rather than one per tab.
+    /// Tabs on a site the extension hasn't confirmed access to are listed,
+    /// selected and created like any other and carry `access: "not_granted"` and
+    /// an `accessHint`. The JSON carries that for a program; this note is for the
+    /// model reading the result, once for a whole listing rather than once per
+    /// tab.
+    ///
+    /// `not_granted` means unconfirmed: the extension learns a site is allowed
+    /// only when a call works there, so after a reinstall every allowed site
+    /// reads this way until then. The note says what the next call will do
+    /// rather than that it will fail, and it is the server's own words, so a
+    /// listing from an older extension, whose hint says "not granted", is not
+    /// repeated back.
     static func accessNote(for tabs: [[String: AnyCodable]]) -> String? {
-        let ungranted = tabs.filter { $0["access"]?.stringValue == "not_granted" }
-        guard !ungranted.isEmpty else { return nil }
-        var hints: [String] = []
-        for hint in ungranted.compactMap({ $0["accessHint"]?.stringValue }) where !hints.contains(hint) {
-            hints.append(hint)
-        }
-        let subject = ungranted.count == 1
-            ? "Access to one tab's site is not granted"
-            : "Access to \(ungranted.count) tabs' sites is not granted"
-        return ([
-            "\(subject), so reading or acting on \(ungranted.count == 1 ? "it" : "them") will fail with permission_required until the user grants it.",
-        ] + hints).joined(separator: " ")
+        let unconfirmed = tabs.filter { $0["access"]?.stringValue == "not_granted" }.count
+        guard unconfirmed > 0 else { return nil }
+        let subject = unconfirmed == 1
+            ? "One tab is on a site MCPSafari hasn't confirmed access to, so its URL and title are withheld."
+            : "\(unconfirmed) tabs are on sites MCPSafari hasn't confirmed access to, so their URLs and titles are withheld."
+        return subject
+            + " A call on such a tab works if the user has allowed its site, and later listings then describe the tab."
+            + " If not, the call fails with permission_required, and the user can allow the site"
+            + " from the MCPSafari button in Safari's toolbar."
     }
 
     /// Which profile a call will land on. An explicit handle names it; otherwise it
@@ -334,6 +436,9 @@ actor SafariMCPServer {
     /// profile and named as if it were in another.
     private func resolveProfileIndex(_ args: [String: Value]) async throws -> Int {
         if let handle = try TabHandle.resolve(args["tabId"]) { return handle.profileIndex }
+        if await bridge.connectedProfiles().isEmpty {
+            try await bridge.waitForConnection(timeout: .seconds(Self.bridgeTimeout(args)))
+        }
         guard let selected = await bridge.connectedProfiles().first(where: \.selected) else {
             throw await bridge.noConnectionError()
         }
@@ -404,10 +509,29 @@ actor SafariMCPServer {
                 + merged.failures.joined(separator: "; ")
             ))
         }
-        return CallTool.Result(content: content, structuredContent: .object([
+        var structured: [String: Value] = [
             "tabs": try Value(merged.tabs),
             "profileFailures": .array(merged.failures.map(Value.string)),
-        ]))
+        ]
+        // A profile that hasn't found this server yet is missing without a trace,
+        // and a short listing that looks complete sends the caller the wrong way.
+        if let timeLeft = await bridge.profileDiscoveryTimeLeft() {
+            content.append(Self.textContent(Self.profileDiscoveryNote(timeLeft: timeLeft)))
+            structured["profileDiscoverySecondsLeft"] = .int(Self.wholeSeconds(timeLeft))
+        }
+        return CallTool.Result(content: content, structuredContent: .object(structured))
+    }
+
+    /// What `tabs_context` says while Safari's profiles may still be finding this server.
+    static func profileDiscoveryNote(timeLeft: Duration) -> String {
+        "This server started moments ago, and each Safari profile finds a new server on its next "
+            + "check, which comes every 15 seconds, so a profile may not be listed yet. If one you "
+            + "need is missing, call tabs_context again in \(wholeSeconds(timeLeft)) seconds."
+    }
+
+    /// `duration` rounded up to whole seconds, so a wait it names is never too short.
+    private static func wholeSeconds(_ duration: Duration) -> Int {
+        Int((Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18).rounded(.up))
     }
 
     /// Flattens what each profile returned into one listing, naming every tab by
@@ -456,7 +580,10 @@ actor SafariMCPServer {
 
     private func handleTabsCreate(_ args: [String: Value]) async throws -> CallTool.Result {
         let profileIndex = try await resolveProfileIndex(args)
-        let params = try Self.tabsCreateParams(args)
+        var params = try Self.tabsCreateParams(args)
+        // The named tab's window is where the new tab opens, so the extension
+        // needs the tab as well as the profile it picks.
+        if let handle = try TabHandle.resolve(args["tabId"]) { params["tabId"] = AnyCodable(handle.tabID) }
         let response = try await bridge.send(
             action: "tabs_create",
             params: params,
@@ -704,11 +831,24 @@ actor SafariMCPServer {
         let traceSession = try await startTraceIfNeeded(args)
         let args = traceSession?.pinning(args) ?? args
         do {
+            try await waitForSafari(args)
             let (preparation, delivered) = try await NativeInputLock.withLock(
                 timeout: Self.bridgeTimeout(args)
             ) { () -> (BridgeResponse, String?) in
-                let preparation = try await send(action, args, params: interactionParams(args))
+                // Inside the lock, so another server's typing has finished and
+                // been recorded, and before anything is focused or raised.
+                try UserActivity.ensureIdle()
+                let preparation = try await Self.prepareNativeInput(
+                    pointer: action == "native_pointer",
+                    pageFocus: .live
+                ) { windowVerified in
+                    var params = interactionParams(args)
+                    if windowVerified { params["windowVerified"] = AnyCodable(true) }
+                    return try await send(action, args, params: params)
+                }
                 guard preparation.success else { return (preparation, nil) }
+                // Recorded however the posting ends, since some events may be out.
+                defer { UserActivity.recordOwnInput() }
                 return (preparation, try await perform(preparation))
             }
             guard let message = delivered else {
@@ -745,15 +885,36 @@ actor SafariMCPServer {
         }
     }
 
-    // MARK: - Native pointer (move_pointer, drag native=true)
+    // MARK: - Native pointer (click, hover, drag native=true)
+
+    private func handleClick(_ args: [String: Value]) async throws -> CallTool.Result {
+        guard try nativeRequested(args) else {
+            return try await handleInteraction("click", args)
+        }
+        let clickCount = args["doubleClick"]?.boolValue == true ? 2 : 1
+        return try await runNativeAction("native_pointer", args) { preparation in
+            let targets = try Self.placedPointerTargets(preparation)
+            return try await Self.clickNativePointer(
+                at: targets.from, clickCount: clickCount, deadline: Self.numberValue(args["_batchDeadline"]),
+                agentWindow: targets.window
+            )
+        }
+    }
+
+    /// The extension's pointer points placed on screen through Accessibility.
+    private static func placedPointerTargets(_ preparation: BridgeResponse) throws -> PlacedPointerTargets {
+        try placedPointerTargets(nativePointerTargets(from: preparation.data), windows: NativePageFocus.live.windows())
+    }
 
     private func handleHover(_ args: [String: Value]) async throws -> CallTool.Result {
         guard try nativeRequested(args) else {
             return try await handleInteraction("hover", args)
         }
         return try await runNativeAction("native_pointer", args) { preparation in
-            let targets = try Self.nativePointerTargets(from: preparation.data)
-            _ = try await Self.moveNativePointer(to: targets.from, deadline: Self.numberValue(args["_batchDeadline"]))
+            let targets = try Self.placedPointerTargets(preparation)
+            _ = try await Self.moveNativePointer(
+                to: targets.from, deadline: Self.numberValue(args["_batchDeadline"]), agentWindow: targets.window
+            )
             return "Hovered with native input; pointer at (\(Int(targets.from.x)), \(Int(targets.from.y)))"
         }
     }
@@ -763,11 +924,13 @@ actor SafariMCPServer {
             return try await handleInteraction("drag", args)
         }
         return try await runNativeAction("native_pointer", args) { preparation in
-            let targets = try Self.nativePointerTargets(from: preparation.data)
+            let targets = try Self.placedPointerTargets(preparation)
             guard let to = targets.to else {
                 throw ToolInputError("drag requires toUid or toSelector")
             }
-            return try await Self.dragNativePointer(from: targets.from, to: to, deadline: Self.numberValue(args["_batchDeadline"]))
+            return try await Self.dragNativePointer(
+                from: targets.from, to: to, deadline: Self.numberValue(args["_batchDeadline"]), agentWindow: targets.window
+            )
         }
     }
 
@@ -881,6 +1044,18 @@ actor SafariMCPServer {
     private func handleResizeWindow(_ args: [String: Value]) async throws -> CallTool.Result {
         let response = try await send("resize_window", args, params: try Self.resizeWindowParams(args))
         return textResult(response, as: "window")
+    }
+
+    /// Acts on a profile, not a tab: `tabId` only names which profile, as it does
+    /// for `tabs_create`, and is not sent.
+    private func handleClearCookies(_ args: [String: Value]) async throws -> CallTool.Result {
+        let response = try await bridge.send(
+            action: "clear_cookies",
+            params: try Self.clearCookiesParams(args),
+            timeout: Self.bridgeTimeout(args),
+            profileIndex: try await resolveProfileIndex(args)
+        )
+        return textResult(response, as: "cookies")
     }
 
     private func handleRunSteps(_ args: [String: Value]) async throws -> CallTool.Result {

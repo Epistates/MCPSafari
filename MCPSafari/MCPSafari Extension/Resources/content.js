@@ -11,7 +11,7 @@
     mcp.loaded.add("dispatch");
     const { addFileChunk, clickElement, discardFiles, dragElement, dropFile, elementRect, findElements, formInput, getConsoleMessages, getNetworkRequests, getPageText, handleDialog, hoverElement, nativePointerPoints, prepareNativeInput, prepareNativeKey, pressKey, readPage, scrollPage, selectOption, setFrameId, stageFiles, startTrace, stopTrace, takeSnapshot, typeText, uploadFile, waitFor } = mcp;
 
-    // ─── Message Handler ─────────────────────────────────────────────
+    // --- Message Handler ---------------------------------------------
 
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Only handle messages meant for content scripts
@@ -19,8 +19,12 @@
 
         if (typeof message.frameId === "number") setFrameId(message.frameId);
 
+        // Every reply says whether the page was showing when it answered, read
+        // as it answers, so a result can say so without another round trip.
+        // Any frame will do: a document is hidden exactly when its top-level
+        // page is.
         handleAction(message.action, message.params || {})
-            .then((data) => sendResponse({ data, error: null }))
+            .then((data) => sendResponse({ data, error: null, pageVisibility: document.visibilityState }))
             .catch((err) => sendResponse({
                 data: null,
                 error: String(err.message || err),
@@ -29,6 +33,7 @@
                 recoveryAction: typeof err.recoveryAction === "string"
                     ? err.recoveryAction
                     : "inspect_error",
+                pageVisibility: document.visibilityState,
             }));
 
         return true; // async response

@@ -9,7 +9,7 @@
     mcp.loaded.add("input");
     const { assertPageFocused, assertReachable, clipText, deepQueryFirst, elementAtPoint, eventInit, firesKeypress, keyboardEvent, mouseEvent, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
-    // ─── Click ───────────────────────────────────────────────────────
+    // --- Click -------------------------------------------------------
 
     function clickElement(params) {
         // Click by coordinates
@@ -80,7 +80,7 @@
         }
     }
 
-    // ─── React-Compatible Value Setting ─────────────────────────────
+    // --- React-Compatible Value Setting -----------------------------
 
     function setInputValue(el, value, append = false) {
         if (el.isContentEditable) {
@@ -146,7 +146,7 @@
         el.dispatchEvent(new InputEvent("input", eventInit("input", detail)));
     }
 
-    // ─── Type Text ───────────────────────────────────────────────────
+    // --- Type Text ---------------------------------------------------
 
     function prepareNativeInput(params) {
         const el = (params.uid || params.selector)
@@ -292,7 +292,7 @@
         if (typed.length <= 1) form.requestSubmit();
     }
 
-    // ─── Form Input ──────────────────────────────────────────────────
+    // --- Form Input --------------------------------------------------
 
     function formInput(params) {
         const entries = Object.entries(params.fields || {});
@@ -366,7 +366,7 @@
         }
     }
 
-    // ─── Select Option ───────────────────────────────────────────────
+    // --- Select Option -----------------------------------------------
 
     function selectOption(params) {
         const el = resolveElement(params);
@@ -408,6 +408,10 @@
     // label is what told them apart) and cannot tell a disabled option from any
     // other. A user cannot choose a disabled option, so neither can this. The
     // events are the ones a real choice fires, in order.
+    /**
+     * @param {HTMLSelectElement} select
+     * @param {{ value?: any, label?: string }} choice
+     */
     function chooseOption(select, { value, label }) {
         const byValue = value !== undefined;
         const matches = Array.from(select.options).filter(

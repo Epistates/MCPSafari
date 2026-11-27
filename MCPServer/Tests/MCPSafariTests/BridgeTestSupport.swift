@@ -53,10 +53,13 @@ func holdPorts(from first: UInt16, count: UInt16) -> [Int32] {
 /// Occupies `count` consecutive loopback ports that were free when asked, chosen at
 /// run time. Fixed numbers collide with another copy of the suite, with a developer's
 /// own server, and with whatever else happens to listen on the machine; this
-/// retries elsewhere instead. The caller closes the descriptors.
+/// retries elsewhere instead. The run stays below 49152, where macOS starts
+/// handing out ports to outgoing connections: a test that frees its ports and then
+/// binds one again could otherwise lose it to a client socket opened meanwhile by
+/// a test running beside it. The caller closes the descriptors.
 func holdFreePorts(count: UInt16) -> (first: UInt16, descriptors: [Int32])? {
     for _ in 0..<100 {
-        let first = UInt16.random(in: 20_000...60_000)
+        let first = UInt16.random(in: 20_000...(49_151 - count))
         let held = holdPorts(from: first, count: count)
         if held.count == Int(count) { return (first, held) }
         for descriptor in held { Darwin.close(descriptor) }
@@ -70,6 +73,7 @@ func holdFreePorts(count: UInt16) -> (first: UInt16, descriptors: [Int32])? {
 func withStartedBridge(
     port: UInt16 = 0,
     handshakeDeadline: Duration = .seconds(30),
+    answeringCheckSeconds: TimeInterval = 3,
     instance: InstanceIdentity = InstanceIdentity(),
     _ body: (WebSocketBridge, UInt16) async throws -> Void
 ) async throws {
@@ -81,6 +85,7 @@ func withStartedBridge(
         logger: Logger(label: "BridgeTests"),
         tokenRoot: tokenRoot,
         handshakeDeadline: handshakeDeadline,
+        answeringCheckSeconds: answeringCheckSeconds,
         instance: instance
     )
     await bridge.start()

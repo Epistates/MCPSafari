@@ -2,7 +2,7 @@
 
 // Screenshots, page JavaScript execution and window resizing.
 
-// ─── Screenshot Handler ─────────────────────────────────────────────
+// --- Screenshot Handler ---------------------------------------------
 
 async function handleScreenshot(params) {
     requireTopFrameTarget(params, SCREENSHOT_TOP_FRAME_ONLY);
@@ -14,12 +14,45 @@ async function handleScreenshot(params) {
     await ensureTabAccess(tabId);
     const tab = await browser.tabs.get(tabId);
 
-    // captureVisibleTab captures the active tab in a window
+    // captureVisibleTab captures the active tab in a window, so a tab in the
+    // background is brought forward for the capture, and the tab that was
+    // showing is put back afterwards rather than left hidden behind it.
+    let previouslyShowing = null;
     if (!tab.active) {
+        previouslyShowing = await tabShowingIn(tab.windowId);
         await browser.tabs.update(tabId, { active: true });
         await delay(300);
     }
+    try {
+        return await captureShowingTab(params, tabId, tab);
+    } finally {
+        if (previouslyShowing !== null) await giveFrontTabBack(tab.windowId, tabId, previouslyShowing);
+    }
+}
 
+// The tab a window is showing, or null when Safari doesn't say in time.
+async function tabShowingIn(windowId) {
+    try {
+        const showing = await withDeadline(browser.tabs.query({ active: true, windowId }), TAB_LISTING_TIMEOUT_MS);
+        return windowShowingTab(showing)?.id ?? null;
+    } catch {
+        return null;
+    }
+}
+
+// Only while the screenshot's tab is still the one showing: if the user or
+// another agent switched tabs since, their choice stands. Best effort, since
+// the capture is already done.
+async function giveFrontTabBack(windowId, tabId, previousTabId) {
+    try {
+        if (await tabShowingIn(windowId) !== tabId) return;
+        await withDeadline(browser.tabs.update(previousTabId, { active: true }), TAB_LISTING_TIMEOUT_MS);
+    } catch {
+        // The tab that was showing may have closed meanwhile.
+    }
+}
+
+async function captureShowingTab(params, tabId, tab) {
     // Context before the frame: a page that loses focus between the two reads
     // then produces a warning about a good frame rather than an all-clear on a
     // stale one.
@@ -37,7 +70,7 @@ async function handleScreenshot(params) {
     // degradation into a refusal. A capture is sub-second when it is permitted
     // at all, so a deadline here separates "blocked on the dialog" from "slow".
     // captureVisibleTab takes the window, not the tab, and returns whichever
-    // tab is showing. The activation above is a request that the user's next
+    // tab is showing. The activation in `handleScreenshot` is a request that the user's next
     // click can undo, so it is confirmed on both sides of the capture: before,
     // so a stale tab is not captured, and after, so a switch during the capture
     // does not return another page's pixels under this tab's metadata.
@@ -80,9 +113,9 @@ async function capturePageContext(tabId) {
     }
 }
 
-// ─── JavaScript Execution Handler ────────────────────────────────────
+// --- JavaScript Execution Handler ------------------------------------
 
-// ─── JavaScript execution ────────────────────────────────────────────
+// --- JavaScript execution --------------------------------------------
 //
 // The agent's code is compiled in the page's own world, so it sees the page's
 // globals. A page whose Content Security Policy forbids evaluating strings
@@ -197,7 +230,7 @@ async function handleJavaScript(params) {
         : value;
 }
 
-// ─── Window Resize Handler ───────────────────────────────────────────
+// --- Window Resize Handler -------------------------------------------
 
 async function handleResizeWindow(params) {
     // Routed like every other handler. Reading `currentWindow` directly ignored

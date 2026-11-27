@@ -27,7 +27,7 @@ body {
     letter-spacing: 0;
 }
 
-/* ─── This site ───────────────────────────────────── */
+/* --- This site ------------------------------------- */
 
 .site {
     margin-bottom: 10px;
@@ -84,7 +84,7 @@ body {
     color: -apple-system-secondary-label;
 }
 
-/* ─── Connection rows ─────────────────────────────── */
+/* --- Connection rows ------------------------------- */
 
 #connections {
     display: flex;
@@ -203,7 +203,7 @@ body {
     padding: 8px 0;
 }
 
-/* ─── Add row ─────────────────────────────────────── */
+/* --- Add row --------------------------------------- */
 
 .add-row {
     display: flex;
@@ -233,7 +233,7 @@ body {
 
 .btn-sm:hover { background: #2da44e; }
 
-/* ─── Dark mode ───────────────────────────────────── */
+/* --- Dark mode ------------------------------------- */
 
 @media (prefers-color-scheme: dark) {
     .add-row input {

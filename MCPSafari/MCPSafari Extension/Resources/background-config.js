@@ -29,7 +29,7 @@ const AUTO_CLEANUP_MS = 120_000;
 const AUTO_GIVE_UP_ATTEMPTS = 3;
 const DEFAULT_PROFILE_ID = "default";
 
-// ─── Website permission gating ───────────────────────────────────────
+// --- Website permission gating ---------------------------------------
 //
 // Safari asks for website access with a modal dialog the first time the
 // extension touches an origin, and blocks every extension API for that tab
@@ -50,6 +50,11 @@ const PERMISSION_PROBE_TIMEOUT_MS = 2000;
 // For gated calls that are quick when permitted and so can be deadlined
 // directly, without the extra round trip a probe costs.
 const PERMISSION_DEADLINE_MS = 10_000;
+// A probe or capture that runs out of time is not always the dialog: a page
+// Safari is not showing, or a busy one, misses the deadline too. While the
+// dialog is open Safari holds `tabs.get` as well, so the tab is read once more
+// to tell the two apart. It answers in milliseconds when nothing holds it.
+const DIALOG_CHECK_MS = 1000;
 // Listing tabs blocks on the same dialog, and no per-tab probe helps because the
 // block is not attributable to one tab. Measured against real Safari, a listing
 // held up this way still completes, in around nine seconds, so this sits just
@@ -83,5 +88,55 @@ function withDeadline(promise, ms) {
             timer = setTimeout(() => reject(new DeadlineExceeded()), ms);
         }),
     ]).finally(() => clearTimeout(timer));
+}
+
+function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// --- Retrying a lost reply -------------------------------------------
+
+/** A reply that did not come, or came and answered some other request. */
+class ReplyLost extends Error {}
+
+/**
+ * How native messages are retried. Safari loses the reply to one of two native
+ * messages in flight at once (#168), and the lost one's promise never settles.
+ * A running handler answers in tens of milliseconds and a cold start of the app
+ * extension in a few hundred, so a reply later than the deadline is taken as lost.
+ */
+const NATIVE_REQUEST_POLICY = Object.freeze({
+    deadlineMs: 1500,
+    attempts: 3,
+    minPauseMs: 100,
+    maxPauseMs: 500,
+});
+
+/**
+ * The answer to the first of `policy.attempts` sends that gets one.
+ *
+ * Each call of `attempt` (given its 1-based number) is a fresh send. One that
+ * runs past `policy.deadlineMs`, or rejects with `ReplyLost`, is lost, and the
+ * next goes out after a pause drawn at random from the policy's range, so two
+ * pages that lost their replies together don't send again together. Any other
+ * failure is passed on at once, because sending again can't fix it. Rejects with
+ * `ReplyLost` when every attempt is lost.
+ *
+ * @template T
+ * @param {(attempt: number) => Promise<T>} attempt
+ * @param {{deadlineMs: number, attempts: number, minPauseMs: number, maxPauseMs: number}} policy
+ * @param {() => number} random
+ * @returns {Promise<T>}
+ */
+async function withRetries(attempt, policy, random = Math.random) {
+    for (let number = 1; ; number += 1) {
+        try {
+            return await withDeadline(attempt(number), policy.deadlineMs);
+        } catch (err) {
+            if (!(err instanceof DeadlineExceeded || err instanceof ReplyLost)) throw err;
+        }
+        if (number >= policy.attempts) throw new ReplyLost(`no reply to ${number} attempts`);
+        await delay(policy.minPauseMs + random() * (policy.maxPauseMs - policy.minPauseMs));
+    }
 }
 

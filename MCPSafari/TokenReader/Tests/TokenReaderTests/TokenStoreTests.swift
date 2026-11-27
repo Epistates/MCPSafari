@@ -1,13 +1,13 @@
 //
 //  TokenStoreTests.swift
-//  MCPSafariTests
+//  TokenReaderTests
 //
-//  TokenStore.swift is compiled into this bundle directly, not reached through the
-//  host app, so these run without launching anything.
+//  Run with `swift test --package-path MCPSafari/TokenReader`, which builds no app.
 //
 
 import Foundation
 import Testing
+@testable import TokenReader
 
 @Suite struct TokenStoreTests {
     let sandbox: URL
@@ -165,6 +165,32 @@ import Testing
             #expect(reply["tokens"] as? [String: String] == ["9223": first])
             #expect(reply["profile"] as? String == profile.uuidString)
             #expect(reply["error"] == nil)
+        }
+    }
+
+    @Test func tokensReplyEchoesTheRequestNonce() throws {
+        try withRoots { roots in
+            try writeToken(first, "9223", in: roots[0])
+            let nonce = String(repeating: "n", count: 43)
+
+            let reply = TokenStore.response(to: ["type": "getTokens", "nonce": nonce], profile: nil, roots: roots)
+
+            #expect(reply["nonce"] as? String == nonce)
+            #expect(reply["tokens"] as? [String: String] == ["9223": first])
+        }
+    }
+
+    @Test func anOversizedOrMissingNonceIsNotEchoed() throws {
+        try withRoots { roots in
+            let oversized = String(repeating: "n", count: TokenStore.maxNonceBytes + 1)
+            let messages: [[String: Any]] = [
+                ["type": "getTokens"],
+                ["type": "getTokens", "nonce": oversized],
+                ["type": "getTokens", "nonce": 7],
+            ]
+            for message in messages {
+                #expect(TokenStore.response(to: message, profile: nil, roots: roots)["nonce"] == nil)
+            }
         }
     }
 

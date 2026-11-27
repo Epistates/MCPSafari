@@ -187,4 +187,114 @@ struct BridgeLifecycleTests {
         #expect(await bridge.status().listener == .stopped)
         #expect(!FileManager.default.fileExists(atPath: tokenRoot.appendingPathComponent("tokens").path))
     }
+
+    @Test func sendWaitsForDelayedExtensionAuthenticationWithinGraceWindow() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let bridge = try WebSocketBridge(
+            port: 0,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoot: tokenRoot,
+            connectGraceTimeout: .seconds(3)
+        )
+        await bridge.start()
+        defer { Task { await bridge.stop() } }
+        let boundPort = await bridge.port
+
+        let callTask = Task {
+            try await bridge.send(action: "tabs_query", timeout: 5)
+        }
+
+        // Let the call enter the grace waiter before the extension dials in.
+        try await Task.sleep(for: .milliseconds(150))
+
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(boundPort)")!)
+        task.resume()
+        defer { task.cancel() }
+
+        let ext = TestExtension(token: await bridge.authToken, port: boundPort, profileId: "default", extensionVersion: "0.4.0")
+        _ = try await ext.handshake(over: task)
+
+        // Answer the bridge request once the waiter wakes and dispatches it.
+        guard case let .string(text) = try await task.receive(),
+              let req = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+              let id = req["id"] as? String
+        else {
+            Issue.record("expected bridge request")
+            return
+        }
+        let reply = try JSONSerialization.data(withJSONObject: ["id": id, "success": true, "data": "[]"])
+        try await task.send(.string(String(decoding: reply, as: UTF8.self)))
+
+        let response = try await callTask.value
+        #expect(response.success == true)
+        #expect(response.data?.stringValue == "[]")
+    }
+
+    @Test func sendFailsAfterGraceWindowExpiresWithoutExtension() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let bridge = try WebSocketBridge(
+            port: 0,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoot: tokenRoot,
+            connectGraceTimeout: .milliseconds(150)
+        )
+        await bridge.start()
+        defer { Task { await bridge.stop() } }
+
+        let failure = await bridgeFailure { _ = try await bridge.send(action: "tabs_query") }
+        #expect(failure?.code == "bridge_disconnected")
+        #expect(failure?.retryable == true)
+    }
+
+    /// The grace window is the most a call waits, never more than the call's own
+    /// time: a `run_steps` step with little time left must not wait it out.
+    @Test func theWaitForSafariEndsWithTheCallsOwnTime() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let bridge = try WebSocketBridge(
+            port: 0,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoot: tokenRoot,
+            connectGraceTimeout: .seconds(10)
+        )
+        await bridge.start()
+        defer { Task { await bridge.stop() } }
+
+        let start = ContinuousClock.now
+        let sent = await bridgeFailure { _ = try await bridge.send(action: "tabs_query", timeout: 0.2) }
+        let broadcast = await bridgeFailure { _ = try await bridge.broadcast(action: "tabs_query", timeout: 0.2) }
+        let elapsed = ContinuousClock.now - start
+
+        #expect(sent?.code == "bridge_disconnected")
+        #expect(broadcast?.code == "bridge_disconnected")
+        #expect(elapsed < .seconds(3))
+    }
+
+    @Test func sendFailsFastWhenBridgeBindFailedDespiteGraceWindow() async throws {
+        try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenRoot) }
+
+        let (first, held) = try #require(holdFreePorts(count: 10), "no run of ten free ports to occupy")
+        defer { for descriptor in held { Darwin.close(descriptor) } }
+
+        let bridge = try WebSocketBridge(
+            port: first,
+            logger: Logger(label: "BridgeLifecycleTests"),
+            tokenRoot: tokenRoot,
+            connectGraceTimeout: .seconds(10)
+        )
+        await bridge.start()
+        defer { Task { await bridge.stop() } }
+
+        let start = ContinuousClock.now
+        let failure = await bridgeFailure { _ = try await bridge.send(action: "tabs_query") }
+        let elapsed = ContinuousClock.now - start
+        #expect(failure?.code == "bridge_unavailable")
+        #expect(elapsed < .seconds(2))
+    }
 }

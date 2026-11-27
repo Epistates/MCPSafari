@@ -2,9 +2,9 @@
 
 // Talking to content scripts, and routing across a page's frames.
 
-// ─── Content Script Communication ────────────────────────────────────
+// --- Content Script Communication ------------------------------------
 
-// ─── Frame Routing ───────────────────────────────────────────────────
+// --- Frame Routing ---------------------------------------------------
 
 // content.js runs in every frame, each with its own uid counter, so a uid
 // names the frame that minted it. That keeps frames out of the tool contract:
@@ -43,6 +43,8 @@ function unreachableFrame(frame) {
     return { frameId: frame.frameId, origin: originOfUrl(frame.url) };
 }
 
+/** @typedef {{ frameId: number | null, origin: string | null, reason?: string }} UnreachableFrame */
+/** @type {UnreachableFrame} */
 const FRAME_ENUMERATION_FAILED = { frameId: null, origin: null, reason: "frame_enumeration_failed" };
 
 // A frame whose document refuses the content script (a sandboxed or already
@@ -278,6 +280,7 @@ async function sendToContentScript(tabId, message, frameId = 0) {
         if (!response && repeatable) {
             await injectContentScripts(resolvedTabId);
             response = await ask();
+            if (!response && await holdsStaleContentScript(resolvedTabId, frameId)) throw pageNeedsReloadError();
         }
     } catch (err) {
         // The thrown form, which other engines use and the test fake does too.
@@ -286,6 +289,7 @@ async function sendToContentScript(tabId, message, frameId = 0) {
         await injectContentScripts(resolvedTabId);
         response = await ask();
     }
+    notePageVisibility(resolvedTabId, response);
     return unpackReply(response, message);
 }
 
@@ -340,7 +344,24 @@ async function ensureListener(tabId, frameId) {
     if (await contentScriptAnswers(tabId, frameId)) return;
     await injectContentScripts(tabId);
     if (!(await contentScriptAnswers(tabId, frameId))) {
+        if (await holdsStaleContentScript(tabId, frameId)) throw pageNeedsReloadError();
         throw new Error("Content script did not respond after injection");
+    }
+}
+
+// Whether the frame already has the content script loaded although nothing in it
+// answers, even after injecting: then it's an earlier MCPSafari's, which Safari
+// keeps attached until the page loads again (`pageNeedsReloadError`). Asked only
+// once injecting has failed, so a frame whose own script answers is never asked.
+async function holdsStaleContentScript(tabId, frameId) {
+    try {
+        const [frame] = await browser.scripting.executeScript({
+            target: { tabId, frameIds: [frameId] },
+            func: () => Boolean(window.__mcpSafari),
+        });
+        return frame?.result === true;
+    } catch (_) {
+        return false;
     }
 }
 

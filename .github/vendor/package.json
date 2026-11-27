@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Third-party code vendored into the Safari extension, pinned here so Dependabot proposes updates. After changing a version, run node .github/scripts/vendor_tldts.mjs.",
+  "dependencies": {
+    "tldts": "7.5.4"
+  }
+}

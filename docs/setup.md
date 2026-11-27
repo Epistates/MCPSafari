@@ -24,6 +24,8 @@ brew upgrade epistates/tap/mcp-safari-server
 brew upgrade --cask epistates/tap/mcp-safari
 ```
 
+After upgrading, reload the Safari tabs you want agents to use. Safari keeps the previous version attached to pages that were open, and calls on them fail with `page_needs_reload` until they load again.
+
 Upgrading only the cask leaves the server behind, because a cask depends on a formula being present rather than being any particular version. That gives you a new app and extension against an old server, which the versioned handshake rejects. `mcp-safari doctor` reports it as a version mismatch and names the fix, so it fails loudly rather than misbehaving.
 
 Open MCPSafari.app once so Safari picks up the extension, then enable it in **Safari > Settings > Extensions > MCPSafari Extension**.
@@ -160,7 +162,7 @@ A server tries `8089` and then the ports after it, ten in all by default: `8089`
 
 A client that can set environment variables but not arguments can use `MCP_SAFARI_PORT_RANGE=20` instead. The flag wins when both are set. A value outside 1 to 64, or a range that would run past port 65535, stops the server with a message saying which. So does a `--port` from 1 to 1023: the extension does not dial those, so a server there would run and never be found. `--port 0` takes any free port.
 
-Nothing needs to be set in the extension, and there is no matching setting to keep in step. Each server writes a token file for the port it actually bound, and the extension connects to every port that has one. Any `--port` and `--port-range` are therefore found without further setup, and a port drops out of the popup when its server stops and removes its token. A port that keeps refusing the extension is paused and tried again about every 24 seconds for as long as its token file exists, so a server that was slow to start, or briefly crowded out, is picked up without reopening Safari. The extension manages up to 64 such ports at a time. Ports added by hand in the popup are kept until you remove them and do not count toward that limit.
+Nothing needs to be set in the extension, and there is no matching setting to keep in step. Each server writes a token file for the port it actually bound, and the extension connects to every port that has one. Any `--port` and `--port-range` are therefore found without further setup, and a port drops out of the popup when its server stops and removes its token. A port that keeps refusing the extension is paused and tried again about every 15 seconds for as long as its token file exists, so a server that was slow to start, or briefly crowded out, is picked up without reopening Safari. The extension manages up to 64 such ports at a time. Ports added by hand in the popup are kept until you remove them and do not count toward that limit.
 
 `status` reports the range as `requestedPort` through `lastPort`, and `mcp-safari doctor` looks for a token anywhere in it.
 

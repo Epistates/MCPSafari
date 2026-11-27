@@ -337,7 +337,7 @@ test("tabs_create with a URL answers once the page has loaded, not while the tab
     assert.equal(created.access, "granted");
 });
 
-test("tabs_create reports the URL it was given but withholds the title of an unreached site", async () => {
+test("tabs_create reports the URL it was given but withholds the title of a site it could not confirm", async () => {
     const harness = loadBackground();
     harness.evaluate("waitForTabLoad = async (tabId, created) => created");
 
@@ -390,7 +390,7 @@ test("navigate names only the origin of a site that has not been reached", async
     const unreached = await harness.evaluate('handleNavigate({ tabId: 2, action: "reload" })');
     assert.equal(
         unreached,
-        "Reloaded https://untouched.example (URL and title withheld: MCPSafari has not been granted access to this site)"
+        "Reloaded https://untouched.example (URL and title withheld: MCPSafari hasn't confirmed access to this site)"
     );
     assert.doesNotMatch(unreached, /account|Your account/);
 

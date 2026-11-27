@@ -152,6 +152,7 @@ struct ToolParametersTests {
         case "scroll": ["direction": "down"]
         case "form_input": ["fields": ["#a": "b"]]
         case "handle_dialog": ["action": "accept"]
+        case "clear_cookies": ["domain": "idp.example.com"]
         case "upload_file", "drop_file": ["filePath": .string(Self.existingFile)]
         default: [:]
         }
@@ -195,11 +196,13 @@ struct ToolParametersTests {
 
     // MARK: - Unknown argument names
 
-    // `click {native: true}` ran a synthetic click, and `waitForSelctor` did nothing
-    // at all. Both are the caller being told nothing, so both are refused.
+    // `click {native: true}` ran a synthetic click before click had a native path,
+    // and `waitForSelctor` did nothing at all. Both are the caller being told
+    // nothing, so an argument a tool doesn't declare is refused.
     @Test func anArgumentTheToolDoesNotDeclareIsRefusedWithTheOnesItDoes() {
-        let click = refusal("click", ["selector": "#a", "native": true])
-        #expect(click?.hasPrefix("click does not take the argument \"native\". Its arguments are: ") == true)
+        let click = refusal("click", ["selector": "#a", "button": "right"])
+        #expect(click?.hasPrefix("click does not take the argument \"button\". Its arguments are: ") == true)
+        #expect(click?.contains("native") == true)
         #expect(click?.contains("doubleClick") == true)
         #expect(click?.contains("waitForSelector") == true)
 
@@ -298,6 +301,29 @@ struct ToolParametersTests {
         // Naming the profile to open a tab in, and the window to resize, are declared.
         #expect(refusal("tabs_create", ["tabId": "p1t3"]) == nil)
         #expect(refusal("resize_window", ["width": 800, "height": 600, "tabId": "p1t3"]) == nil)
+        #expect(refusal("clear_cookies", ["domain": "idp.example.com", "tabId": "p1t3"]) == nil)
+    }
+
+    // MARK: - clear_cookies
+
+    // A domain wider than the caller meant clears other sites' sessions, so
+    // anything but a bare hostname is refused rather than trimmed into one.
+    @Test func clearCookiesTakesOnlyABareHostname() throws {
+        #expect(refusal("clear_cookies", [:])?.hasPrefix("domain is required") == true)
+        #expect(refusal("clear_cookies", ["domain": 5]) == "domain must be a string")
+        for bad in [
+            "", "https://idp.example.com", "idp.example.com/path", "idp.example.com:443",
+            ".example.com", "example.com.", "idp..example.com", "-idp.example.com",
+            "*.example.com", "idp example.com", "com", "bücher.example",
+        ] {
+            #expect(refusal("clear_cookies", ["domain": .string(bad)])?.hasPrefix("Invalid domain") == true, "\(bad)")
+        }
+        for good in ["idp.example.com", "example.com", "localhost", "127.0.0.1", "xn--bcher-kva.example"] {
+            #expect(refusal("clear_cookies", ["domain": .string(good)]) == nil, "\(good)")
+        }
+
+        let params = try SafariMCPServer.clearCookiesParams(["domain": "IdP.Example.COM"])
+        #expect(params["domain"]?.stringValue == "idp.example.com")
     }
 
     @Test func closeAndSelectTabNeedAHandle() {

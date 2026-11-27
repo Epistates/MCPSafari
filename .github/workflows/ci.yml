@@ -90,27 +90,13 @@ jobs:
       - name: Test extension scripts
         run: node --test --test-timeout=60000 Tests/*.mjs
 
-      # The extension scripts are untyped and share globals across files, so a
-      # misspelled cross-file name is a ReferenceError at runtime that no test
-      # may reach. Only undeclared names (TS2304, TS2552) and wrong argument
-      # counts (TS2554) fail the build: the remaining diagnostics are type-shape
-      # complaints about plain JavaScript that are not worth fixing yet.
+      # The extension scripts are plain JavaScript that share globals across
+      # files, so a misspelled cross-file name is a ReferenceError at runtime
+      # that no test may reach. Every diagnostic fails the build: the scripts
+      # check clean, with JSDoc and extension-globals.d.ts filling in the types
+      # JavaScript can't state.
       - name: Type-check extension scripts
-        run: |
-          set -uo pipefail
-          status=0
-          bunx --package typescript@7.0.2 tsc -p tsconfig.json --pretty false > "$RUNNER_TEMP/tsc.log" 2>&1 || status=$?
-          cat "$RUNNER_TEMP/tsc.log"
-          # A crash or a bad config prints no file-level diagnostics, so
-          # without this a broken checker would look like a clean one.
-          if [ "$status" -ne 0 ] && ! grep -q 'error TS' "$RUNNER_TEMP/tsc.log"; then
-            echo "::error::tsc did not run to completion"
-            exit 1
-          fi
-          if grep -E ': error TS(2304|2552|2554):|^error TS' "$RUNNER_TEMP/tsc.log"; then
-            echo "::error::Extension scripts use an undeclared name or pass the wrong number of arguments"
-            exit 1
-          fi
+        run: bunx --package typescript@7.0.2 tsc -p tsconfig.json --pretty false
 
       - name: Test MCP tool result contracts
         run: node --test .github/scripts/test_mcp_results.mjs
@@ -148,11 +134,6 @@ jobs:
 
       # The extension's token reader is the only path a token takes to Safari,
       # and every way it can fail is silent, so its unit tests run here too.
+      # It is a package of its own so they build no app.
       - name: Test Safari Extension token reader
-        run: |
-          cd MCPSafari
-          xcodebuild test -project MCPSafari.xcodeproj \
-            -scheme "MCPSafari" \
-            -destination 'platform=macOS' \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO
+        run: swift test --package-path MCPSafari/TokenReader

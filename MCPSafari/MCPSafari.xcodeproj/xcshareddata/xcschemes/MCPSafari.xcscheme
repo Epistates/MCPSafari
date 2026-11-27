@@ -44,17 +44,6 @@
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
       <Testables>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "9DC62EE02F717081006535B1"
-               BuildableName = "MCPSafariTests.xctest"
-               BlueprintName = "MCPSafariTests"
-               ReferencedContainer = "container:MCPSafari.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

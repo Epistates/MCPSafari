@@ -37,6 +37,11 @@ function loadBackground() {
     const tab = { id: 1, active: true, windowId: 1, url: "https://blocked.example/page", title: "T" };
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
+        cookies: {
+            getAllCookieStores: async () => [{ id: "persistent-1", incognito: false, tabIds: [1] }],
+            getAll: async () => [],
+            remove: async () => null,
+        },
         runtime: {
             getManifest: () => ({ version: "9.9.9" }),
             onMessage: { addListener() {} },
@@ -130,6 +135,7 @@ const PARAMS = {
     press_key: { key: "a" },
     hover: { selector: "#h" },
     scroll: { direction: "down" },
+    clear_cookies: { domain: "blocked.example" },
 };
 
 // Actions that are deliberately not gated, with the reason. Each is asserted to
@@ -138,9 +144,11 @@ const PARAMS = {
 const UNGATED = new Map([
     ["identify", "records which MCP client is behind the connection, and touches no tab"],
     ["tabs_query", "lists tabs from the tabs API and is deadlined on its own; it is the call every session starts with"],
+    ["ping", "answers the server's check that the extension still replies, and touches nothing"],
     ["tabs_create", "opens a new tab, a browser operation that needs no access to any page"],
     ["tabs_close", "closes a tab by id, a browser operation that needs no access to the page being closed"],
     ["select_tab", "pins a tab id and brings it forward, which is bookkeeping; the first call that reads the page is gated"],
+    ["clear_cookies", "acts on the profile's cookie store, not on a tab; host access bounds which cookies it can see"],
 ]);
 
 // `navigate` is two things. Going to a URL and reloading go through the tabs API

@@ -1,15 +1,15 @@
 //
 //  TokenStore.swift
-//  MCPSafari Extension
+//  TokenReader
 //
 //  The part of the native messaging handler that needs no Safari: reading the
 //  bridge's token files and building the reply to the background script. It
-//  imports only Foundation so the unit tests can compile this same file.
+//  imports only Foundation, so `swift test` covers it without building the app.
 //
 
 import Foundation
 
-enum TokenStore {
+public enum TokenStore {
 
     /// Reported when Safari supplies no `SFExtensionProfileKey`. Must match
     /// `WebSocketBridge.defaultProfileID`.
@@ -27,6 +27,9 @@ enum TokenStore {
     /// is not a token file, and is refused before it is read.
     static let maxTokenFileBytes = 256
 
+    /// The background script sends 43 characters of base64url. Longer is not one of its nonces.
+    static let maxNonceBytes = 64
+
     /// Where the bridge writes `tokens/<port>`, relative to a home directory.
     ///
     /// This is the only root. The extension is sandboxed and its read exception
@@ -39,7 +42,7 @@ enum TokenStore {
     ///
     /// A sandboxed process has two homes: its container, and the real one from the
     /// password database. The bridge runs unsandboxed and writes under the real one.
-    static func roots(homes: [URL]) -> [URL] {
+    public static func roots(homes: [URL]) -> [URL] {
         var roots: [URL] = []
         for home in homes {
             let root = home.appendingPathComponent(tokenRootRelativePath)
@@ -56,10 +59,17 @@ enum TokenStore {
     /// message back, which is Xcode's template and gives a caller nothing it
     /// did not already have. The no-token error carries a code and no paths, so
     /// the home directory never reaches a page-visible log.
-    static func response(to message: Any?, profile: UUID?, roots: [URL]) -> [String: Any] {
+    public static func response(to message: Any?, profile: UUID?, roots: [URL]) -> [String: Any] {
         guard isTokenRequest(message) else { return ["error": "unsupported_message"] }
 
         var body: [String: Any] = [:]
+        // Echoed so the background script can tell this reply is for the request
+        // it sent. Safari has been seen losing one of two replies in flight at
+        // once, and a reply handed to the wrong request would give that page
+        // another profile's identity. Bounded, because the message is not trusted.
+        if let nonce = (message as? [String: Any])?["nonce"] as? String, nonce.utf8.count <= maxNonceBytes {
+            body["nonce"] = nonce
+        }
         let tokens = load(from: roots)
         if tokens.isEmpty {
             body["error"] = "no_token_files"
@@ -75,7 +85,7 @@ enum TokenStore {
         return body
     }
 
-    static func isTokenRequest(_ message: Any?) -> Bool {
+    public static func isTokenRequest(_ message: Any?) -> Bool {
         (message as? [String: Any])?["type"] as? String == "getTokens"
     }
 

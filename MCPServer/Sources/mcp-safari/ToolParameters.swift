@@ -95,6 +95,7 @@ extension SafariMCPServer {
         case "read_console": _ = try readConsoleParams(args)
         case "read_network": _ = try readNetworkParams(args)
         case "resize_window": _ = try resizeWindowParams(args)
+        case "clear_cookies": _ = try clearCookiesParams(args)
         case "wait": _ = try waitRequest(args)
         default: break
         }
@@ -336,6 +337,31 @@ extension SafariMCPServer {
             params[key] = AnyCodable(size)
         }
         return params
+    }
+
+    // MARK: Cookies
+
+    /// The domain `clear_cookies` removes cookies for: a bare hostname, lowercased.
+    /// A single label is refused, except `localhost`, so a public suffix such as
+    /// `com` cannot clear every site under it.
+    nonisolated static func clearCookiesParams(_ args: [String: Value]) throws -> [String: AnyCodable] {
+        guard let raw = try optionalString("domain", in: args) else {
+            throw ToolInputError("domain is required: a bare hostname such as idp.example.com")
+        }
+        let domain = raw.lowercased()
+        let labels = domain.split(separator: ".", omittingEmptySubsequences: false)
+        let isLabel: (Substring) -> Bool = { label in
+            (1...63).contains(label.count)
+                && label.first != "-" && label.last != "-"
+                && label.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+        }
+        guard domain.count <= 253,
+              labels.allSatisfy(isLabel),
+              labels.count > 1 || domain == "localhost"
+        else {
+            throw ToolInputError("Invalid domain: \(raw). Use a bare hostname such as idp.example.com, with no scheme, port, path or leading dot.")
+        }
+        return ["domain": AnyCodable(domain)]
     }
 
     // MARK: Action options

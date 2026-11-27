@@ -158,7 +158,7 @@
         return element;
     }
 
-    // ─── Page-world replies ──────────────────────────────────────────
+    // --- Page-world replies ------------------------------------------
 
     // The MAIN-world scripts cap what they capture, but a reply arrives over
     // window.postMessage, which the page can answer too, and it can replace

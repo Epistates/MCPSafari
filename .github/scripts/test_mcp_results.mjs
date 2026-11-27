@@ -105,6 +105,8 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         return bounded(response, method).finally(() => pending.delete(id));
     };
     const exercised = new Set();
+    /// A listing's content without the note a newly started server adds.
+    const withoutDiscoveryNote = (result) => result.content.filter((item) => !/a profile may not be listed yet/.test(item.text));
     const tool = async (name, args = {}, success = true) => {
         const result = await call("tools/call", { name, arguments: args });
         assert.equal(result.isError === true, !success, `${name}: ${JSON.stringify(result)}`);
@@ -201,6 +203,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
             case "javascript_tool": return jsText;
             case "screenshot": return { image: png, viewport: { width: 1, height: 1 }, devicePixelRatio: 1, visible: true, hasFocus: true };
             case "wait": return { matched: true };
+            case "clear_cookies": return { removed: 3 };
             default: return `Completed ${action}`;
         }
     };
@@ -254,12 +257,14 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     // answered, the way they can while a multi-request call is still running.
     let selectedTab = 7;
     let moveSelectionAfter;
+    // Whether the fixture's page says it isn't showing, as content.js reports.
+    let hiddenPage = false;
     const requests = [];
-    const untargeted = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab"]);
+    const untargeted = new Set(["tabs_query", "tabs_create", "tabs_close", "select_tab", "clear_cookies"]);
     await connect("default", async ({ action, params }) => {
         sentActions.add(action);
         received.push(action);
-        requests.push({ action, tabId: params.tabId, selector: params.selector });
+        requests.push({ action, tabId: params.tabId, selector: params.selector, domain: params.domain });
         inFlight.set(action, (inFlight.get(action) ?? 0) + 1);
         peakInFlight.set(action, Math.max(peakInFlight.get(action) ?? 0, inFlight.get(action)));
         if (answerDelayMs) await new Promise((resolve) => setTimeout(resolve, answerDelayMs));
@@ -269,28 +274,46 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         if (action === moveSelectionAfter) selectedTab = 9;
         if (action === failAction) return { success: false, error: "Fixture refusal", errorCode: "permission_required", retryable: true, recoveryAction: "ask_user", resolvedTabId };
         const data = responseData(action, params);
-        return { success: true, data: typeof data === "string" ? data : JSON.stringify(data), resolvedTabId };
+        return {
+            success: true,
+            data: typeof data === "string" ? data : JSON.stringify(data),
+            resolvedTabId,
+            ...(hiddenPage ? { pageVisibility: "hidden" } : {}),
+        };
     });
 
     const { tools } = await call("tools/list");
     const tabs = await tool("tabs_context");
     assert.equal(tabs.structuredContent.tabs[0].id, "p0t7");
     assert.deepEqual(tabs.structuredContent.profileFailures, []);
-    // A granted listing has nothing to add. An ungranted one says so once for
-    // the whole listing, with the extension's hint said once rather than per tab.
-    assert.equal(tabs.content.length, 1);
+    // This server started seconds ago, so another Safari profile may still be
+    // finding it (#168): the listing says so last, and when to look again.
+    assert.ok(tabs.structuredContent.profileDiscoverySecondsLeft > 0);
+    assert.match(tabs.content.at(-1).text, /a profile may not be listed yet/);
+    // A granted listing has nothing else to add. An ungranted one says so once for
+    // the whole listing, in the server's own words. Each tab's JSON already
+    // carries the extension's hint, and an older extension's hint says "not
+    // granted" of sites the user may well have allowed.
+    assert.equal(withoutDiscoveryNote(tabs).length, 1);
     queryTabs = [tab, ungrantedTab(11), ungrantedTab(12)];
     const mixed = await tool("tabs_context");
     queryTabs = [tab];
     assert.equal(mixed.structuredContent.tabs.length, 3);
     assert.equal(mixed.structuredContent.tabs[1].access, "not_granted");
-    assert.equal(mixed.content.length, 2);
-    assert.match(mixed.content[1].text, /Access to 2 tabs' sites is not granted/);
-    assert.equal(mixed.content[1].text.split("Grant access from the MCPSafari button").length - 1, 1);
+    assert.equal(withoutDiscoveryNote(mixed).length, 2);
+    assert.match(mixed.content[1].text, /^2 tabs are on sites MCPSafari hasn't confirmed access to/);
+    assert.match(mixed.content[1].text, /works if the user has allowed its site/);
+    assert.doesNotMatch(mixed.content[1].text, /Grant access from the MCPSafari button/);
     for (const name of ["tabs_create", "select_tab"]) {
         const result = await tool(name, name === "select_tab" ? { tabId: "p0t7" } : {});
         assert.equal(result.structuredContent.tab.id, "p0t7");
     }
+    // A named tab picks the window as well as the profile, so its id goes along.
+    await tool("tabs_create", { tabId: "p0t7" });
+    assert.equal(requests.at(-1).action, "tabs_create");
+    assert.equal(requests.at(-1).tabId, 7);
+    await tool("tabs_create", {});
+    assert.equal(requests.at(-1).tabId, undefined);
     assert.deepEqual((await tool("close_tab", { tabId: "p0t7" })).structuredContent.tab, { id: "p0t7", closed: true });
 
     for (const text of ["42", "true", "null", '"quoted"', "{}", "[]", '{"nested":[1,true]}', "<p>hello</p>"]) {
@@ -302,6 +325,16 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         }
     }
     assert.deepEqual((await tool("read_page", { format: "snapshot" })).structuredContent.page, snapshot);
+    // A page Safari isn't showing says so once, after the result's own text and
+    // beside its payload, and a visible page's result is as it was.
+    hiddenPage = true;
+    const hidden = await tool("read_page", {});
+    hiddenPage = false;
+    assert.equal(hidden.structuredContent.page, pageText);
+    assert.equal(hidden.structuredContent.pageVisibility, "hidden");
+    assert.equal(hidden.content.length, 2);
+    assert.match(hidden.content[1].text, /^Page visibility: hidden\./);
+    assert.equal("pageVisibility" in (await tool("read_page", {})).structuredContent, false);
     assert.deepEqual((await tool("snapshot")).structuredContent.snapshot, snapshot);
     assert.ok(Array.isArray((await tool("find", { selector: "body" })).structuredContent.matches));
     assert.ok(Array.isArray((await tool("read_console")).structuredContent.messages));
@@ -337,6 +370,11 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
         if (options.waitForSelector) assert.deepEqual(result.structuredContent.wait, { matched: true }, name);
     }
     await tool("resize_window", { width: 800, height: 600 });
+    // Clears a profile, not a tab: a handle only picks the profile and no tab id is sent.
+    for (const args of [{ domain: "IdP.Example.com" }, { domain: "idp.example.com", tabId: "p0t7" }]) {
+        assert.deepEqual((await tool("clear_cookies", args)).structuredContent.cookies, { removed: 3 });
+        assert.deepEqual(requests.at(-1), { action: "clear_cookies", tabId: undefined, selector: undefined, domain: "idp.example.com" });
+    }
     assert.deepEqual((await tool("wait", { seconds: 0 })).structuredContent.wait, { seconds: 0 });
     assert.deepEqual((await tool("wait", { selector: "body" })).structuredContent.wait, { matched: true });
 
@@ -375,6 +413,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     const serialised = [
         ["tabs_create", {}], ["click", { selector: "body" }], ["javascript_tool", { code: "1" }],
         ["resize_window", { width: 800, height: 600 }], ["read_console", {}], ["read_network", {}],
+        ["clear_cookies", { domain: "example.com" }],
     ];
     for (const [name, args] of serialised) {
         await Promise.all([0, 1, 2, 3].map(() => tool(name, args)));
@@ -487,6 +526,8 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("read_network", { status: "500" }, /status must be an integer/);
     await refuse("read_console", { pattern: 5, clear: true }, /pattern must be a string/);
     await refuse("resize_window", { width: 800 }, /height is required/);
+    await refuse("clear_cookies", { domain: "https://idp.example.com/" }, /Invalid domain/);
+    await refuse("clear_cookies", { domain: "com" }, /Invalid domain/);
     await refuse("navigate", { url: "javascript:alert(1)" }, /disallowed scheme/);
     // The wait and trace options are read before the action is sent. Checking
     // them afterwards meant a caller who corrected the argument and retried
@@ -506,11 +547,13 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     await refuse("tabs_create", { url: `file://${tokenPath}` }, /bridge token/);
     // The same goes for a string where a boolean is declared, which is truthy at
     // the extension, and for an argument the tool does not declare, which used to
-    // be dropped: `click {native: true}` ran a synthetic click.
+    // be dropped: `click {native: true}` ran a synthetic click before click had a
+    // native path, and `scroll {native: true}` would do the same now.
     await refuse("click", { selector: "body", force: "false" }, /force must be a boolean/);
     await refuse("click", { selector: "body", doubleClick: "false" }, /doubleClick must be a boolean/);
     await refuse("type_text", { selector: "input", text: "x", clearFirst: "false" }, /clearFirst must be a boolean/);
-    await refuse("click", { selector: "body", native: true }, /click does not take the argument "native"/);
+    await refuse("scroll", { direction: "down", native: true }, /scroll does not take the argument "native"/);
+    await refuse("click", { selector: "body", native: "true" }, /native must be a boolean/);
     await refuse("click", { selector: "body", waitForSelctor: "#a" }, /does not take the argument "waitForSelctor"/);
     await refuse("scroll", { direction: "sideways" }, /Invalid direction: sideways\. Use up, down, left, right\./);
     await refuse("form_input", { fields: { "#a": [1] } }, /fields\["#a"\] must be a string, number or boolean/);
@@ -602,9 +645,9 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(partial.structuredContent.profileFailures.length, 1);
     assert.match(partial.structuredContent.profileFailures[0], /Profile unavailable/);
 
-    // Selecting a tab on a site Safari has not granted succeeds and says so. It
-    // still pins the tab's profile, and the result tells the model in prose that
-    // the next read will be refused rather than leaving it to find out.
+    // Selecting a tab on a site MCPSafari hasn't confirmed access to succeeds and
+    // says so. It still pins the tab's profile, and the result tells the model in
+    // prose what the next read will do rather than leaving it to find out.
     await connect("third", ({ action }) => action === "select_tab"
         ? { success: true, data: JSON.stringify({ id: 9, selected: true, access: "not_granted", accessHint: "Grant example.org from the MCPSafari toolbar button." }) }
         : { success: false, error: "Not used" });
@@ -613,7 +656,7 @@ test("every advertised tool returns object structuredContent over MCP", { timeou
     assert.equal(ungranted.structuredContent.tab.access, "not_granted");
     assert.match(ungranted.content[0].text, /not_granted/);
     const ungrantedText = ungranted.content.map(({ text }) => text).join("\n");
-    assert.match(ungrantedText, /Access to one tab's site is not granted/);
+    assert.match(ungrantedText, /One tab is on a site MCPSafari hasn't confirmed access to/);
     assert.match(ungrantedText, /Grant example\.org from the MCPSafari toolbar button\./);
     const pinned = (await tool("status")).structuredContent.status.profiles.find((profile) => profile.selected);
     assert.equal(pinned.handle, "p2");

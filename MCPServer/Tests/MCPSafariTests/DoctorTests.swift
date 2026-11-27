@@ -357,6 +357,68 @@ struct DoctorTests {
         #expect(Doctor.parseExtensionPath(from: " (0 plug-ins)\n") == nil)
     }
 
+    /// What `pluginkit -m -A -D -v` printed on 2026-11-24 with a release build
+    /// left in DerivedData: two copies of one version, and Safari ran both. Asked
+    /// without `-A -D`, PlugInKit named only one of them.
+    @Test func everyRegisteredCopyIsRead() {
+        let stray = "/Users/someone/DerivedData/b42/Build/Products/Release/MCPSafari.app/Contents/PlugIns"
+            + "/MCPSafari Extension.appex"
+        let installed = "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+        let output = "     com.epistates.MCPSafari.Extension(0.4.1)\tA76FC9BA-4859\t2026-11-24 17:12:58 +0000\t\(stray)\n"
+            + "     com.epistates.MCPSafari.Extension(0.4.1)\t30A7A2BA-21E9\t2026-11-24 16:14:46 +0000\t\(installed)\n"
+            + " (2 plug-ins)\n"
+
+        #expect(Doctor.parseExtensionPaths(from: output) == [stray, installed])
+        #expect(Doctor.parseExtensionPaths(from: " (0 plug-ins)\n").isEmpty)
+    }
+
+    /// Two copies number tabs separately and connect as the same profile, so a
+    /// server's handles change between calls. The warning names both and gives
+    /// the command for the one that has to go, never for the installed app.
+    @Test func aSecondRegisteredCopyIsNamedWithTheCommandToUnregisterIt() {
+        let installedApp = URL(fileURLWithPath: "/Applications/MCPSafari.app")
+        let installed = installedApp.path + "/Contents/PlugIns/MCPSafari Extension.appex"
+        let stray = "/Users/someone/Dev Builds/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+
+        let check = Doctor.extensionCopiesCheck([stray, installed], installedApp: installedApp)
+
+        #expect(check.code == "extension_copies")
+        #expect(check.status == .warning)
+        #expect(check.message.contains(stray))
+        #expect(check.message.contains(installed))
+        #expect(check.recovery == "Unregister the copies outside /Applications/MCPSafari.app: "
+            + "\(Doctor.launchServicesRegister) -u '/Users/someone/Dev Builds/MCPSafari.app'")
+    }
+
+    /// With the installed app not among them there's no telling which copy is
+    /// wanted, so each one gets its command and the choice stays with the reader.
+    @Test func withoutTheInstalledCopyEveryCopyGetsItsCommand() {
+        let check = Doctor.extensionCopiesCheck(
+            ["/a/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex", "/b/It's Here.app"],
+            installedApp: URL(fileURLWithPath: "/Applications/MCPSafari.app")
+        )
+
+        #expect(check.status == .warning)
+        #expect(check.recovery == "Keep the copy you use and unregister the others: "
+            + "\(Doctor.launchServicesRegister) -u '/a/MCPSafari.app' ; "
+            + "\(Doctor.launchServicesRegister) -u '/b/It'\\''s Here.app'")
+    }
+
+    @Test func oneRegisteredCopyPassesAndAnUnaskedPlugInKitSaysNothing() {
+        let paths = DoctorPaths(
+            executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
+            appURL: URL(fileURLWithPath: "/Applications/MCPSafari.app"),
+            tokenDirectoryURL: URL(fileURLWithPath: "/tmp/tokens")
+        )
+        let installed = "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+
+        let one = Doctor.inspect(paths: paths, port: 8089, registeredCopies: [installed])
+        #expect(one.checks.first { $0.code == "extension_copies" }?.status == .ok)
+
+        let unasked = Doctor.inspect(paths: paths, port: 8089, registeredCopies: nil)
+        #expect(unasked.checks.contains { $0.code == "extension_copies" } == false)
+    }
+
     private func writeBundle(
         at url: URL,
         identifier: String,

@@ -8,7 +8,7 @@ import MCP
 // MARK: - Native Input
 
 /// Real keyboard and mouse events, for the `native: true` paths of
-/// `type_text`, `press_key`, `move_pointer` and `drag`.
+/// `type_text`, `press_key`, `click`, `hover` and `drag`.
 ///
 /// Synthetic DOM events cannot reach anything outside the page, so a native
 /// path exists for the cases that need the real input stream. That takes over
@@ -101,22 +101,27 @@ extension SafariMCPServer {
     /// driven by a fake in tests without keystrokes reaching the real keyboard.
     struct NativeKeyboard: Sendable {
         let safariIsFrontmost: @Sendable () -> Bool
-        /// Whether keyboard focus is inside the web page, or nil when
-        /// Accessibility cannot say. Safari being frontmost does not mean that:
-        /// Command-L, or a key the page does not take, leaves the address bar or
-        /// the find bar holding the keyboard.
-        let focusIsInPage: @Sendable () -> Bool?
+        /// Where Accessibility finds the keyboard. Safari being frontmost does
+        /// not say: Command-L, or a key the page does not take, leaves the
+        /// address bar or the find bar holding it, and a click in another tab or
+        /// window moves it to another page.
+        let keyboardPlace: @Sendable () -> KeyboardPlace
+        /// Seconds since the last pointer event. Typing posts none, so one
+        /// newer than the typing is a person reaching for the mouse.
+        let secondsSincePointerInput: @Sendable () -> Double
         let postText: @Sendable (String) throws -> Void
         let postKey: @Sendable (CGKeyCode, CGEventFlags) throws -> Void
 
         init(
             safariIsFrontmost: @escaping @Sendable () -> Bool,
-            focusIsInPage: @escaping @Sendable () -> Bool? = { nil },
+            keyboardPlace: @escaping @Sendable () -> KeyboardPlace = { .unknown },
+            secondsSincePointerInput: @escaping @Sendable () -> Double = { .infinity },
             postText: @escaping @Sendable (String) throws -> Void,
             postKey: @escaping @Sendable (CGKeyCode, CGEventFlags) throws -> Void
         ) {
             self.safariIsFrontmost = safariIsFrontmost
-            self.focusIsInPage = focusIsInPage
+            self.keyboardPlace = keyboardPlace
+            self.secondsSincePointerInput = secondsSincePointerInput
             self.postText = postText
             self.postKey = postKey
         }
@@ -128,26 +133,62 @@ extension SafariMCPServer {
             let box = EventSourceBox(source)
             return NativeKeyboard(
                 safariIsFrontmost: { SafariMCPServer.safariIsActive() },
-                focusIsInPage: { SafariMCPServer.focusedElementIsInWebArea() },
+                keyboardPlace: { SafariMCPServer.keyboardPlace() },
+                secondsSincePointerInput: { UserActivity.secondsSincePointerInput() },
                 postText: { try SafariMCPServer.postText($0, source: box.source) },
                 postKey: { try SafariMCPServer.postKey(code: $0, flags: $1, source: box.source) }
             )
         }
 
-        /// Why native input may not go on, or nil if it may. Safari not being in
-        /// front is checked first and is the clearer cause; a focus that is
-        /// somewhere Accessibility can place outside the page is the second. A
-        /// focus Accessibility cannot place at all is allowed, which is how this
-        /// behaved before the check existed.
-        func focusProblem() -> NativeFocusProblem? {
-            guard safariIsFrontmost() else { return .safariNotFrontmost }
-            return focusIsInPage() == false ? .focusOutsidePage : nil
+        /// Why native input may not go on, or nil if it may, and the page that
+        /// holds the keyboard when Accessibility can say which. Safari not being
+        /// in front is checked first and is the clearer cause; a focus that is
+        /// somewhere Accessibility can place outside the page is the second; a
+        /// keyboard in a page other than `page`, where the text began, is the
+        /// third. A focus Accessibility cannot place at all is allowed, which is
+        /// how this behaved before the check existed.
+        func focusProblem(stayingIn page: PageIdentity? = nil) -> (problem: NativeFocusProblem?, page: PageIdentity?) {
+            guard safariIsFrontmost() else { return (.safariNotFrontmost, nil) }
+            switch keyboardPlace() {
+            case .outsidePage:
+                return (.focusOutsidePage, nil)
+            case .page(let current):
+                if let page, let current, current != page { return (.focusInAnotherPage, current) }
+                return (nil, current)
+            case .unknown:
+                return (nil, nil)
+            }
         }
     }
 
     enum NativeFocusProblem {
         case safariNotFrontmost
         case focusOutsidePage
+        case focusInAnotherPage
+    }
+
+    /// Where Accessibility finds the keyboard.
+    enum KeyboardPlace: Sendable {
+        /// In a web page: the outermost web area above the focused element, so
+        /// a field in a frame belongs to its tab's page. Nil when Accessibility
+        /// stopped answering on the way up and can't say which page.
+        case page(PageIdentity?)
+        /// Somewhere Accessibility can place outside any page, such as the
+        /// address bar or the find bar.
+        case outsidePage
+        /// Accessibility can't say: it is refused, it timed out, or nothing
+        /// reports focus.
+        case unknown
+    }
+
+    /// One web page as Accessibility shows it. Two are the same page when they
+    /// are the same element.
+    struct PageIdentity: Equatable, @unchecked Sendable {
+        let element: AnyObject
+
+        static func == (lhs: PageIdentity, rhs: PageIdentity) -> Bool {
+            CFEqual(lhs.element, rhs.element)
+        }
     }
 
     /// The source is only ever used by one task at a time, one event after
@@ -182,15 +223,29 @@ extension SafariMCPServer {
         var delivered = 0
 
         try checkNativeDeadline(deadline)
-        if let problem = keyboard.focusProblem() {
+        let (problem, startingPage) = keyboard.focusProblem()
+        if let problem {
             throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: false, problem: problem))
         }
 
         /// A key that moved focus mid-text, such as Command-L, sends what follows
-        /// into the address bar, so the page is asked again wherever the loop
-        /// would otherwise carry on blind.
-        func ensureFocus() throws {
-            if let problem = keyboard.focusProblem() {
+        /// into the address bar, and a click in another tab or window sends it
+        /// into that page, so the keyboard is asked again wherever the loop would
+        /// otherwise carry on blind. After a submit key the page may have
+        /// navigated, which can make it a new page to Accessibility, so only the
+        /// checks before it compare pages.
+        let typingStarted = ProcessInfo.processInfo.systemUptime
+        /// Someone reaching for the mouse is usually about to click somewhere
+        /// else, which moves the keyboard, so typing stops before their click
+        /// rather than at the focus check after it.
+        func ensureNoPointerInput() throws {
+            if keyboard.secondsSincePointerInput() < ProcessInfo.processInfo.systemUptime - typingStarted {
+                throw UserActivity.pointerUsedWhileTyping(delivered: delivered, of: characters.count)
+            }
+        }
+
+        func ensureFocus(samePage: Bool = true) throws {
+            if let problem = keyboard.focusProblem(stayingIn: samePage ? startingPage : nil).problem {
                 throw NativeInputError(failure: nativeFocusFailure(
                     eventsAlreadySent: true,
                     delivered: (delivered, characters.count),
@@ -212,6 +267,7 @@ extension SafariMCPServer {
                 try Task.checkCancellation()
                 try checkNativeDeadline(deadline)
                 if index > 0, index % nativeFocusCheckInterval == 0 { try ensureFocus() }
+                try ensureNoPointerInput()
                 try keyboard.postText(String(character))
                 delivered += 1
                 try await nativeKeystrokePause()
@@ -222,6 +278,7 @@ extension SafariMCPServer {
                 // in the wrong place, so it is not sent on the strength of a check
                 // made up to fifteen characters ago.
                 try ensureFocus()
+                try ensureNoPointerInput()
                 try keyboard.postKey(submitKeyCode, [])
                 try await nativeKeystrokePause()
             }
@@ -234,7 +291,7 @@ extension SafariMCPServer {
             ))
         }
 
-        try ensureFocus()
+        try ensureFocus(samePage: input.submitKeyCode == nil)
 
         let suffix = input.submitKey.map { " then pressed \($0)" } ?? ""
         return "Typed \(input.text.count) character(s) with native input\(suffix)"
@@ -283,6 +340,10 @@ extension SafariMCPServer {
             message = "Keyboard focus left the page during native input, into Safari's address bar, find bar or another control outside it, so some events may have gone there instead.\(progress) Tell the user before retrying: a retry sends the whole input again."
         case (.focusOutsidePage, false):
             message = "Keyboard focus is not in the page, but in Safari's address bar, find bar or another control outside it, so nothing was sent. Native keys go wherever the keyboard focus is. Ask the user to click into the page, or omit native to use synthetic input, which does not depend on keyboard focus."
+        case (.focusInAnotherPage, true):
+            message = "Keyboard focus moved to another page during native input, such as another tab or window, so some events may have gone there instead.\(progress) Tell the user before retrying: a retry sends the whole input again."
+        case (.focusInAnotherPage, false):
+            message = "Keyboard focus is in a page other than the one this call is for, so nothing was sent. Ask the user to click into the agent's page, or omit native to use synthetic input, which does not depend on keyboard focus."
         }
         return ToolFailure(
             code: "native_input_focus_lost",
@@ -297,7 +358,18 @@ extension SafariMCPServer {
     /// Accessibility cannot say, because it is refused, the answer times out, or
     /// nothing reports focus; callers then go on as they did before this check.
     nonisolated static func focusedElementIsInWebArea() -> Bool? {
-        guard AXIsProcessTrusted() else { return nil }
+        switch keyboardPlace() {
+        case .page: true
+        case .outsidePage: false
+        case .unknown: nil
+        }
+    }
+
+    /// Where the keyboard is, by Accessibility: in a page when the focused
+    /// element has an `AXWebArea` among its ancestors, and which page by the
+    /// outermost of them.
+    nonisolated static func keyboardPlace() -> KeyboardPlace {
+        guard AXIsProcessTrusted() else { return .unknown }
         let system = AXUIElementCreateSystemWide()
         // A busy Safari must not hold up a keystroke for the default six seconds.
         AXUIElementSetMessagingTimeout(system, 1)
@@ -305,30 +377,34 @@ extension SafariMCPServer {
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let focused, CFGetTypeID(focused) == AXUIElementGetTypeID()
-        else { return nil }
+        else { return .unknown }
         var element = unsafeDowncast(focused, to: AXUIElement.self)
+        var page: AXUIElement?
 
-        // The page sits a few levels down from the window; a bound keeps a cyclic
-        // or runaway tree from looping.
+        // The page sits a few levels down from the window, and a frame's page a
+        // few more below it; a bound keeps a cyclic or runaway tree from looping.
         for _ in 0..<64 {
             var role: CFTypeRef?
             guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success else {
-                return nil
+                return page == nil ? .unknown : .page(nil)
             }
-            if (role as? String) == "AXWebArea" { return true }
+            if (role as? String) == "AXWebArea" { page = element }
 
             var parent: CFTypeRef?
             switch AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parent) {
             case .success:
-                guard let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
+                guard let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else {
+                    return page == nil ? .unknown : .page(nil)
+                }
                 element = unsafeDowncast(parent, to: AXUIElement.self)
             case .noValue, .attributeUnsupported:
-                return false // the top of the tree, and no web area on the way
+                // The top of the tree.
+                return page.map { .page(PageIdentity(element: $0)) } ?? .outsidePage
             default:
-                return nil
+                return page == nil ? .unknown : .page(nil)
             }
         }
-        return nil
+        return page == nil ? .unknown : .page(nil)
     }
 
     /// Refuses before a bridge request is made when native input cannot work: no
@@ -712,20 +788,31 @@ extension SafariMCPServer {
 
     // Bridge payloads cross as JSON strings (background.js stringifies
     // non-string data), so decode from the raw string.
-    private struct NativePointerPayload: Codable {
-        struct Point: Codable {
+    private struct NativePointerPayload: Decodable {
+        struct Point: Decodable {
             let x: Double
             let y: Double
+            /// Where the point is on the page, scroll included. An extension
+            /// older than 0.4.1 (44) sends none.
+            let pageX: Double?
+            let pageY: Double?
+            var page: CGPoint? { pageX.flatMap { x in pageY.map { CGPoint(x: x, y: $0) } } }
         }
         let from: Point
         let to: Point?
+        let nativeTarget: NativeTarget?
     }
 
-    /// Internal, not private: `hover` and `drag` build one of these to hand back
-    /// to the pointer code below.
+    /// Internal, not private: `click`, `hover` and `drag` build one of these to hand back
+    /// to the pointer code below. `from` and `to` are the extension's own guess
+    /// at screen points, which is off on a second display (see
+    /// `placedPointerTargets`); the page points and the window are what place them.
     struct NativePointerTargets: Sendable {
         let from: CGPoint
         let to: CGPoint?
+        var pageFrom: CGPoint? = nil
+        var pageTo: CGPoint? = nil
+        var target: NativeTarget? = nil
     }
 
     nonisolated static func nativePointerTargets(from data: AnyCodable?) throws -> NativePointerTargets {
@@ -736,7 +823,10 @@ extension SafariMCPServer {
         }
         return NativePointerTargets(
             from: CGPoint(x: payload.from.x, y: payload.from.y),
-            to: payload.to.map { CGPoint(x: $0.x, y: $0.y) }
+            to: payload.to.map { CGPoint(x: $0.x, y: $0.y) },
+            pageFrom: payload.from.page,
+            pageTo: payload.to?.page,
+            target: payload.nativeTarget
         )
     }
 
@@ -748,6 +838,10 @@ extension SafariMCPServer {
         /// Where the pointer is now, when macOS will say.
         let location: @Sendable () -> CGPoint?
         let post: @Sendable (CGEventType, CGPoint) throws -> Void
+        /// A button event that is part of a click, carrying which click of a
+        /// run it is (1, then 2 for a double click). A page counts clicks by
+        /// that number, not by timing.
+        let press: @Sendable (CGEventType, CGPoint, Int64) throws -> Void
 
         static func live() throws -> NativePointer {
             guard let source = CGEventSource(stateID: .hidSystemState) else {
@@ -760,7 +854,8 @@ extension SafariMCPServer {
                     Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").map(\.processIdentifier))
                 },
                 location: { CGEvent(source: nil)?.location },
-                post: { try SafariMCPServer.postMouse(type: $0, at: $1, source: box.source) }
+                post: { try SafariMCPServer.postMouse(type: $0, at: $1, source: box.source) },
+                press: { try SafariMCPServer.postMouse(type: $0, at: $1, clickCount: $2, source: box.source) }
             )
         }
     }
@@ -811,10 +906,15 @@ extension SafariMCPServer {
     /// as an ordinary window does. The two exceptions are fully transparent
     /// windows, which take none, and the window server's own cursor window,
     /// which follows the pointer and so is always under it.
+    ///
+    /// With `agentWindow`, the frame of the window holding the agent's tab, the
+    /// window on top must be that one: another Safari window there, such as the
+    /// user's own, would take the click just as another app's would.
     nonisolated static func ensurePointerIsOverSafari(
         at point: CGPoint,
         windows: [NativeWindowInfo],
-        safariProcessIDs: Set<pid_t>
+        safariProcessIDs: Set<pid_t>,
+        agentWindow: CGRect? = nil
     ) throws {
         let cursorLayer = Int(CGWindowLevelForKey(.cursorWindow))
         let topmost = windows.first { window in
@@ -823,14 +923,29 @@ extension SafariMCPServer {
         guard let topmost, safariProcessIDs.contains(topmost.ownerProcessID) else {
             throw NativeInputError(failure: nativePointerObscuredFailure(at: point, by: topmost?.ownerName))
         }
+        if let agentWindow, !sameFrame(topmost.bounds, agentWindow) {
+            throw NativeInputError(failure: nativePointerObscuredFailure(at: point, by: nil, anotherSafariWindow: true))
+        }
+    }
+
+    private nonisolated static func sameFrame(_ a: CGRect, _ b: CGRect) -> Bool {
+        let tolerance = windowFrameTolerance
+        return abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance
+            && abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
     }
 
     /// The refusal for a pointer target that Safari is not showing. The same
     /// family as losing focus before anything was sent: nothing went out, so the
     /// call can be retried once the window is out of the way.
-    nonisolated static func nativePointerObscuredFailure(at point: CGPoint, by owner: String?) -> ToolFailure {
+    nonisolated static func nativePointerObscuredFailure(
+        at point: CGPoint,
+        by owner: String?,
+        anotherSafariWindow: Bool = false
+    ) -> ToolFailure {
         let spot = "(\(Int(point.x)), \(Int(point.y)))"
-        let cause = owner.map { "a window of \($0) is on top of" } ?? "no window is at"
+        let cause = anotherSafariWindow
+            ? "another Safari window, not the one holding the agent's tab, is on top of"
+            : owner.map { "a window of \($0) is on top of" } ?? "no window is at"
         return ToolFailure(
             code: "native_input_focus_lost",
             message: "Safari is not showing the point \(spot) because \(cause) it, so nothing was sent. Native input posts a real pointer event at that spot, which would go to whatever is there instead. Ask the user to bring the Safari window to the front or move the other window, or omit native to use synthetic input, which does not depend on what is on screen.",
@@ -842,12 +957,15 @@ extension SafariMCPServer {
     private nonisolated static func ensurePointersAreOverSafari(
         _ points: [CGPoint],
         windows: NativeWindowLister,
-        pointer: NativePointer
+        pointer: NativePointer,
+        agentWindow: CGRect?
     ) throws {
         let windows = windows()
         let safariProcessIDs = pointer.safariProcessIDs()
         for point in points {
-            try ensurePointerIsOverSafari(at: point, windows: windows, safariProcessIDs: safariProcessIDs)
+            try ensurePointerIsOverSafari(
+                at: point, windows: windows, safariProcessIDs: safariProcessIDs, agentWindow: agentWindow
+            )
         }
     }
 
@@ -872,10 +990,11 @@ extension SafariMCPServer {
         to target: CGPoint,
         deadline: Double? = nil,
         windows: NativeWindowLister = liveNativeWindows,
+        agentWindow: CGRect? = nil,
         pointer: NativePointer? = nil
     ) async throws -> String {
         let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
-        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer)
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer, agentWindow: agentWindow)
         let start = pointer.location() ?? target
         try await postPointerPath(from: start, to: target, mouseType: .mouseMoved, pointer: pointer)
         guard pointer.safariIsFrontmost() else {
@@ -889,12 +1008,13 @@ extension SafariMCPServer {
         to target: CGPoint,
         deadline: Double? = nil,
         windows: NativeWindowLister = liveNativeWindows,
+        agentWindow: CGRect? = nil,
         pointer: NativePointer? = nil
     ) async throws -> String {
         let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
         // Both ends up front: a drag refused at its destination would otherwise
         // already have the button down at its source.
-        try ensurePointersAreOverSafari([start, target], windows: windows, pointer: pointer)
+        try ensurePointersAreOverSafari([start, target], windows: windows, pointer: pointer, agentWindow: agentWindow)
         try pointer.post(.mouseMoved, start)
         try await nativePointerPause(0.05)
         try pointer.post(.leftMouseDown, start)
@@ -920,6 +1040,47 @@ extension SafariMCPServer {
         return "Dragged from (\(Int(start.x)), \(Int(start.y))) to (\(Int(target.x)), \(Int(target.y))) with native input"
     }
 
+    /// Moves the pointer to the point the way `hover` does, then presses and
+    /// releases the left button there, `clickCount` times. The point is checked
+    /// again just before the press, because the move takes long enough for a
+    /// window to open over it or for the user to switch apps.
+    nonisolated static func clickNativePointer(
+        at target: CGPoint,
+        clickCount: Int = 1,
+        deadline: Double? = nil,
+        windows: NativeWindowLister = liveNativeWindows,
+        agentWindow: CGRect? = nil,
+        pointer: NativePointer? = nil
+    ) async throws -> String {
+        let pointer = try startNativePointer(deadline: deadline, pointer: pointer)
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer, agentWindow: agentWindow)
+        let start = pointer.location() ?? target
+        try await postPointerPath(from: start, to: target, mouseType: .mouseMoved, pointer: pointer)
+        try await nativePointerPause(0.05)
+        try checkNativeDeadline(deadline)
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
+        try ensurePointersAreOverSafari([target], windows: windows, pointer: pointer, agentWindow: agentWindow)
+        for click in 1...max(1, clickCount) {
+            if click > 1 { try await nativePointerPause(0.08) }
+            try pointer.press(.leftMouseDown, target, Int64(click))
+            do {
+                try await nativePointerPause(0.06)
+            } catch {
+                // Never leave the OS button down, including when the call is cancelled.
+                try? pointer.press(.leftMouseUp, target, Int64(click))
+                throw error
+            }
+            try pointer.press(.leftMouseUp, target, Int64(click))
+        }
+        guard pointer.safariIsFrontmost() else {
+            throw NativeInputError(failure: nativeFocusFailure(eventsAlreadySent: true))
+        }
+        let verb = clickCount > 1 ? "Double-clicked" : "Clicked"
+        return "\(verb) at (\(Int(target.x)), \(Int(target.y))) with native input"
+    }
+
     private nonisolated static func nativePointerPause(_ seconds: Double) async throws {
         try await Task.sleep(for: .seconds(seconds))
     }
@@ -928,6 +1089,7 @@ extension SafariMCPServer {
     nonisolated static func mouseEvent(
         type: CGEventType,
         at point: CGPoint,
+        clickCount: Int64? = nil,
         source: CGEventSource
     ) throws -> CGEvent {
         guard let event = CGEvent(
@@ -943,15 +1105,19 @@ extension SafariMCPServer {
         // copy, or a hover into a Command-click on a link. Pointer input the
         // caller asked for carries none.
         event.flags = []
+        if let clickCount {
+            event.setIntegerValueField(.mouseEventClickState, value: clickCount)
+        }
         return event
     }
 
     private nonisolated static func postMouse(
         type: CGEventType,
         at point: CGPoint,
+        clickCount: Int64? = nil,
         source: CGEventSource
     ) throws {
-        try mouseEvent(type: type, at: point, source: source).post(tap: .cgSessionEventTap)
+        try mouseEvent(type: type, at: point, clickCount: clickCount, source: source).post(tap: .cgSessionEventTap)
     }
 
     // Interpolated so boundary events (mouseout/mouseleave, dragenter/dragover)

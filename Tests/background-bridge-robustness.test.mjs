@@ -114,8 +114,14 @@ function loadBackground({ tokens = { [PORT]: TOKEN } } = {}) {
             }
             await settle();
         },
+        /// The alarm, then the pause before its token read, which the listener queues.
         async keepalive() {
+            const queued = timers.length;
             alarmListener({ name: "mcp-keepalive" });
+            for (const timer of timers.slice(queued)) {
+                timer.ran = true;
+                timer.callback();
+            }
             await settle();
         },
         message(message) {

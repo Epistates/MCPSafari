@@ -9,7 +9,7 @@
     mcp.loaded.add("io");
     const { currentFrameId, deepQueryFirst, dragEvent, eventInit, nextRequestId, requestMainWorld, resolveElement, toolError } = mcp;
 
-    // ─── File Attachment ─────────────────────────────────────────────
+    // --- File Attachment ---------------------------------------------
 
     // Files arrive a chunk per message and wait here for the action that hands
     // them to the page. A whole file in one message capped a call at 10 MB, and
@@ -162,6 +162,7 @@
         return `Attached ${describeFiles(files)} to file input`;
     }
 
+    /** @type {Promise<unknown>} */
     let dropQueue = Promise.resolve();
 
     // Drops share one target marker, so they run one at a time. The files are
@@ -214,7 +215,7 @@
         }
     }
 
-    // ─── Element rect (screenshot region) ────────────────────────────
+    // --- Element rect (screenshot region) ----------------------------
 
     // captureVisibleTab only sees the viewport, so the target is scrolled
     // into view first. Scroll handlers (collapsing headers, virtualized
@@ -223,10 +224,10 @@
     async function elementRect(params) {
         const el = resolveElement({ uid: params.uid, selector: params.selector });
         el.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-        await new Promise((resolve) => {
+        await /** @type {Promise<void>} */ (new Promise((resolve) => {
             const fallback = setTimeout(resolve, 100);
             requestAnimationFrame(() => { clearTimeout(fallback); resolve(); });
-        });
+        }));
         const rect = el.getBoundingClientRect();
         if (!(rect.width > 0) || !(rect.height > 0)) {
             throw toolError(
@@ -239,7 +240,7 @@
         return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
     }
 
-    // ─── Wait ────────────────────────────────────────────────────────
+    // --- Wait --------------------------------------------------------
 
     async function waitFor(params) {
         const timeout = (params.timeout || 10) * 1000;
@@ -257,12 +258,7 @@
                 }
                 await new Promise((r) => setTimeout(r, 200));
             }
-            throw toolError(
-                "wait_timeout",
-                `Timeout waiting for selector: ${params.selector}`,
-                true,
-                "retry"
-            );
+            throw waitTimeoutError(`Timeout waiting for selector: ${params.selector}`);
         }
 
         if (params.text) {
@@ -275,18 +271,32 @@
                 }
                 await new Promise((r) => setTimeout(r, 200));
             }
-            throw toolError(
-                "wait_timeout",
-                `Timeout waiting for text: "${params.text}"`,
-                true,
-                "retry"
-            );
+            throw waitTimeoutError(`Timeout waiting for text: "${params.text}"`);
         }
 
         return "Nothing to wait for";
     }
 
-    // ─── Dialog Handling (delegate to interceptor) ────────────────────
+    // Safari pauses a page it isn't showing: no animation frames, and timers
+    // slowed right down. A web app that draws in those may never show what a
+    // wait is looking for until the page is visible, so a wait that ran out on a
+    // hidden page isn't one to retry as it stands. The background names which
+    // kind of hidden it is (`hiddenWaitError`); `ask_user` is what's left if it
+    // can't.
+    function waitTimeoutError(message) {
+        if (document.visibilityState !== "hidden") return toolError("wait_timeout", message, true, "retry");
+        return toolError(
+            "page_hidden",
+            `${message}. The page was hidden when the time ran out, and Safari pauses pages it `
+            + "isn't showing, so a web app may not draw what you're waiting for until it's visible. "
+            + "Ask the user to bring its window at least partly into view, or bring the tab to the "
+            + "front with select_tab if another tab is showing in its window, then retry.",
+            true,
+            "ask_user"
+        );
+    }
+
+    // --- Dialog Handling (delegate to interceptor) --------------------
 
     async function handleDialog(params) {
         const result = await requestMainWorld("handle_dialog", params);
@@ -323,13 +333,13 @@
         return await requestMainWorld("stop_trace", params, 5000);
     }
 
-    // ─── Console Messages (delegate to interceptor) ──────────────────
+    // --- Console Messages (delegate to interceptor) ------------------
 
     async function getConsoleMessages(params) {
         return await requestMainWorld("get_console_messages", params);
     }
 
-    // ─── Network Requests (delegate to interceptor) ──────────────────
+    // --- Network Requests (delegate to interceptor) ------------------
 
     async function getNetworkRequests(params) {
         return await requestMainWorld("get_network_requests", params);

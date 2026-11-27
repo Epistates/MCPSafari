@@ -38,7 +38,7 @@ function contentHarness(document = {
 // browser reports a message nobody is listening for: Safari resolves undefined,
 // other engines throw the no-receiver error. Injecting the content script makes
 // the tab listen, unless `injectionTakes` is false.
-function backgroundHarness(contentResponse, { listening = true, silence = "undefined", injectionTakes = true } = {}) {
+function backgroundHarness(contentResponse, { listening = true, silence = "undefined", injectionTakes = true, staleNamespace = false } = {}) {
     const contentResponses = Array.isArray(contentResponse)
         ? [...contentResponse]
         : [contentResponse];
@@ -95,7 +95,9 @@ function backgroundHarness(contentResponse, { listening = true, silence = "undef
         },
         scripting: {
             executeScript: async (options) => {
-                if (!options.files) return;
+                // The only function the background runs is the check for an
+                // earlier MCPSafari's namespace in the frame.
+                if (!options.files) return [{ result: staleNamespace }];
                 injections.push(options.files);
                 if (injectionTakes && options.files.includes("content.js")) listening = true;
             },
@@ -256,6 +258,32 @@ test("a tab that still has no content script after injection fails without the a
     assert.equal(response.success, false);
     assert.match(response.error, /did not respond after injection/);
     assert.deepEqual(handleRequest.sends, [], "the action was sent to a page that could not take it");
+});
+
+// A tab open across an update or restart keeps the earlier MCPSafari's content
+// script, which nothing can reach, and an injection lands beside it and finds it
+// loaded. Live on build 45 every read of such a tab failed as reply_lost.
+test("a page holding an earlier MCPSafari's content script asks for a reload, with nothing sent", async () => {
+    const handleRequest = backgroundHarness([{ data: "done", error: null }], { listening: false, injectionTakes: false, staleNamespace: true });
+
+    const response = await handleRequest({ id: "request-1", action: "hover", params: { tabId: 1, uid: "f0e12" } });
+
+    assert.equal(response.success, false);
+    assert.equal(response.errorCode, "page_needs_reload");
+    assert.equal(response.retryable, true);
+    assert.equal(response.recoveryAction, "reload_page");
+    assert.match(response.error, /navigate and action reload/);
+    assert.deepEqual(handleRequest.sends, [], "the action was sent to a page that could not take it");
+});
+
+test("a read of a page holding an earlier MCPSafari's content script asks for a reload, not reply_lost", async () => {
+    const handleRequest = backgroundHarness([{ data: "done", error: null }], { listening: false, injectionTakes: false, staleNamespace: true });
+
+    const response = await handleRequest({ id: "request-1", action: "read_page", params: { tabId: 1 } });
+
+    assert.equal(response.success, false);
+    assert.equal(response.errorCode, "page_needs_reload");
+    assert.equal(response.recoveryAction, "reload_page");
 });
 
 test("a tab that has the content script is not injected into for an action that must not repeat", async () => {
@@ -489,4 +517,100 @@ test("resize_window uses the tab it was given rather than the current window", a
     assert.equal(windowId, 7);
     assert.equal(size.width, 900);
     assert.equal(size.height, 700);
+});
+
+// ─── Hidden pages ────────────────────────────────────────────────────
+
+function hiddenDocument(visibilityState) {
+    return {
+        activeElement: null,
+        body: { innerText: "" },
+        createTreeWalker: () => ({ nextNode: () => null }),
+        elementFromPoint: () => null,
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        visibilityState,
+    };
+}
+
+test("every content reply says whether the page was showing", async () => {
+    const hidden = await contentHarness(hiddenDocument("hidden"))("ping", {});
+    assert.equal(hidden.pageVisibility, "hidden");
+    const visible = await contentHarness(hiddenDocument("visible"))("click", { selector: "#missing" });
+    assert.equal(visible.errorCode, "target_not_found");
+    assert.equal(visible.pageVisibility, "visible");
+});
+
+test("a wait that runs out on a hidden page is page_hidden, not a timeout to retry", async () => {
+    // Safari pauses a page it isn't showing, so a web app may never draw what
+    // the wait is looking for, and retrying waits out the same timeout again.
+    const hidden = await contentHarness(hiddenDocument("hidden"))("wait", { selector: "#later", timeout: 0.001 });
+    assert.equal(hidden.errorCode, "page_hidden");
+    assert.equal(hidden.retryable, true);
+    assert.equal(hidden.recoveryAction, "ask_user");
+    assert.match(hidden.error, /^Timeout waiting for selector: #later\. The page was hidden/);
+
+    const visible = await contentHarness(hiddenDocument("visible"))("wait", { text: "Done", timeout: 0.001 });
+    assert.equal(visible.errorCode, "wait_timeout");
+    assert.equal(visible.recoveryAction, "retry");
+});
+
+test("a reply from a hidden page marks the bridge response, and only that request's", async () => {
+    const handleRequest = backgroundHarness([
+        { data: "read", error: null, pageVisibility: "hidden" },
+        { data: "read", error: null, pageVisibility: "visible" },
+        { data: "read", error: null },
+        { data: null, error: "gone", errorCode: "target_not_found", pageVisibility: "hidden" },
+    ]);
+
+    const hidden = await handleRequest({ id: "1", action: "get_page_text", params: { tabId: 1 } });
+    assert.equal(hidden.success, true);
+    assert.equal(hidden.pageVisibility, "hidden");
+
+    const visible = await handleRequest({ id: "2", action: "get_page_text", params: { tabId: 1 } });
+    assert.equal("pageVisibility" in visible, false);
+
+    // A reply that says nothing (an older content script) doesn't inherit the
+    // hidden report an earlier request heard.
+    const silent = await handleRequest({ id: "3", action: "get_page_text", params: { tabId: 1 } });
+    assert.equal("pageVisibility" in silent, false);
+
+    const failed = await handleRequest({ id: "4", action: "get_page_text", params: { tabId: 1 } });
+    assert.equal(failed.success, false);
+    assert.equal(failed.pageVisibility, "hidden");
+});
+
+test("a hidden wait names how its tab is hidden and what brings it back", async () => {
+    const hiddenWait = {
+        data: null,
+        error: "Timeout waiting for selector: #later. The page was hidden when the time ran out.",
+        errorCode: "page_hidden",
+        retryable: true,
+        recoveryAction: "ask_user",
+        pageVisibility: "hidden",
+    };
+
+    const background = backgroundHarness(hiddenWait);
+    background.evaluate(`browser.tabs.get = async (id) => ({ id, windowId: 7, active: false })`);
+    const behind = await background({ id: "1", action: "wait", params: { tabId: 1, selector: "#later", timeout: 1 } });
+    assert.equal(behind.errorCode, "page_hidden");
+    assert.equal(behind.recoveryAction, "call_select_tab");
+    assert.match(behind.error, /^Timeout waiting for selector: #later\. The page was hidden when the time ran out: it isn't the tab showing in its window\./);
+    assert.match(behind.error, /newWindow: true/);
+
+    const minimized = backgroundHarness(hiddenWait);
+    minimized.evaluate(`browser.tabs.get = async (id) => ({ id, windowId: 7, active: true })`);
+    minimized.evaluate(`browser.windows.get = async (id) => ({ id, state: "minimized" })`);
+    const restored = await minimized({ id: "2", action: "wait", params: { tabId: 1, text: "Done", timeout: 1 } });
+    assert.equal(restored.recoveryAction, "ask_user");
+    assert.match(restored.error, /^Timeout waiting for text: "Done"\. .*its window is minimized\./);
+    assert.match(restored.error, /restore the window/);
+
+    // When Safari won't say how the tab stands, the content script's own
+    // account goes through as it was.
+    const unknown = backgroundHarness(hiddenWait);
+    unknown.evaluate(`browser.tabs.get = async () => { throw new Error("No tab with id: 1"); }`);
+    const asIs = await unknown({ id: "3", action: "wait", params: { tabId: 1, selector: "#later", timeout: 1 } });
+    assert.equal(asIs.errorCode, "page_hidden");
+    assert.equal(asIs.error, hiddenWait.error);
 });

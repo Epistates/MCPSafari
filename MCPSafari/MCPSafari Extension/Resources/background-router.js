@@ -2,7 +2,7 @@
 
 // handleRequest: one bridge request in, one response out.
 
-// ─── Request Router ──────────────────────────────────────────────────
+// --- Request Router --------------------------------------------------
 
 // An action is served one of three ways, and each is a lookup rather than a
 // switch arm. Nineteen of them differed only in their `case` label, which hid
@@ -26,13 +26,16 @@
 // A handler is given the port of the server that made the request as well, for
 // the ones that keep per-server state: the tab `select_tab` pins is that
 // server's own, and so is the client `identify` names.
-/** @type {Map<string, (params: any, serverPort: number) => Promise<any>>} */
-const BACKGROUND_HANDLERS = new Map([
+/** @typedef {(params: any, serverPort: number) => Promise<any>} BackgroundHandler */
+/** @type {Map<string, BackgroundHandler>} */
+const BACKGROUND_HANDLERS = new Map(/** @type {Array<[string, BackgroundHandler]>} */ ([
     ["tabs_query", () => handleTabsQuery()],
-    ["tabs_create", (params) => handleTabsCreate(params)],
+    ["tabs_create", (params, serverPort) => handleTabsCreate(params, serverPort)],
     ["tabs_close", (params, serverPort) => handleTabsClose(params, serverPort)],
     ["select_tab", (params, serverPort) => handleSelectTab(params, serverPort)],
     ["identify", (params, serverPort) => handleIdentify(params, serverPort)],
+    // The server's check that the extension still answers, after a call timed out.
+    ["ping", () => "pong"],
     ["navigate", (params) => handleNavigate(params)],
     ["native_type_text", (params) => handleNativeTypeText(params)],
     ["native_press_key", (params) => handleNativePressKey(params)],
@@ -40,7 +43,8 @@ const BACKGROUND_HANDLERS = new Map([
     ["screenshot", (params) => handleScreenshot(params)],
     ["javascript_tool", (params) => handleJavaScript(params)],
     ["resize_window", (params) => handleResizeWindow(params)],
-]);
+    ["clear_cookies", (params) => handleClearCookies(params)],
+]));
 
 // Answered by the content script under the same name. `dispatchToContent`
 // decides which frame to ask.
@@ -125,7 +129,11 @@ async function routeAction(action, params, serverPort) {
     if (typeof handler === "function") return handler(params, serverPort);
 
     if (action === "wait") {
-        return waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
+        try {
+            return await waitAcrossNavigations(params, (current) => dispatchToContent(action, current));
+        } catch (err) {
+            throw err && err.code === "page_hidden" ? await hiddenWaitError(params, err) : err;
+        }
     }
     if (action === "get_network_requests") return readNetworkRequests(params.tabId, params);
     if (CONTENT_ACTIONS.has(action)) {
@@ -146,7 +154,7 @@ async function routeAction(action, params, serverPort) {
     throw new Error(`Unknown action: ${action}`);
 }
 
-// ─── Network reads ──────────────────────────────────────────────────
+// --- Network reads --------------------------------------------------
 
 // `urlPattern` is applied here, to the URLs as they will be reported, and not in
 // the page. The page holds each URL as it was requested, credentials included,
@@ -288,7 +296,7 @@ function redactResult(action, data) {
 // `select_tab` demand a tab by name: closing whatever happens to be in front
 // because the caller left it out would be the wrong default. The others have
 // no target tab to resolve.
-const TAB_FREE_ACTIONS = new Set(["identify", "tabs_query", "tabs_create", "tabs_close", "select_tab"]);
+const TAB_FREE_ACTIONS = new Set(["identify", "ping", "tabs_query", "tabs_create", "tabs_close", "select_tab", "clear_cookies"]);
 
 function actsOnATab(action) {
     return !TAB_FREE_ACTIONS.has(action)
@@ -309,6 +317,7 @@ async function withResolvedTab(action, params, serverPort) {
 async function handleRequest(request, serverPort) {
     const { id, action, params: requested } = request;
     let resolvedTabId = null;
+    const visibilitySince = pageVisibilityReportCount;
 
     try {
         const params = await withResolvedTab(action, requested ?? {}, serverPort);
@@ -329,8 +338,9 @@ async function handleRequest(request, serverPort) {
             // none. Handed back so a caller sequencing several untabbed calls
             // can pin the rest of the sequence to the first one's tab.
             resolvedTabId,
+            ...pageVisibilityFields(resolvedTabId, visibilitySince),
         };
     } catch (err) {
-        return failureResponse(id, err, resolvedTabId);
+        return { ...failureResponse(id, err, resolvedTabId), ...pageVisibilityFields(resolvedTabId, visibilitySince) };
     }
 }

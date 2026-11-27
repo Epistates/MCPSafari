@@ -22,13 +22,22 @@ function loadBackground({
     // it hid three separate failures that only real Safari showed.
     tabsBlocked = false,
     blockTabsAfterProbe = false,
+    // The same, for a dialog that comes up during a capture rather than a probe.
+    blockTabsAfterCapture = false,
+    // What Safari says about the tab and its window when nothing holds them.
+    tabActive = true,
+    windowState = "normal",
 } = {}) {
     const timers = [];
     const tabUpdatedListeners = [];
     const tabRemovedListeners = [];
     // What the toolbar button was last told, call by call.
     const toolbar = { text: undefined, color: undefined, title: undefined, texts: [] };
+    const tabActivatedListeners = [];
     let probeStarted = false;
+    let captureStarted = false;
+    const held = () => tabsBlocked || (blockTabsAfterProbe && probeStarted)
+        || (blockTabsAfterCapture && captureStarted);
     const browser = {
         alarms: { create() {}, onAlarm: { addListener() {} } },
         runtime: {
@@ -51,23 +60,25 @@ function loadBackground({
         },
         tabs: {
             query: async () => {
-                if (tabsBlocked) return new Promise(() => {});
+                if (held()) return new Promise(() => {});
                 return [{ id: 1, active: true, windowId: 1 }];
             },
             get: async (id) => {
-                if (tabsBlocked || (blockTabsAfterProbe && probeStarted)) {
-                    return new Promise(() => {});
-                }
-                return { id, active: true, windowId: 1, url: tabUrl, title: "T" };
+                if (held()) return new Promise(() => {});
+                return { id, active: tabActive, windowId: 1, url: tabUrl, title: "T" };
             },
             update: async () => {},
-            captureVisibleTab,
+            captureVisibleTab: (...args) => {
+                captureStarted = true;
+                return captureVisibleTab(...args);
+            },
             sendMessage,
             onUpdated: {
                 addListener: (listener) => { tabUpdatedListeners.push(listener); },
                 removeListener() {},
             },
             onRemoved: { addListener: (listener) => { tabRemovedListeners.push(listener); } },
+            onActivated: { addListener: (listener) => { tabActivatedListeners.push(listener); } },
         },
         action: {
             setBadgeText: async ({ text }) => { toolbar.text = text; toolbar.texts.push(text); },
@@ -76,7 +87,10 @@ function loadBackground({
             setTitle: async ({ title }) => { toolbar.title = title; },
         },
         webNavigation: { getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: tabUrl }] },
-        windows: { update: async () => {} },
+        windows: {
+            update: async () => {},
+            get: async (id) => ({ id, state: windowState, focused: false }),
+        },
     };
 
     const context = vm.createContext({
@@ -108,6 +122,10 @@ function loadBackground({
         /// that navigates loses its cached access grant.
         navigateTab(tabId, url) {
             for (const listener of tabUpdatedListeners) listener(tabId, { url });
+        },
+        /// Drives `tabs.onActivated`, as `select_tab` or the user's click does.
+        activateTab(tabId) {
+            for (const listener of tabActivatedListeners) listener({ tabId, windowId: 1 });
         },
         pendingDeadlines: () => timers.filter((timer) => !timer.cancelled).length,
         fireDeadlines() {
@@ -154,7 +172,9 @@ async function rejection(promise) {
 }
 
 test("a probe parked on the permission dialog becomes a named refusal", async () => {
-    const harness = loadBackground({ probe: parked });
+    // The dialog holds `tabs.get` as well, and that is what tells it apart from
+    // a page that is only hidden or busy (see the page tests below).
+    const harness = loadBackground({ probe: parked, blockTabsAfterProbe: true });
 
     const pending = track(rejection(harness.call('sendToContentScript(1, { action: "read_page" })')));
     await fireWhenParked(harness, pending);
@@ -210,7 +230,7 @@ test("a granted tab is not probed again for every frame in one request", async (
 });
 
 test("a capture parked on the dialog fails fast instead of riding the bridge timeout", async () => {
-    const harness = loadBackground({ captureVisibleTab: parked });
+    const harness = loadBackground({ captureVisibleTab: parked, blockTabsAfterCapture: true });
 
     const pending = track(rejection(harness.call("handleScreenshot({ tabId: 1 })")));
     await fireWhenParked(harness, pending);
@@ -218,6 +238,129 @@ test("a capture parked on the dialog fails fast instead of riding the bridge tim
 
     assert.equal(err.code, "permission_required");
     assert.match(err.message, /behind another window/);
+});
+
+// ─── A page that doesn't answer is not a dialog ──────────────────────
+//
+// A probe misses its deadline on a page Safari isn't showing, or a busy one, as
+// well as on a dialog. The dialog holds `tabs.get` too and those don't, which is
+// how the two are told apart. Reported from real use: a background tab on a site
+// the user had allowed, in a window another agent was using, was refused as
+// "Safari is showing a permission dialog", and the user went looking for one.
+
+const parkedAndTimed = async (harness, expression) => {
+    const pending = track(rejection(harness.call(expression)));
+    await fireWhenParked(harness, pending);
+    return pending.promise;
+};
+
+test("a background tab that doesn't answer is named as hidden, not as a permission dialog", async () => {
+    const harness = loadBackground({ probe: parked, tabActive: false });
+    harness.call(`rememberOriginAccess("https://blocked.example", true)`);
+
+    const err = await parkedAndTimed(harness, 'sendToContentScript(1, { action: "read_page" })');
+
+    assert.equal(err.code, "page_hidden");
+    assert.equal(err.retryable, true);
+    assert.equal(err.recoveryAction, "call_select_tab");
+    assert.match(err.message, /https:\/\/blocked\.example/);
+    assert.match(err.message, /isn't the tab showing in its window/);
+    assert.match(err.message, /No permission dialog/);
+    // Bringing it forward hides whatever the window shows now, so the way to
+    // stay out of someone else's window is named alongside.
+    assert.match(err.message, /select_tab/);
+    assert.match(err.message, /newWindow: true/);
+    assert.doesNotMatch(err.message, /behind another window|Always Allow/);
+    assert.equal(err.permissionPending, undefined);
+    assert.equal(harness.call(`grantedOrigins.has("https://blocked.example")`), true);
+});
+
+test("a hidden page doesn't put a ! on the toolbar button, and a dialog still does", async () => {
+    // The "!" asks the user to allow a site. On an allowed site whose tab is
+    // hidden there is nothing to allow, and the tooltip would send them to the
+    // button for nothing.
+    const hidden = loadBackground({ probe: parked, tabActive: false });
+    hidden.call(`rememberOriginAccess("https://blocked.example", true)`);
+    const hiddenErr = await parkedAndTimed(hidden, 'sendToContentScript(1, { action: "read_page" })');
+    assert.equal(hiddenErr.code, "page_hidden");
+    assert.notEqual(hidden.toolbar.text, "!");
+
+    const dialog = loadBackground({ probe: parked, blockTabsAfterProbe: true });
+    const dialogErr = await parkedAndTimed(dialog, 'sendToContentScript(1, { action: "read_page" })');
+    assert.equal(dialogErr.code, "permission_required");
+    assert.equal(dialog.toolbar.text, "!");
+});
+
+test("a minimized window is named, and the user is asked to restore it", async () => {
+    const harness = loadBackground({ probe: parked, windowState: "minimized" });
+    harness.call(`rememberOriginAccess("https://blocked.example", true)`);
+
+    const err = await parkedAndTimed(harness, 'sendToContentScript(1, { action: "read_page" })');
+
+    assert.equal(err.code, "page_hidden");
+    assert.equal(err.recoveryAction, "ask_user");
+    assert.match(err.message, /minimized/);
+    assert.match(err.message, /restore the window/);
+});
+
+test("the tab in front that doesn't answer is named as covered or busy", async () => {
+    const harness = loadBackground({ probe: parked });
+    harness.call(`rememberOriginAccess("https://blocked.example", true)`);
+
+    const err = await parkedAndTimed(harness, 'sendToContentScript(1, { action: "read_page" })');
+
+    assert.equal(err.code, "page_not_responding");
+    assert.equal(err.retryable, true);
+    assert.equal(err.recoveryAction, "ask_user");
+    assert.match(err.message, /covered/);
+    assert.match(err.message, /another Space/);
+    assert.match(err.message, /busy/);
+    assert.doesNotMatch(err.message, /behind another window/);
+});
+
+test("a site never reached before keeps the dialog in view", async () => {
+    // Safari's hold on its tab API doesn't last as long as a dialog can, so on
+    // a site nobody has granted yet a dialog can't be ruled out.
+    const harness = loadBackground({ probe: parked, tabActive: false });
+
+    const err = await parkedAndTimed(harness, 'sendToContentScript(1, { action: "read_page" })');
+
+    assert.equal(err.code, "page_hidden");
+    assert.match(err.message, /hasn't reached this site before/);
+    assert.match(err.message, /behind another window/);
+});
+
+test("a capture that stalls while Safari still answers names the page, not a dialog", async () => {
+    const harness = loadBackground({ captureVisibleTab: parked });
+
+    const err = await parkedAndTimed(harness, "handleScreenshot({ tabId: 1 })");
+
+    assert.equal(err.code, "page_not_responding");
+    assert.match(err.message, /https:\/\/blocked\.example/);
+});
+
+test("bringing the tab to the front drops its cached refusal", async () => {
+    let answering = false;
+    let probes = 0;
+    const harness = loadBackground({
+        probe: () => { probes += 1; return answering ? Promise.resolve([{ result: true }]) : parked(); },
+        tabActive: false,
+    });
+
+    const first = await parkedAndTimed(harness, 'sendToContentScript(1, { action: "read_page" })');
+    assert.equal(first.code, "page_hidden");
+
+    // Within the cache's life the refusal is answered from it, which is what
+    // keeps the frames of one request from each waiting the probe out.
+    answering = true;
+    const cached = await rejection(harness.call('sendToContentScript(1, { action: "read_page" })'));
+    assert.equal(cached, first);
+    assert.equal(probes, 1);
+
+    // select_tab, or the user's click, brings it forward, and the retry works.
+    harness.activateTab(1);
+    assert.equal(await harness.call('sendToContentScript(1, { action: "read_page" })'), "ok");
+    assert.equal(probes, 2);
 });
 
 test("a screenshot still works when the page context read fails", async () => {
@@ -274,7 +417,7 @@ test("tab listing parked on the dialog reports why instead of timing out", async
 });
 
 test("an unreadable tab url still produces a usable refusal", async () => {
-    const harness = loadBackground({ probe: parked, tabUrl: null });
+    const harness = loadBackground({ probe: parked, blockTabsAfterProbe: true, tabUrl: null });
 
     const pending = track(rejection(harness.call('sendToContentScript(1, { action: "read_page" })')));
     await fireWhenParked(harness, pending);
@@ -321,7 +464,7 @@ test("a pinned tab parked on the dialog is not mistaken for a closed one", async
 test("select_tab on a tab parked on the dialog still pins it, and the next page call names the reason", async () => {
     // Pinning is bookkeeping and needs no access to the page, so a tab the user
     // has yet to grant can be chosen. What it cannot do is be read.
-    const harness = loadBackground({ probe: parked });
+    const harness = loadBackground({ probe: parked, blockTabsAfterProbe: true });
 
     const selected = await harness.call("handleSelectTab({ tabId: 1 }, 8089)");
     assert.equal(selected.selected, true);
@@ -337,7 +480,7 @@ test("select_tab on a tab parked on the dialog still pins it, and the next page 
 });
 
 test("native input focus parked on the dialog names the reason", async () => {
-    const harness = loadBackground({ probe: parked });
+    const harness = loadBackground({ probe: parked, blockTabsAfterProbe: true });
 
     const pending = track(rejection(harness.call("focusTabForNativeInput(1)")));
     await fireWhenParked(harness, pending);
@@ -486,19 +629,20 @@ test("a tab Safari has not loaded is named, uncached, with the grant kept", asyn
 });
 
 test("a granted page too slow to probe keeps its stored grant", async () => {
-    // Two seconds is a long time for a probe and not much for a busy page. The
-    // deadline is the dialog case: nothing has been decided, so a stored grant
-    // is not evidence against it.
-    const harness = loadBackground({ probe: parked });
-    harness.call(`rememberOriginAccess("${BLOCKED_ORIGIN}", true)`);
+    // Two seconds is a long time for a probe and not much for a busy page.
+    // Nothing has been decided either way, so a stored grant is not evidence
+    // against it, whether the page is busy or a dialog is open.
+    for (const blockTabsAfterProbe of [false, true]) {
+        const harness = loadBackground({ probe: parked, blockTabsAfterProbe });
+        harness.call(`rememberOriginAccess("${BLOCKED_ORIGIN}", true)`);
 
-    const pending = track(rejection(harness.call('sendToContentScript(1, { action: "read_page" })')));
-    await fireWhenParked(harness, pending);
-    const err = await pending.promise;
+        const pending = track(rejection(harness.call('sendToContentScript(1, { action: "read_page" })')));
+        await fireWhenParked(harness, pending);
+        const err = await pending.promise;
 
-    assert.equal(err.code, "permission_required");
-    assert.equal(err.permissionPending, true);
-    assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), true, "a deadline deleted the stored grant");
+        assert.equal(err.code, blockTabsAfterProbe ? "permission_required" : "page_not_responding");
+        assert.equal(harness.call(`grantedOrigins.has("${BLOCKED_ORIGIN}")`), true, "a deadline deleted the stored grant");
+    }
 });
 
 test("an explicit refusal forgets the stored grant", async () => {

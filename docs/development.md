@@ -19,12 +19,16 @@ node --test Tests/*.mjs
   -scheme MCPSafari -configuration Debug build \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
 
-(cd MCPSafari && xcodebuild test -project MCPSafari.xcodeproj \
-  -scheme MCPSafari -destination 'platform=macOS' \
-  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
+swift test --package-path MCPSafari/TokenReader
 ```
 
-The extension build above matches CI and checks compilation. To install a development build, open `MCPSafari/MCPSafari.xcodeproj` in Xcode, configure signing for your team, and build and run the app. Enable its extension in Safari settings.
+The extension build above matches CI and checks compilation. Xcode registers every app it builds with Launch Services, and with MCPSafari also installed, Safari can then run both copies of the extension. Each numbers tabs its own way and both connect as the same profile, so tab handles change between calls. `.github/scripts/build_app.sh <derived-data-path> [Debug|Release] [xcodebuild arguments...]` builds the app and unregisters it again, even when the build fails. After any other build, unregister it yourself:
+
+```sh
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u <path to the built MCPSafari.app>
+```
+
+`mcp-safari doctor` warns when more than one copy is registered. To install a development build, open `MCPSafari/MCPSafari.xcodeproj` in Xcode, configure signing for your team, and build and run the app. Enable its extension in Safari settings.
 
 Point your MCP client at `MCPServer/.build/debug/MCPSafari` using an absolute path. Add `--verbose` to its arguments for debug logs. For a release server binary:
 
@@ -52,7 +56,7 @@ The type check exists because the extension scripts share globals across files w
 bunx --package typescript@7.0.2 tsc -p tsconfig.json
 ```
 
-Expect diagnostics about property shapes; only `TS2304`, `TS2552` and `TS2554` fail CI. Keep the version here in step with the one in `ci.yml`. A new global that Safari provides, as `browser` is, is declared in `extension-globals.d.ts`.
+It should report nothing: any diagnostic fails CI. Where JavaScript can't say a type, give it one in JSDoc. A new global that Safari provides, as `browser` is, or one an interceptor puts on the page's `window`, is declared in `extension-globals.d.ts`, along with the tool-error fields set on `Error`. Keep the version here in step with the one in `ci.yml`.
 
 Pull request runs for CI and the security scans are cancelled when a newer push supersedes them. Runs on `main`, scheduled runs and releases never are.
 
@@ -89,7 +93,7 @@ In those files, an `internal` member is one the handlers call; everything else i
 
 A Manifest V3 Safari Web Extension with:
 
-- The background, split across nine files that the manifest loads in order. These are classic scripts sharing one global, so a function in any of them may call a function in any other without imports. Order matters only at load time: a statement that runs while the page is loading can see only what the files before it declared, which is why `background.js` is last. The background is deliberately **not** declared `"type": "module"`, because that would give each file its own scope and break every cross-file reference:
+- The background, split across ten files of its own and one vendored library that the manifest loads in order. These are classic scripts sharing one global, so a function in any of them may call a function in any other without imports. Order matters only at load time: a statement that runs while the page is loading can see only what the files before it declared, which is why `background.js` is last. The background is deliberately **not** declared `"type": "module"`, because that would give each file its own scope and break every cross-file reference:
   - `background-config.js` — the cap on discovered ports, timeouts, and the deadline helper the others measure against
   - `background-state.js` — connection, profile and tab state, and the website-access checks that read it
   - `background-bridge.js` — the WebSocket client: connecting, its half of the handshake, reconnecting, reporting each port
@@ -98,6 +102,8 @@ A Manifest V3 Safari Web Extension with:
   - `background-navigation.js` — `navigate`, and waiting for the load it starts
   - `background-page.js` — screenshots, page JavaScript execution, window resizing
   - `background-frames.js` — talking to content scripts, and routing across a page's frames
+  - `vendor/tldts.umd.min.js` — [tldts](https://github.com/remusao/tldts), the Public Suffix List, loaded just before the one file that uses it. It's pinned in `.github/vendor/package.json`; after changing the pin, `node .github/scripts/vendor_tldts.mjs` copies that release in, with characters past ASCII written as `\u` escapes because Safari doesn't read background scripts as UTF-8, and records its checksums, and the tests fail until it has
+  - `background-cookies.js` — `clear_cookies`, removing one domain's cookies from the profile's store
   - `background.js` — event listeners, the keepalive, token loading, and startup
 - The content script, split across seven files that the manifest injects in order. Each is its own IIFE and they share one namespace on the isolated world, `window.__mcpSafari`, because the background script re-injects them by name and top-level declarations would collide on the second pass. A file reads only what the ones before it published, so the load order below is also the dependency order:
   - `content-core.js` — the namespace, element uid bookkeeping, tool errors, event primitives, the bridge to the MAIN-world interceptors
@@ -116,7 +122,7 @@ A Manifest V3 Safari Web Extension with:
 
 ### macOS host app
 
-A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension, and the extension's native messaging handler (`SafariWebExtensionHandler.swift`) that serves the auth tokens. The token reading and the reply to the background script live in `TokenStore.swift`, which imports only Foundation so `MCPSafariTests` compiles the same file and tests it without hosting the app. The two `.entitlements` files are the only source of the sandbox grants; keep build settings from adding to them.
+A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension, and the extension's native messaging handler (`SafariWebExtensionHandler.swift`) that serves the auth tokens. The token reading and the reply to the background script live in `TokenStore.swift`, in the `MCPSafari/TokenReader` package that the extension links. It imports only Foundation, so `swift test` covers it without building the app: Xcode registers every app it builds, and a registered build beside the installed app lets Safari run a second copy of the extension. The two `.entitlements` files are the only source of the sandbox grants; keep build settings from adding to them.
 
 ## Release qualification
 

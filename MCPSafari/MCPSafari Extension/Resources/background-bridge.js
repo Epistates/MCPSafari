@@ -2,7 +2,7 @@
 
 // The WebSocket client: connecting, reconnecting and reporting each port.
 
-// ─── Handshake primitives ────────────────────────────────────────────
+// --- Handshake primitives --------------------------------------------
 //
 // The token proves itself without being sent. Each side returns an HMAC of both
 // sides' fresh nonces under it, and the extension checks the server's proof before
@@ -54,7 +54,7 @@ function handshakeMessage(role, port, first, second) {
     return utf8(`mcpsafari-v${BRIDGE_PROTOCOL_VERSION}-${role}|${port}|${first}|${second}`);
 }
 
-// ─── Limits shared with the server ───────────────────────────────────
+// --- Limits shared with the server -----------------------------------
 //
 // Each of these has a twin in the Swift sources, and `Tests/bridge-constants.test.mjs`
 // reads them from there and fails when the two drift apart.
@@ -72,7 +72,7 @@ const MAX_REPLY_BYTES = 31 * 1024 * 1024;
 // says nothing, which would otherwise leave the connection looking busy for good.
 const HANDSHAKE_TIMEOUT_MS = 5000;
 
-// ─── Replies ─────────────────────────────────────────────────────────
+// --- Replies ---------------------------------------------------------
 
 /**
  * `response` as JSON the server's decoder accepts.
@@ -135,7 +135,7 @@ function sendReply(socket, port, response) {
     }
 }
 
-// ─── WebSocket Connection ────────────────────────────────────────────
+// --- WebSocket Connection --------------------------------------------
 
 function connectToPort(port) {
     const conn = connections.get(port);
@@ -150,10 +150,13 @@ function connectToPort(port) {
     const authToken = authTokensByPort.get(port);
     if (!authToken) {
         conn.state = "disconnected";
-        return; // Skip — can't verify server identity without auth
+        return; // Skip: can't verify server identity without auth
     }
 
     conn.state = "connecting";
+    // Which run of the server this dial is for: each run writes a new token, and
+    // `ensurePortsForKnownTokens` lets go of a connection whose run has ended.
+    conn.token = authToken;
     // The literal address the server binds, not the name `localhost`. The name can
     // resolve to ::1 first, where another local user could be listening and would
     // receive the handshake.
@@ -378,6 +381,12 @@ function ensurePortsForKnownTokens() {
         const token = authTokensByPort.get(port);
         if (staleTokensByPort.get(port) === token) continue;
         staleTokensByPort.delete(port);
+        // A new token is a new run of the server, and whatever this page still
+        // holds for the port belongs to the old one: a socket Safari never reported
+        // closed, a dial that never opened, a backoff. Waiting for those to clear
+        // left a second profile a minute or more behind a server it already knew of.
+        const existing = connections.get(port);
+        if (existing && existing.token !== undefined && existing.token !== token) disconnectPort(port);
         if (connections.has(port)) continue;
         const manual = manualPorts.has(port);
         if (!manual && discoveredPortCount() >= MAX_DISCOVERED_PORTS) {

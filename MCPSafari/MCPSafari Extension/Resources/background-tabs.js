@@ -2,7 +2,7 @@
 
 // Tab and window tools, plus the native-input handlers that foreground a tab.
 
-// ─── Tab Handlers ────────────────────────────────────────────────────
+// --- Tab Handlers ----------------------------------------------------
 
 // Credentials are redacted from a URL before it leaves the extension, wherever
 // the URL turns up: tab listings, captured requests, trace events, link hrefs.
@@ -121,7 +121,7 @@ function redactQueryParameters(tail) {
     return redacted + tail.slice(copied);
 }
 
-// ─── What a tab may say about itself ─────────────────────────────────
+// --- What a tab may say about itself ---------------------------------
 
 // Safari hands the tabs API a URL and title for every tab, including those on
 // sites the user never granted, which reads as browsing history. A tab whose
@@ -131,10 +131,15 @@ function redactQueryParameters(tail) {
 // "Known" is deliberately narrow, because the alternative to knowing is probing
 // and a probe on an undecided site raises Safari's dialog: see `grantedOrigins`.
 // A site nothing has touched yet is therefore reported as not granted even if
-// the user granted it, and becomes readable once any call has reached it.
+// the user granted it, and becomes readable once any call has reached it. The
+// hint says so, because after a reinstall every allowed site reads this way
+// until a call runs there, and "not granted" sent agents to ask for access the
+// user had already given.
 const NOT_GRANTED_HINT =
-    "URL and title withheld: MCPSafari has not been granted access to this site. "
-    + "The user can grant it from the MCPSafari button in Safari's toolbar, then list tabs again.";
+    "URL and title withheld: MCPSafari hasn't confirmed access to this site. "
+    + "A call on this tab works if the user has allowed the site, and later listings then show its URL and title. "
+    + "If not, the call fails with permission_required, and the user can allow the site "
+    + "from the MCPSafari button in Safari's toolbar.";
 
 function siteIsGranted(url) {
     // Nothing behind an about: page can be granted, and nothing in one is private.
@@ -147,6 +152,25 @@ function tabAccessFields(url) {
     return siteIsGranted(url)
         ? { access: "granted" }
         : { access: "not_granted", accessHint: NOT_GRANTED_HINT };
+}
+
+/**
+ * The access fields for a tab the caller has just opened on a URL they chose.
+ *
+ * Reported from what is known, a tab opened on a site the user allowed long ago
+ * came back not granted, without its title, and agents stopped to ask for access
+ * they already had (#169). The caller opened the tab to use it, so Safari is
+ * asked now. On a site the user hasn't decided, that raises the question their
+ * next call would, and costs up to the probe's deadline. A refusal leaves the tab
+ * as it was: created, and described as not granted.
+ */
+async function confirmedAccessFields(tabId, url) {
+    if (!siteIsGranted(url) && originOfUrl(url) !== null) {
+        try {
+            await ensureTabAccess(tabId);
+        } catch (_) { /* not confirmed, so described as not granted */ }
+    }
+    return tabAccessFields(url);
 }
 
 // A URL as far as the tools may say it, wherever one is reported that is not a
@@ -169,7 +193,7 @@ async function handleTabsQuery() {
         if (!(err instanceof DeadlineExceeded)) throw err;
         throw permissionRequiredError(null, true);
     }
-    return tabs.map((t) => {
+    return uniqueTabs(tabs).map((t) => {
         const access = tabAccessFields(t.url);
         return {
             id: t.id,
@@ -267,13 +291,44 @@ async function listTabsForNewWindow() {
     }
 }
 
-async function handleTabsCreate(params) {
+// A new tab goes into the agent's own window: the window of the tab the caller
+// named, else of the tab this server pinned with select_tab. Only with neither
+// does it go to Safari's front window, which is often the user's or another
+// agent's, and that is what pushed every agent into opening a window of its own.
+async function windowForNewTab(params, serverPort) {
+    if (params.tabId !== undefined) {
+        try {
+            return (await withDeadline(browser.tabs.get(params.tabId), PERMISSION_DEADLINE_MS)).windowId;
+        } catch (err) {
+            // Parked behind Safari's dialog, as `getActiveTabId` treats it.
+            if (err instanceof DeadlineExceeded) throw permissionRequiredError(null, true);
+            // The front window instead would put the tab exactly where the
+            // caller said not to, so a tab that's gone is theirs to hear about.
+            if (await tabIsGone(params.tabId)) throw tabClosedError(params.tabId, false);
+            throw err;
+        }
+    }
+    const pin = await currentPin(serverPort);
+    if (!pin) return undefined;
+    try {
+        return (await withDeadline(browser.tabs.get(pin.tabId), PERMISSION_DEADLINE_MS)).windowId;
+    } catch {
+        // Nothing was named, so a pin that can't be found falls back to the
+        // front window, as a call with no pin does. The next call that needs the
+        // pinned tab reports it.
+        return undefined;
+    }
+}
+
+async function handleTabsCreate(params, serverPort) {
     let created;
     if (params.newWindow === true) {
         created = await createTabInNewWindow(params.url);
     } else {
         const opts = {};
         if (params.url) opts.url = params.url;
+        const windowId = await windowForNewTab(params, serverPort);
+        if (windowId !== undefined) opts.windowId = windowId;
         created = await browser.tabs.create(opts);
     }
     // A URL is waited for the way `navigate`'s goto waits for one. Safari creates
@@ -285,7 +340,7 @@ async function handleTabsCreate(params) {
         ? await waitForTabLoad(created.id, created).catch(() => created)
         : created;
     const url = tab.url || params.url;
-    const access = tabAccessFields(url);
+    const access = params.url ? await confirmedAccessFields(tab.id, url) : tabAccessFields(url);
     // An address the caller asked for is theirs to be told back. One the browser
     // chose, the homepage of a tab opened with none, is described like any other
     // tab's. The title is the page's own either way.
@@ -355,6 +410,23 @@ async function handleSelectTab(params, serverPort) {
     };
 }
 
+// Safari's own pinned tabs (the ones fixed at the left of the tab bar, nothing to
+// do with a server's `select_tab` pin) belong to every window of a profile, and
+// Safari lists each one once per window, with the same id, the id of one window,
+// and that window's active flag in every copy. So a pinned tab one window is showing also comes back as
+// active from an active-tab query for any other window, ahead of the tab that
+// window is showing. A window shows one tab, so an unpinned active tab is that
+// one, and a pinned tab only when there is none.
+function windowShowingTab(activeTabs) {
+    return activeTabs.find((tab) => !tab.pinned) ?? activeTabs[0];
+}
+
+// The same copies in a full listing, which showed one tab several times over.
+function uniqueTabs(tabs) {
+    const seen = new Set();
+    return tabs.filter((tab) => !seen.has(tab.id) && seen.add(tab.id));
+}
+
 // Activating a tab does not mean it is still the one showing a moment later:
 // the user can click another, and a capture or a native keystroke then reaches
 // the wrong page. So the claim is checked against the window, which is the only
@@ -364,7 +436,7 @@ async function assertTabShowing(tabId, windowId, purpose) {
         browser.tabs.query({ active: true, windowId }),
         tabId
     );
-    if (showing.length > 0 && showing[0].id === tabId) return;
+    if (windowShowingTab(showing)?.id === tabId) return;
     const error = new Error(
         `The tab is no longer the one showing in its window (another tab was activated), so ${purpose} `
         + "would have reached the wrong page. Retry the call."
@@ -410,33 +482,81 @@ function requireTopFrameTarget(params, reason = NATIVE_INPUT_TOP_FRAME_ONLY) {
     }
 }
 
+// When the page refuses native input because Safari's own controls hold the
+// keyboard, the server can move it into the page through Accessibility, but
+// only once it has confirmed that the window in front is this tab's. The
+// refusal carries what it confirms against: the window's frame, the tab's
+// title, which Safari shows as the window's, and a digest of the tab's address
+// without its fragment, so a secret in the address never crosses the bridge.
+// An older server ignores them.
+async function sha256Hex(text) {
+    const digest = await crypto.subtle.digest("SHA-256", utf8(text));
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// What the server needs to find the tab's window through Accessibility: its
+// size, and the title and address of the tab showing in it.
+async function nativeTargetFor(tabId) {
+    const tab = await browser.tabs.get(tabId);
+    const win = await browser.windows.get(tab.windowId);
+    return {
+        left: win.left,
+        top: win.top,
+        width: win.width,
+        height: win.height,
+        title: tab.title || "",
+        urlDigest: tab.url ? await sha256Hex(tab.url.split("#")[0]) : "",
+    };
+}
+
+async function withNativeTarget(tabId, prepare) {
+    try {
+        return await prepare();
+    } catch (err) {
+        if (err && err.code === "native_input_focus_failed") {
+            try {
+                err.details = { nativeTarget: await nativeTargetFor(tabId) };
+            } catch (_) { /* the refusal stands as it was */ }
+        }
+        throw err;
+    }
+}
+
 async function handleNativeTypeText(params) {
     requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
-    await sendToContentScript(tabId, {
+    await withNativeTarget(tabId, () => sendToContentScript(tabId, {
         action: "prepare_native_input",
         params,
-    });
+    }));
     return "Safari is ready for native input";
 }
 
 async function handleNativePressKey(params) {
     requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
-    await sendToContentScript(tabId, {
+    await withNativeTarget(tabId, () => sendToContentScript(tabId, {
         action: "prepare_native_key",
         params,
-    });
+    }));
     return "Safari is ready for native input";
 }
 
+// The points come with the window they're in, which the server finds through
+// Accessibility to place them on screen and to check that nothing else is on
+// top of them. Without it the server can only use the points' own guess.
 async function handleNativePointer(params) {
     requireTopFrameTarget(params);
     const tabId = await focusTabForNativeInput(params.tabId);
-    return sendToContentScript(tabId, {
+    const points = await withNativeTarget(tabId, () => sendToContentScript(tabId, {
         action: "native_pointer_points",
         params,
-    });
+    }));
+    let nativeTarget = null;
+    try {
+        nativeTarget = await nativeTargetFor(tabId);
+    } catch (_) { /* the server falls back to the points' own guess */ }
+    return { ...points, nativeTarget };
 }
 
 // Object keys are strings, so ports come back as text and are turned into
@@ -505,7 +625,7 @@ async function restoreSessionState() {
         }
     } catch (_) { /* ignore */ }
 
-    // Restore pinned tabs (session-only — lost on Safari restart). A pin whose
+    // Restore pinned tabs (session-only, lost on Safari restart). A pin whose
     // tab has gone is dropped, and the stored copy is rewritten without it. Which
     // server run a pin belongs to is not checked here: this runs beside the read
     // of the tokens, so the port's token may not be in yet. It is checked when a

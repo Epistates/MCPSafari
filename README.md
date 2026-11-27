@@ -11,7 +11,11 @@ Your agent starts with your existing logins, cookies, and history. Open a signed
 - Test your site in Safari. Let your agent check forms, menus, and drag-and-drop in the browser your Safari users will see.
 - Target elements by UID (from a snapshot), CSS, text, or coordinates. Fill React forms with setters that update application state.
 - Check what happened. Read console and network activity, and save screenshots to disk for review without filling the agent's context with image data.
-- Run DOM tasks in the background. Native typing, key presses, hover, and drag need Safari in front and Accessibility permission.
+- Run DOM tasks in the background. Native typing, key presses, clicks, hover, and drag need Safari in front and Accessibility permission, and wait until you've stopped using the keyboard and mouse.
+- Run several agents at once. Each MCP client starts its own server, and they share your Safari: they take turns at the keyboard and pointer, and each can work in a window of its own.
+- Use every Safari profile. Tabs are named by handles such as `p0t5`, which say which profile a tab is in, so an agent can work in another profile while you keep using yours.
+- Switch accounts on a site. `clear_cookies` removes one site's cookies in a profile, sign-in cookies included.
+- Read results as data. Every result carries structured content alongside its text, so an agent doesn't have to parse prose.
 
 QA on real sites has shaped the tools, including fixes for [menus that ignored clicks](https://github.com/Epistates/MCPSafari/pull/74) and [drop zones that missed files](https://github.com/Epistates/MCPSafari/pull/75).
 
@@ -28,14 +32,18 @@ brew install --cask epistates/tap/mcp-safari
 
 Homebrew 7 loads packages from a third-party tap only once you trust them. Installing the cask by its full name trusts the cask, but not the `mcp-safari-server` formula it depends on, so the first line trusts that one formula. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`. `brew trust epistates/tap` would also work, but it trusts everything in the tap, now and later.
 
-To upgrade, name both parts in full, server first. Naming them trusts them too, which an install from before Homebrew 7 needs: a plain `brew upgrade` may keep the version you have.
+To upgrade, name both parts in full, server first. Upgrade both: an app and a server from different releases may not be able to talk to each other. Naming them trusts them too, which an install from before Homebrew 7 needs: a plain `brew upgrade` may keep the version you have.
 
 ```sh
 brew upgrade epistates/tap/mcp-safari-server
 brew upgrade --cask epistates/tap/mcp-safari
 ```
 
-Open MCPSafari.app once so Safari picks up the extension, then enable **MCPSafari Extension** in Safari → Settings → Extensions. Grant access to the sites you want your agent to use.
+After upgrading, reload the Safari tabs you want agents to use. Safari keeps the previous version attached to pages that were open, and calls on them fail with `page_needs_reload` until they load again.
+
+Open MCPSafari.app once so Safari picks up the extension, then enable **MCPSafari Extension** in Safari → Settings → Extensions. The app doesn't need to stay open after that: Safari runs the extension, and each MCP client starts its own `mcp-safari` server.
+
+Grant access to the sites you want your agent to use. When an agent needs a site you haven't allowed, MCPSafari's toolbar button shows a "!": click it on that site and choose **Always Allow on This Website**.
 
 Homebrew installs the published release. This README and the [tool reference](docs/tools.md) describe `main`, which may include unreleased features. Check [Releases](https://github.com/Epistates/MCPSafari/releases) for your version.
 
@@ -53,7 +61,7 @@ For Codex CLI:
 codex mcp add mcp-safari -- mcp-safari
 ```
 
-Start a new client session after adding the server. For Claude Desktop, Cursor, and other clients, see [client configuration](docs/setup.md#configuration).
+Start a new client session after adding the server. For Claude Desktop, Cursor, and other clients, see [client configuration](docs/setup.md#configuration). Several sessions can use Safari at the same time; see [several agents at once](docs/tools.md#several-agents-at-once) for how to keep them out of each other's way.
 
 ### 3. Try it
 
@@ -61,15 +69,19 @@ Ask your agent:
 
 > Open example.com in a new Safari tab, read the page heading, and take a screenshot.
 
-The heading should be “Example Domain”. If the connection fails, see [troubleshooting](docs/setup.md#troubleshooting). On versions that include it, `mcp-safari doctor` checks the installation without changing it.
+The heading should be “Example Domain”. If the connection fails, see [troubleshooting](docs/setup.md#troubleshooting). `mcp-safari doctor` checks the installation without changing it.
 
 ## Before you use it
 
-Your agent acts in your existing browser session. It can access signed-in pages where you allow the extension. Tool results go to your MCP client and may be sent to its model provider; see [browser access and data](SECURITY.md#browser-access-and-data).
+Your agent acts in your existing browser session. It can access signed-in pages where you allow the extension, and tabs on sites it hasn't confirmed access to are listed without their address or title. Tool results go to your MCP client and may be sent to its model provider; see [browser access and data](SECURITY.md#browser-access-and-data).
 
-Background DOM tasks do not need native input. For hover styling, real keyboard events, and native drag, Safari must be in front. Native hover and drag move your pointer, so leave the mouse alone while they run. See [synthetic and native input](docs/tools.md#synthetic-and-native-input).
+Background DOM tasks do not need native input. For hover styling, real keyboard events, and native clicks and drags, Safari must be in front. Native input waits until you've left the keyboard and mouse alone for 5 seconds, and native typing stops if you touch the mouse, so it doesn't fight you for them. Native click, hover and drag move your pointer. See [synthetic and native input](docs/tools.md#synthetic-and-native-input).
 
 Console and network capture have limits. Pages can alter the captured data, and resource timings do not include HTTP status or headers. See [debugging](docs/tools.md#debugging).
+
+## Known caveats
+
+`clear_cookies` removes only the cookies Safari lets the extension see, and Safari shows it a cookie only when the cookie's own domain is granted. With **Always Allow on Every Website** it works as expected. With per-site grants, a cookie set for a parent domain (`.example.com` from `login.example.com`) or for a domain you never stopped on is invisible: the call succeeds, reports what it did remove, and leaves that cookie in place. A sign-in that redirects through an identity provider is the usual case, since you never land on its domains long enough to grant them from the toolbar button. To switch accounts reliably, use a dedicated Safari profile and grant MCPSafari every website there; website access is per profile, so your own profile keeps its per-site grants. See [cookies](docs/tools.md#cookies).
 
 ## Documentation
 

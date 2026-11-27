@@ -13,6 +13,15 @@ struct ToolCatalogTests {
         #expect(SafariMCPServer.readOnlyTools == ["status", "tabs_context", "snapshot", "read_page", "find", "wait"])
     }
 
+    /// Another server's native typing waits for none of the others, so a tool
+    /// missing here could take the keyboard from under its text.
+    @Test func theToolsThatCanMoveSafarisKeyboardAreDeclaredAndNotReadOnly() {
+        let names = Set(SafariMCPServer.toolDefinitions.map(\.name))
+        #expect(SafariMCPServer.focusMovingTools == ["tabs_create", "select_tab", "screenshot"])
+        #expect(SafariMCPServer.focusMovingTools.isSubset(of: names))
+        #expect(SafariMCPServer.focusMovingTools.isDisjoint(with: SafariMCPServer.readOnlyTools))
+    }
+
     // read_console and read_network are readOnlyHint true until `clear` was noticed
     // to empty the buffer they read.
     @Test func noReadOnlyToolTakesAnArgumentThatClearsOrChangesAnything() {
@@ -31,6 +40,25 @@ struct ToolCatalogTests {
             #expect(tool?.annotations.readOnlyHint == false, "\(name) clears a buffer")
             #expect(properties(of: tool!)["clear"] != nil)
         }
+    }
+
+    // `native` was missing from `click`, so a site that ignores synthetic events
+    // could be read and typed into but not clicked.
+    @Test func everyToolWithARealPointerOrKeyboardPathOffersNative() {
+        for name in ["click", "hover", "drag", "press_key", "type_text"] {
+            let tool = SafariMCPServer.toolDefinitions.first { $0.name == name }
+            let native = tool.flatMap { properties(of: $0)["native"]?.objectValue }
+            #expect(native?["type"]?.stringValue == "boolean", "\(name) should declare native")
+        }
+    }
+
+    // It removes what cannot be put back, so it runs under the focus lock and
+    // says it is destructive.
+    @Test func clearCookiesIsDestructiveAndNeedsADomain() {
+        let tool = SafariMCPServer.toolDefinitions.first { $0.name == "clear_cookies" }
+        #expect(tool?.annotations.readOnlyHint == false)
+        #expect(tool?.annotations.destructiveHint == true)
+        #expect(tool?.inputSchema.objectValue?["required"] == .array([.string("domain")]))
     }
 
     @Test func everyToolIsDefinedOnce() {

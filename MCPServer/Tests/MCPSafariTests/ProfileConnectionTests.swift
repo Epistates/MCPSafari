@@ -21,10 +21,16 @@ struct ProfileConnectionTests {
     ) async throws {
         try FileManager.default.createDirectory(at: tokenRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tokenRoot) }
+        // The shipped two-second handshake deadline is for a real extension,
+        // which answers in milliseconds. A URLSession client on a loaded CI
+        // runner can take longer, and these tests are about routing, so the
+        // deadline is the shared harness's (`withStartedBridge`), not the
+        // shipped one. HandshakeHygieneTests covers the deadline itself.
         let bridge = try WebSocketBridge(
             port: port,
             logger: Logger(label: "ProfileConnectionTests"),
-            tokenRoot: tokenRoot
+            tokenRoot: tokenRoot,
+            handshakeDeadline: .seconds(30)
         )
         await bridge.start()
         let boundPort = await bridge.port
@@ -193,7 +199,11 @@ struct ProfileConnectionTests {
             let requestTask = Task { try await bridge.send(action: "click", timeout: 0.2) }
             let request = try await receiveRequest(on: client)
             #expect(request["action"] as? String == "click")
-            // The extension received the mutation, but its response was lost.
+            // The extension received the mutation, but its response was lost. It
+            // is still alive, so it answers the check that follows the timeout.
+            let check = try await receiveRequest(on: client)
+            #expect(check["action"] as? String == "ping")
+            try await respond(to: check, on: client, data: "pong")
             do {
                 _ = try await requestTask.value
                 Issue.record("Expected a timeout")
@@ -208,6 +218,43 @@ struct ProfileConnectionTests {
             let snapshot = try await receiveRequest(on: client)
             try await respond(to: snapshot, on: client, data: "current state")
             #expect(try await next.data?.stringValue == "current state")
+        }
+    }
+
+    // Safari can pause the extension while its windows are hidden. Then nothing
+    // answers, and the failure says so instead of describing one slow call.
+    @Test func anExtensionThatAnswersNothingIsReportedAsStoppedAnswering() async throws {
+        try await MCPSafariTests.withStartedBridge(port: 0, answeringCheckSeconds: 0.2) { bridge, port in
+            let client = makeTask(port: port)
+            defer { client.cancel() }
+            try await authenticate(port: port, token: await bridge.authToken, profileId: "default", task: client)
+            let requestTask = Task { try await bridge.send(action: "click", timeout: 0.2) }
+            _ = try await receiveRequest(on: client)
+            let check = try await receiveRequest(on: client)
+            #expect(check["action"] as? String == "ping")
+            do {
+                _ = try await requestTask.value
+                Issue.record("Expected a failure")
+            } catch let error as WebSocketBridge.BridgeError {
+                #expect(error.toolFailure.code == "extension_not_responding")
+                #expect(error.toolFailure.retryable == false)
+                #expect(error.toolFailure.recoveryAction == "ask_user")
+                #expect(error.description.contains("bring a Safari window into view"))
+            }
+        }
+    }
+
+    // A reply that arrives while the check is out still answers the call.
+    @Test func aReplyThatArrivesDuringTheCheckStillAnswers() async throws {
+        try await MCPSafariTests.withStartedBridge(port: 0, answeringCheckSeconds: 5) { bridge, port in
+            let client = makeTask(port: port)
+            defer { client.cancel() }
+            try await authenticate(port: port, token: await bridge.authToken, profileId: "default", task: client)
+            let requestTask = Task { try await bridge.send(action: "snapshot", timeout: 0.2) }
+            let request = try await receiveRequest(on: client)
+            _ = try await receiveRequest(on: client)
+            try await respond(to: request, on: client, data: "late but in time")
+            #expect(try await requestTask.value.data?.stringValue == "late but in time")
         }
     }
 

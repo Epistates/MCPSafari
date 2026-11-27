@@ -9,7 +9,7 @@
     mcp.loaded.add("gesture");
     const { aimPoint, assertPageFocused, assertReachable, dragEvent, elementAtPoint, firesKeypress, keyboardEvent, keyCode, mouseEvent, pointerEvent, resolveElement, scrollToTarget, toolError } = mcp;
 
-    // ─── Scroll ──────────────────────────────────────────────────────
+    // --- Scroll ------------------------------------------------------
 
     function scrollPage(params) {
         let target = window;
@@ -45,7 +45,7 @@
         return `Scrolled ${params.direction} by ${amount}px`;
     }
 
-    // ─── Press Key ───────────────────────────────────────────────────
+    // --- Press Key ---------------------------------------------------
 
 
     function pressKey(params) {
@@ -81,7 +81,7 @@
         return `Pressed ${keyString}`;
     }
 
-    // ─── Hover ───────────────────────────────────────────────────────
+    // --- Hover -------------------------------------------------------
 
     function hoverElement(params) {
         let el = null;
@@ -138,7 +138,7 @@
         return `Hovered over <${el.tagName.toLowerCase()}> (synthetic events; CSS :hover is not applied)`;
     }
 
-    // ─── Drag ────────────────────────────────────────────────────────
+    // --- Drag --------------------------------------------------------
 
     async function dragElement(params) {
         const fromEl = resolveElement({
@@ -237,20 +237,29 @@
         return `Dragged <${fromEl.tagName.toLowerCase()}> to <${toEl.tagName.toLowerCase()}>`;
     }
 
-    // ─── Native Pointer ──────────────────────────────────────────────
+    // --- Native Pointer ----------------------------------------------
 
-    // CGEvent posts in global screen points. window.screenX/screenY use the
-    // same origin (top-left of the primary display, menu bar included).
-    // Safari's only side chrome is the left sidebar, so the full
+    // CGEvent posts in global screen points, and x/y below are the old guess at
+    // them: Safari's only side chrome is the left sidebar, so the full
     // outerWidth-innerWidth difference sits on the left of the content area.
-    // Assumes 100% page zoom.
+    // But Safari measures screenY from the top of the window's own display, so
+    // on a second display that isn't level with the main one that guess is off
+    // by the difference. pageX/pageY are the point on the page, and the server
+    // places them from where Accessibility shows the page, which is right on
+    // every display. Assumes 100% page zoom.
     function nativePointerPoints(params) {
         // The points are screen coordinates, so a Safari window that is not the
-        // one in front would have them land on another application.
-        assertPageFocused("native mouse events");
+        // one in front would have them land on another application. The server
+        // sets `windowVerified` once Accessibility has confirmed this tab's
+        // window is the one in front, which is all a click needs: with the
+        // address bar holding the keyboard the page has no focus, and clicking
+        // into it is how a person gives it focus.
+        if (params.windowVerified !== true) assertPageFocused("native mouse events");
         const toScreen = (cssX, cssY) => ({
             x: window.screenX + (window.outerWidth - window.innerWidth) + cssX,
             y: window.screenY + (window.outerHeight - window.innerHeight) + cssY,
+            pageX: cssX + window.scrollX,
+            pageY: cssY + window.scrollY,
         });
         const checked = (css) => {
             if (!Number.isFinite(css.x) || !Number.isFinite(css.y)

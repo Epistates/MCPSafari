@@ -22,6 +22,7 @@ extension SafariMCPServer {
     private static let coordX: Value = .object(["type": .string("number"), "description": .string("Viewport x in CSS px; events dispatch at this exact point (overrides uid/selector/text)")])
     private static let coordY: Value = .object(["type": .string("number"), "description": .string("Viewport y in CSS px")])
     private static let nativeRequirements = "Requires Safari to already be the frontmost application and Accessibility permission. Native input takes over the user's keyboard and mouse, so ask the user before bringing Safari to the front unless they have already allowed it."
+    private static let nativeKeyboardFocus = "If Safari's own controls, such as the address bar, hold the keyboard while the agent's window is in front, the keyboard is moved into its page first. To type into a particular field, click it with native=true first."
     private static let waitSel: Value = .object(["type": .string("string"), "description": .string("Wait for CSS selector after action")])
     private static let waitTxt: Value = .object(["type": .string("string"), "description": .string("Wait for visible text after action")])
     private static let waitTimeout: Value = .object(["type": .string("number"), "description": .string("Post-action wait timeout seconds (default: 10)")])
@@ -64,6 +65,13 @@ extension SafariMCPServer {
         toolDefinitions.filter { $0.annotations.readOnlyHint == true }.map(\.name)
     )
 
+    /// The tools that can move Safari's keyboard to another page: a new tab or
+    /// window takes it, `select_tab` brings its tab and window forward, and a
+    /// screenshot of a background tab shows that tab for the capture. Native
+    /// typing goes wherever the keyboard is, so these wait while any server
+    /// types; see `NativeInputLock`.
+    nonisolated static let focusMovingTools: Set<String> = ["tabs_create", "select_tab", "screenshot"]
+
     nonisolated static let toolDefinitions: [Tool] = buildToolDefinitions()
 
     private nonisolated static func buildToolDefinitions() -> [Tool] {
@@ -85,18 +93,18 @@ extension SafariMCPServer {
             ),
             Tool(
                 name: "tabs_create",
-                description: "Open a new tab. With a url, answers once the page has loaded. With newWindow, the tab opens in a new window of its own, offset from the window in front so both stay partly visible: use it when several agents share Safari, since a window shows one tab at a time.",
+                description: "Open a new tab. With a url, answers once the page has loaded. The tab opens in the window of tabId, else of the tab pinned with select_tab, else in the window in front. With newWindow, it opens in a new window of its own, offset from the window in front so both stay partly visible: use it once when several agents share Safari, since a window shows one tab at a time, then add tabs to that window with its tabId.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "url": .object(["type": .string("string"), "description": .string("URL to open")]),
                         "newWindow": .object([
                             "type": .string("boolean"),
-                            "description": .string("Open the tab in a new window instead of the window in front (default false)"),
+                            "description": .string("Open the tab in a new window of its own (default false)"),
                         ]),
                         "tabId": .object([
                             "type": .string("string"),
-                            "description": .string("Tab handle whose Safari profile gets the new tab (default: the selected profile)"),
+                            "description": .string("Tab handle whose window, and Safari profile, get the new tab (default: the pinned tab's window, else the window in front, in the selected profile)"),
                         ]),
                     ]),
                 ])
@@ -118,7 +126,7 @@ extension SafariMCPServer {
                     "type": .string("object"),
                     "properties": .object([
                         "tabId": Self.tab,
-                        "bringToFront": .object(["type": .string("boolean"), "description": .string("Activate and focus the tab (default: true)")]),
+                        "bringToFront": .object(["type": .string("boolean"), "description": .string("Show the tab in its window and focus that window within Safari (default: true). It doesn't bring Safari in front of another app.")]),
                     ]),
                     "required": .array([.string("tabId")]),
                 ])
@@ -195,7 +203,7 @@ extension SafariMCPServer {
 
             Tool(
                 name: "click",
-                description: "Click element by UID, selector, text, or x/y coordinates. Text that matches several elements equally fails with their UIDs. A target covered by another element (modal, banner) fails with target_covered, and one outside the viewport with target_not_visible, unless force=true.",
+                description: "Click element by UID, selector, text, or x/y coordinates. Text that matches several elements equally fails with their UIDs. A target covered by another element (modal, banner) fails with target_covered, and one outside the viewport with target_not_visible, unless force=true. Set native=true to move the real OS pointer there and press the button, so the page receives the trusted events a person's click produces.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object(Self.withActionOptions([
@@ -203,6 +211,10 @@ extension SafariMCPServer {
                         "x": Self.coordX,
                         "y": Self.coordY,
                         "doubleClick": .object(["type": .string("boolean")]),
+                        "native": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Click with the real OS pointer and left button; this is also how to give a field the keyboard before native typing. " + Self.nativeRequirements),
+                        ]),
                         "force": Self.force,
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -219,7 +231,7 @@ extension SafariMCPServer {
                         "clearFirst": .object(["type": .string("boolean")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code; text over 1000 characters is refused. " + Self.nativeRequirements),
+                            "description": .string("Types one character at a time with real macOS key events; this is not paste, and keystrokes follow focus into whatever app is frontmost. Use only for short input that synthetic typing cannot enter, never for bulk text or source code; text over 1000 characters is refused. " + Self.nativeKeyboardFocus + " " + Self.nativeRequirements),
                         ]),
                         "submitKey": .object(["type": .string("string"), "description": .string("Key after typing (Enter, Tab)")]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
@@ -282,7 +294,7 @@ extension SafariMCPServer {
                         "key": .object(["type": .string("string")]),
                         "native": .object([
                             "type": .string("boolean"),
-                            "description": .string("Use a real macOS key event; shortcuts that quit, close, hide, or leave Safari (Command+Q, Command+W, Command+Tab) are refused. " + Self.nativeRequirements),
+                            "description": .string("Use a real macOS key event; shortcuts that quit, close, hide, or leave Safari (Command+Q, Command+W, Command+Tab) are refused. " + Self.nativeKeyboardFocus + " " + Self.nativeRequirements),
                         ]),
                         "includeSnapshot": Self.snap, "tabId": Self.tab,
                     ])),
@@ -368,7 +380,7 @@ extension SafariMCPServer {
 
             Tool(
                 name: "screenshot",
-                description: "Capture visible tab as PNG. Pass uid or selector to scroll that element into view and capture it with padding, scale to shrink the image, and filePath to save the PNG to disk and get the path back instead of inline image data.",
+                description: "Capture visible tab as PNG. A tab behind another in its window is brought forward for the capture, then the tab that was showing is put back. Pass uid or selector to scroll that element into view and capture it with padding, scale to shrink the image, and filePath to save the PNG to disk and get the path back instead of inline image data.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -423,6 +435,28 @@ extension SafariMCPServer {
                     ]),
                 ]),
                 annotations: .init(readOnlyHint: false, destructiveHint: false)
+            ),
+
+            // ── Cookies ──────────────────────────────────────────────
+
+            Tool(
+                name: "clear_cookies",
+                description: "Remove every cookie whose domain is domain or a subdomain of it, HttpOnly and Secure ones included, in one Safari profile. Use it to switch accounts on a site or identity provider that remembers the last one. The cookies of a site the extension has no access to cannot be seen, so a result for a domain not yet reached also reports access not_granted, whatever the count.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "domain": .object([
+                            "type": .string("string"),
+                            "description": .string("Bare hostname such as idp.example.com, with no scheme, port or path. A public suffix that unrelated sites share, such as co.uk or github.io, is refused"),
+                        ]),
+                        "tabId": .object([
+                            "type": .string("string"),
+                            "description": .string("Tab handle whose Safari profile is cleared (default: the selected profile)"),
+                        ]),
+                    ]),
+                    "required": .array([.string("domain")]),
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: true)
             ),
 
             // ── Utility ──────────────────────────────────────────────

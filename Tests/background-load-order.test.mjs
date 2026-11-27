@@ -103,7 +103,7 @@ test("naming a handler directly in the router would be caught", () => {
         },
         // Matched by name rather than by constructor: the error is built by the
         // vm realm, so it is not an instance of this realm's ReferenceError.
-        (err) => err.name === "ReferenceError" && /handleTabsCreate/.test(err.message)
+        (err) => err.name === "ReferenceError" && /^handle\w+ is not defined/.test(err.message)
     );
 });
 

@@ -130,4 +130,28 @@ struct TabsContextMergeTests {
         #expect(merged.tabs.count == 1)
         #expect(merged.tabs[0].objectValue?["id"] == nil)
     }
+
+    /// `not_granted` means the extension hasn't seen a call work on the site, which
+    /// after a reinstall is true of every site the user allowed. Saying the next
+    /// call will fail sent agents to ask for access the user had already given.
+    @Test func theAccessNoteSaysWhatTheNextCallDoesWithoutClaimingItWillFail() throws {
+        let tab: (String) -> [String: AnyCodable] = { access in
+            ["id": AnyCodable("p0t1"), "access": AnyCodable(access),
+             "accessHint": AnyCodable("URL and title withheld: MCPSafari has not been granted access to this site.")]
+        }
+        #expect(SafariMCPServer.accessNote(for: [tab("granted")]) == nil)
+
+        let one = try #require(SafariMCPServer.accessNote(for: [tab("granted"), tab("not_granted")]))
+        #expect(one.hasPrefix("One tab is on a site MCPSafari hasn't confirmed access to"))
+        #expect(one.contains("works if the user has allowed its site"))
+        #expect(one.contains("permission_required"))
+        #expect(one.contains("MCPSafari button in Safari's toolbar"))
+        #expect(!one.contains("will fail"))
+        // An older extension's hint says "not granted", which this note exists to
+        // stop saying, so the note doesn't repeat hints back.
+        #expect(!one.contains("has not been granted"))
+
+        let three = try #require(SafariMCPServer.accessNote(for: Array(repeating: tab("not_granted"), count: 3)))
+        #expect(three.hasPrefix("3 tabs are on sites MCPSafari hasn't confirmed access to, so their URLs and titles are withheld."))
+    }
 }
