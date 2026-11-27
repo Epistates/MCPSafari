@@ -202,17 +202,14 @@ final class RawSocket {
         return Darwin.write(descriptor, request, request.count) == request.count
     }
 
-    func reply(within seconds: Double = 5) -> Reply {
-        var timeout = timeval(tv_sec: Int(seconds), tv_usec: Int32((seconds - seconds.rounded(.down)) * 1_000_000))
-        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        var buffer = [UInt8](repeating: 0, count: 512)
-        let count = Darwin.read(descriptor, &buffer, buffer.count)
-        if count > 0 {
-            let text = String(decoding: buffer.prefix(count), as: UTF8.self)
+    func reply(within seconds: Double = 5) async -> Reply {
+        let read = await read(upTo: 512, within: seconds)
+        if read.count > 0 {
+            let text = String(decoding: read.bytes, as: UTF8.self)
             if text.hasPrefix("HTTP/1.1 101") { return .upgraded }
             return .rejected(String(text.prefix { $0 != "\r" }))
         }
-        return count == 0 || errno != EAGAIN ? .closed : .silent
+        return read.count == 0 || read.error != EAGAIN ? .closed : .silent
     }
 
     /// Sends one masked text frame, as a client must. Payloads here are small: the
@@ -234,11 +231,10 @@ final class RawSocket {
     }
 
     /// The next text frame the server sends, or nil if it closes or goes quiet.
-    func readText(within seconds: Double = 5) -> String? {
-        var timeout = timeval(tv_sec: Int(seconds), tv_usec: Int32((seconds - seconds.rounded(.down)) * 1_000_000))
-        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        var buffer = [UInt8](repeating: 0, count: 1024)
-        let count = Darwin.read(descriptor, &buffer, buffer.count)
+    func readText(within seconds: Double = 5) async -> String? {
+        let read = await read(upTo: 1024, within: seconds)
+        let buffer = read.bytes
+        let count = read.count
         guard count >= 2, buffer[0] & 0x0F == 0x1, buffer[1] <= 126 else { return nil }
         let extended = buffer[1] == 126
         let start = extended ? 4 : 2
@@ -246,6 +242,31 @@ final class RawSocket {
         let length = extended ? Int(buffer[2]) << 8 | Int(buffer[3]) : Int(buffer[1])
         guard count >= start + length else { return nil }
         return String(decoding: buffer[start..<(start + length)], as: UTF8.self)
+    }
+
+    /// What one `read` returned: the bytes, the count, and `errno` when it failed.
+    private struct Read: Sendable {
+        let bytes: [UInt8]
+        let count: Int
+        let error: Int32
+    }
+
+    /// One `read` that gives up after `seconds`, on a thread of its own. The read
+    /// blocks until then, and Swift concurrency's shared threads number about one
+    /// per core: a few such reads on them at once held up every other test, the
+    /// bridge under test included, until a small CI runner failed tests on time.
+    private func read(upTo capacity: Int, within seconds: Double) async -> Read {
+        let descriptor = descriptor
+        return await withCheckedContinuation { continuation in
+            Thread.detachNewThread {
+                var timeout = timeval(tv_sec: Int(seconds), tv_usec: Int32((seconds - seconds.rounded(.down)) * 1_000_000))
+                setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                var buffer = [UInt8](repeating: 0, count: capacity)
+                let count = Darwin.read(descriptor, &buffer, buffer.count)
+                let error = errno
+                continuation.resume(returning: Read(bytes: Array(buffer.prefix(max(count, 0))), count: count, error: error))
+            }
+        }
     }
 
     /// A connection that has sent its upgrade request, or nil if it could not.
@@ -283,7 +304,7 @@ extension RawSocket: FrameTransport {
     }
 
     func receiveFrame() async throws -> String {
-        guard let text = readText() else { throw FrameTransportError.closed }
+        guard let text = await readText() else { throw FrameTransportError.closed }
         return text
     }
 }

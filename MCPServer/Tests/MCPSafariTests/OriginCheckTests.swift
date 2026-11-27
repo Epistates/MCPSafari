@@ -38,7 +38,7 @@ struct OriginCheckTests {
         try await withStartedBridge { bridge, port in
             for origin in ["https://evil.example", "null", "http://localhost:8089"] {
                 let socket = try #require(RawSocket.dial(port: port, origin: origin))
-                guard case .rejected(let status) = socket.reply() else {
+                guard case .rejected(let status) = await socket.reply() else {
                     Issue.record("\(origin) should have been refused at the upgrade")
                     continue
                 }
@@ -51,7 +51,7 @@ struct OriginCheckTests {
     @Test func anExtensionOriginIsAdmitted() async throws {
         try await withStartedBridge { bridge, port in
             let socket = try #require(RawSocket.dial(port: port, origin: "safari-web-extension://0E4C1B2A-TEST"))
-            #expect(socket.reply() == .upgraded)
+            #expect(await socket.reply() == .upgraded)
 
             // And it can finish the handshake from there.
             let reply = try await TestExtension(token: await bridge.authToken, port: port).handshake(over: socket)
@@ -63,7 +63,7 @@ struct OriginCheckTests {
         // Not a browser: the Node harness, the Swift tests, anything scripted.
         try await withStartedBridge { _, port in
             let socket = try #require(RawSocket.dial(port: port))
-            #expect(socket.reply() == .upgraded)
+            #expect(await socket.reply() == .upgraded)
         }
     }
 
@@ -74,7 +74,7 @@ struct OriginCheckTests {
         try await withStartedBridge(handshakeDeadline: .seconds(60)) { bridge, port in
             for _ in 0..<20 {
                 let page = try #require(RawSocket.dial(port: port, origin: "https://evil.example"))
-                if case .rejected = page.reply() {} else { Issue.record("expected the upgrade to be refused") }
+                if case .rejected = await page.reply() {} else { Issue.record("expected the upgrade to be refused") }
             }
 
             let task = webSocketTask(port: port)

@@ -140,12 +140,12 @@ struct BridgeLifecycleTests {
         let socket = try #require(dialled, "the listener never came up")
 
         // Held means silent. A cancelled socket instead reads end-of-file or is reset.
-        #expect(socket.reply(within: 0.3) == .silent, "the socket is neither served nor dropped yet")
+        #expect(await socket.reply(within: 0.3) == .silent, "the socket is neither served nor dropped yet")
 
         gate.yield()
         await starting.value
 
-        #expect(socket.reply() == .upgraded)
+        #expect(await socket.reply() == .upgraded)
     }
 
     /// `start()` is launched from an unstructured task, so it can be scheduled after
