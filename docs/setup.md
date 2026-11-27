@@ -15,9 +15,9 @@ brew trust --formula epistates/tap/mcp-safari-server
 brew install --cask epistates/tap/mcp-safari
 ```
 
-The `brew trust` line is needed once. Homebrew 7 loads packages from a third-party tap only once you trust them, and installing a cask by its full name trusts the cask itself, but not the `mcp-safari-server` formula it depends on. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`. `brew trust epistates/tap` also works, but it trusts everything in the tap, now and later.
+The `brew trust` line is needed once. Since Homebrew 6, Homebrew loads packages from a third-party tap only once you trust them, and installing a cask by its full name trusts the cask itself, but not the `mcp-safari-server` formula it depends on. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`. `brew trust epistates/tap` also works, but it trusts everything in the tap, now and later.
 
-Upgrading, both parts together, by their full names and server first. Naming them also trusts them, which an install from before Homebrew 7 needs; a plain `brew upgrade` may keep the version you have.
+Upgrading, both parts together, by their full names and server first. Naming them also trusts them, which an install from before Homebrew 6 needs; a plain `brew upgrade` may keep the version you have.
 
 ```bash
 brew upgrade epistates/tap/mcp-safari-server

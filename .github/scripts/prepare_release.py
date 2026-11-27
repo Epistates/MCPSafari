@@ -64,13 +64,14 @@ def release_notes(tag: str, root: Path = ROOT) -> str:
     if repeated:
         raise ValueError(f"Repeated CHANGELOG.md sections for {version}: {repeated}")
     return f"# MCPSafari {tag}\n\n{notes}\n\n## Installation\n\n" + (
-        # Homebrew 7 asks users to trust the packages they use rather than the
-        # whole tap, and installing the cask by its full name trusts the cask
-        # but not the formula it depends on, so that one is named first.
+        # Since Homebrew 6, Homebrew asks users to trust the packages they use
+        # rather than the whole tap, and installing the cask by its full name
+        # trusts the cask but not the formula it depends on, so that one is
+        # named first.
         "```sh\nbrew trust --formula epistates/tap/mcp-safari-server\n"
         "brew install --cask epistates/tap/mcp-safari\n```\n\n"
         # The app, its extension and the server move together, and a plain
-        # `brew upgrade` can keep an install from before Homebrew 7 where it is.
+        # `brew upgrade` can keep an install from before Homebrew 6 where it is.
         "To upgrade, name both parts in full, server first:\n\n"
         "```sh\nbrew upgrade epistates/tap/mcp-safari-server\n"
         "brew upgrade --cask epistates/tap/mcp-safari\n```\n\n"

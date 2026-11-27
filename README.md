@@ -21,6 +21,12 @@ QA on real sites has shaped the tools, including fixes for [menus that ignored c
 
 Built with Swift and a Manifest V3 Safari extension. Requires macOS 14+ and Safari 17+. Xcode is only needed to build from source.
 
+## MCPSafari or Safari's built-in MCP server?
+
+Use MCPSafari when you want your agent to work in the Safari you already use. It runs as an extension in your own windows and profiles, on the sites you're signed in to, and only on sites you've allowed. Its native keystrokes and clicks wait while you're using the keyboard or mouse, and native typing stops if you touch the mouse partway through. Several agents can share Safari at once, taking turns with native input.
+
+Use Safari's built-in MCP server when you're building a website and want your agent to check how it renders. It ships with Safari 27 as `safaridriver --mcp`, and Apple describes it as giving your agent "the ability to know how your code actually renders in the browser." Its tools open and navigate tabs, interact with the page, run JavaScript, read console messages and network requests, take screenshots, and emulate viewport sizes and media. Setup is in Apple's [introduction](https://webkit.org/blog/18136/introducing-the-safari-mcp-server-for-web-developers/).
+
 ## Quick start
 
 ### 1. Install
@@ -30,9 +36,9 @@ brew trust --formula epistates/tap/mcp-safari-server
 brew install --cask epistates/tap/mcp-safari
 ```
 
-Homebrew 7 loads packages from a third-party tap only once you trust them. Installing the cask by its full name trusts the cask, but not the `mcp-safari-server` formula it depends on, so the first line trusts that one formula. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`. `brew trust epistates/tap` would also work, but it trusts everything in the tap, now and later.
+Since Homebrew 6, Homebrew loads packages from a third-party tap only once you trust them. Installing the cask by its full name trusts the cask, but not the `mcp-safari-server` formula it depends on, so the first line trusts that one formula. Without it the install stops at `Refusing to load formula epistates/tap/mcp-safari-server from untrusted tap`. `brew trust epistates/tap` would also work, but it trusts everything in the tap, now and later.
 
-To upgrade, name both parts in full, server first. Upgrade both: an app and a server from different releases may not be able to talk to each other. Naming them trusts them too, which an install from before Homebrew 7 needs: a plain `brew upgrade` may keep the version you have.
+To upgrade, name both parts in full, server first. Upgrade both: an app and a server from different releases may not be able to talk to each other. Naming them trusts them too, which an install from before Homebrew 6 needs: a plain `brew upgrade` may keep the version you have.
 
 ```sh
 brew upgrade epistates/tap/mcp-safari-server
