@@ -154,6 +154,25 @@ function tabAccessFields(url) {
         : { access: "not_granted", accessHint: NOT_GRANTED_HINT };
 }
 
+/**
+ * The access fields for a tab the caller has just opened on a URL they chose.
+ *
+ * Reported from what is known, a tab opened on a site the user allowed long ago
+ * came back not granted, without its title, and agents stopped to ask for access
+ * they already had (#169). The caller opened the tab to use it, so Safari is
+ * asked now. On a site the user hasn't decided, that raises the question their
+ * next call would, and costs up to the probe's deadline. A refusal leaves the tab
+ * as it was: created, and described as not granted.
+ */
+async function confirmedAccessFields(tabId, url) {
+    if (!siteIsGranted(url) && originOfUrl(url) !== null) {
+        try {
+            await ensureTabAccess(tabId);
+        } catch (_) { /* not confirmed, so described as not granted */ }
+    }
+    return tabAccessFields(url);
+}
+
 // A URL as far as the tools may say it, wherever one is reported that is not a
 // tab listing: a granted site's address with its secrets redacted, and for any
 // other only its origin, which is as much as a listing says about it. Null when
@@ -321,7 +340,7 @@ async function handleTabsCreate(params, serverPort) {
         ? await waitForTabLoad(created.id, created).catch(() => created)
         : created;
     const url = tab.url || params.url;
-    const access = tabAccessFields(url);
+    const access = params.url ? await confirmedAccessFields(tab.id, url) : tabAccessFields(url);
     // An address the caller asked for is theirs to be told back. One the browser
     // chose, the homepage of a tab opened with none, is described like any other
     // tab's. The title is the page's own either way.

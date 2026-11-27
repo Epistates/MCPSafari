@@ -337,7 +337,7 @@ test("tabs_create with a URL answers once the page has loaded, not while the tab
     assert.equal(created.access, "granted");
 });
 
-test("tabs_create reports the URL it was given but withholds the title of an unreached site", async () => {
+test("tabs_create reports the URL it was given but withholds the title of a site it could not confirm", async () => {
     const harness = loadBackground();
     harness.evaluate("waitForTabLoad = async (tabId, created) => created");
 
