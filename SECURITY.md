@@ -42,7 +42,7 @@ This repository includes automated security scanning via GitHub Actions:
 
 These checks run on pull requests, pushes to the default branch, and on a weekly schedule.
 
-From v0.4.0 onward, the five release artifacts (the three `mcp-safari` binaries and the two app
+From v0.4.2 onward, the five release artifacts (the three `mcp-safari` binaries and the two app
 archives) carry a signed SLSA build provenance attestation, minted by the release workflow through
 Sigstore. The checksum files are not attested; the attestation already records each artifact's digest. `gh attestation verify <file> --repo Epistates/MCPSafari` ties a
 downloaded file back to the workflow run and commit that produced it, which a checksum cannot do.

@@ -180,7 +180,7 @@ let usageText = """
     """
 
 enum MCPSafariProduct {
-    static let version = "0.4.1"
+    static let version = "0.4.2"
     static let bridgeProtocolVersion = 2
     static let extensionBundleIdentifier = "com.epistates.MCPSafari.Extension"
 }

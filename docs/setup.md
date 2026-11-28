@@ -57,7 +57,7 @@ Then enable the extension in **Safari > Settings > Extensions > MCPSafari Extens
 
 #### Checking what you downloaded
 
-Every `mcp-safari` binary and app archive released from v0.4.0 onward carries a signed provenance attestation, so you can confirm a
+Every `mcp-safari` binary and app archive released from v0.4.2 onward carries a signed provenance attestation, so you can confirm a
 file was built by this repository's release workflow rather than only that it downloaded intact:
 
 ```bash
@@ -66,7 +66,7 @@ gh attestation verify /usr/local/bin/mcp-safari --repo Epistates/MCPSafari
 
 That needs the GitHub CLI and works offline after the first run. `SHA256SUMS` is published alongside
 the assets as well, but a checksum only tells you the bytes match the ones we listed; it says nothing
-about where they came from. Releases before v0.4.0 have checksums only.
+about where they came from. Releases before v0.4.2 have checksums only.
 
 ### From source
 

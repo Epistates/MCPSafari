@@ -1,6 +1,6 @@
 {
-  "version": "0.4.1",
-  "sourceCommit": "fd0ce33e7c5455e3072a6a3510a6b0be7535f31a",
+  "version": "0.4.2",
+  "sourceCommit": "9f13afe88280f00671102b86382959b403672dee",
   "macOS": "27.2.1 (26B131)",
   "safari": "27.2 (22625.2.8.11.9)",
   "testedBy": "Nick Paterno",
@@ -8,7 +8,7 @@
   "checks": {
     "profileRouting": {
       "status": "passed",
-      "evidence": "Two Safari profiles connected to a newly started server within 25 s without anyone opening the popup (7.6 s and 3.5 s in two runs). In each profile, tabs_create opened a marked tab, and tabs_create with newWindow opened a window of its own and returned that window's tab. All four tabs reached the right page by handle, followed select_tab for untargeted calls, and answered read_page and snapshot."
+      "evidence": "Two Safari profiles found a newly started server without anyone opening the popup, within 25 s in two runs (15.6 s and 5.6 s). In each profile, tabs_create opened a marked tab, and tabs_create with newWindow opened a window of its own and returned that window's tab. All four tabs reached the right page by handle, followed select_tab for untargeted calls, and answered read_page and snapshot."
     },
     "profileReconnect": {
       "status": "passed",
@@ -16,11 +16,11 @@
     },
     "permissions": {
       "status": "passed",
-      "evidence": "The first call on an undecided site (rfc-editor.org) failed in 9 ms with permission_required and said how to allow the site from the toolbar button. After the user allowed the site there, the same call worked and tabs_context described the tab. tabs_create on a site the user had already allowed (iana.org) returned access granted with the page title, and the next call on that tab worked. Safari 27.2 shows no permission dialog."
+      "evidence": "The first call on an undecided site (mozilla.org) failed in 18 ms with permission_required and said how to allow the site from the toolbar button. After the user allowed the site there, the same call worked and tabs_context described the tab. tabs_create on a site the user had already allowed (iana.org) returned access granted with the page title, and the next call on that tab worked. Safari 27.2 shows no permission dialog."
     },
     "privateByDefault": {
       "status": "passed",
-      "evidence": "Across both profiles (47 tabs), every tab not known to be granted was listed without url or title (45 withheld, none leaking), each with an accessHint saying why."
+      "evidence": "Across both profiles (52 tabs), every tab not known to be granted was listed without url or title (32 withheld, none leaking), each with an accessHint saying why."
     }
   }
 }

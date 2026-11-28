@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.1] - 2026-11-27
+## [0.4.2] - 2026-11-27
 ### Added
 - Release downloads now carry a signed SLSA build provenance attestation, so `gh attestation verify <file> --repo Epistates/MCPSafari` ties a download to the commit and the workflow run that built it. It covers the three `mcp-safari` binaries and both extension archives, alongside `SHA256SUMS` and Apple's notarization.
 - Structured results now cover every tool's success path, including status, profile-qualified tab listings, interactions, screenshots, timed waits, and nested batch results. Text and HTML page reads preserve JSON-looking text verbatim, JavaScript results preserve JSON primitive types, and screenshot metadata avoids duplicating image bytes. Protocol-level tests exercise all 27 advertised tools against the actual server.
@@ -176,8 +176,11 @@
 - `snapshot` redacts more of what a form holds. It relied on `type="password"` or an `autocomplete` token, so a password revealed by a show-password toggle (the type flips to `text`), a field named `pin`, `otp`, `cvv`, `ssn`, `secret`, `token` or `2fa`, and any sensitive `<textarea>` came back verbatim. A field that was ever a password on the page stays redacted, and `name`, `id`, `aria-label`, `inputmode` and `autocomplete` are now read for secret words. Whole words are matched for the short ones, so `shipping` and `passenger` stay readable. A sensitive textarea also no longer repeats its default text.
 - The extension now asks Safari for the `cookies` permission, which `clear_cookies` needs. With it, MCPSafari can see the cookies of the sites you've allowed it on, sign-in cookies included. It only ever deletes them, and only for `clear_cookies`. To tell a site from a domain that many sites share, the extension carries a copy of the Public Suffix List; SECURITY.md says how it's kept up to date.
 
+## [0.4.1] - 2026-11-27
+Tagged but not released. 0.4.2 is the first release of this line, and its entry includes everything planned for 0.4.1.
+
 ## [0.4.0] - 2026-11-18
-Tagged but not released. 0.4.1 is the first release of this line, and its entry includes everything planned for 0.4.0.
+Tagged but not released. 0.4.2 is the first release of this line, and its entry includes everything planned for 0.4.0.
 
 ## [0.3.2] - 2026-09-14
 ### Added
